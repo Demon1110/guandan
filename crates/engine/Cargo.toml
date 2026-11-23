@@ -1,0 +1,13 @@
+[package]
+name = "gf-engine"
+version = "0.1.0"
+edition = "2021"
+description = "掼蛋多端框架 M0 引擎契约层（双产物同一份：native / wasm）"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+blake3 = "1"
+
+[dev-dependencies]
+sha2 = "0.10"

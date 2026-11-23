@@ -1,0 +1,5 @@
+[package]
+name = "gf-protocol"
+version = "0.1.0"
+edition = "2021"
+description = "牌桌协议消息骨架（M0 本轮不生成 protobuf 代码）"

@@ -1,0 +1,11 @@
+// 掼蛋多端框架牌桌协议（M0 骨架占位）。
+// 依据 design_draft.md §5.9：服务端与 wasm 客户端共用同一份生成代码。
+// 本轮不生成代码；消息体在后续迭代按 §5.9 消息表补齐。
+syntax = "proto3";
+
+package gf.protocol.v1;
+
+// TODO(M0-GAP-proto): 按 §5.9 消息表补 JoinRoom / JoinAck / Reconnect /
+// SubmitAction / Heartbeat / RoomSnapshot / RoomDelta / ActionAck /
+// PhaseChange / SettleResult / TrusteeState 及 SubmitAction.payload oneof、
+// RoomDelta.events[] oneof。
