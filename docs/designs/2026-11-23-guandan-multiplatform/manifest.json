@@ -2,8 +2,8 @@
   "design_id": "2026-11-23-guandan-multiplatform",
   "design": "docs/designs/2026-11-23-guandan-multiplatform/design_draft.md",
   "object_type": "technical",
-  "code_check": false,
-  "generated_at": "2026-11-23 15:26",
+  "code_check": true,
+  "generated_at": "2026-11-23 16:09",
   "base": "D:/java/git/guandan",
   "packet": "docs/designs/2026-11-23-guandan-multiplatform/review_packet.md",
   "read_list": [
