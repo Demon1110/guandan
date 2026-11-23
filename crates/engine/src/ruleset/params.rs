@@ -59,34 +59,77 @@ fn default_team() -> ScoreDimension {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PrimitiveParams {
     // —— 牌型 ——
-    SameRank { count: u8 },
-    Straight { length: u8, wildcard_allowed: bool },
-    ConsecutivePairs { pairs: u8 },
-    ConsecutiveTriples { triples: u8 },
-    Bomb { count: u8 },
-    StraightFlush { length: u8 },
+    SameRank {
+        count: u8,
+    },
+    Straight {
+        length: u8,
+        wildcard_allowed: bool,
+    },
+    ConsecutivePairs {
+        pairs: u8,
+    },
+    ConsecutiveTriples {
+        triples: u8,
+    },
+    Bomb {
+        count: u8,
+    },
+    StraightFlush {
+        length: u8,
+    },
     JokerBomb,
     // —— 比较 ——
-    ByRank { direction: OrderDirection },
-    ByCount { direction: OrderDirection },
+    ByRank {
+        direction: OrderDirection,
+    },
+    ByCount {
+        direction: OrderDirection,
+    },
     ByLadder,
     BombOrderParams,
     // —— 行动 ——
-    RequireLegal { force: bool, consume: ZoneId },
-    ConsumeCards { zone: ZoneId, count: u8 },
+    RequireLegal {
+        force: bool,
+        consume: ZoneId,
+    },
+    ConsumeCards {
+        zone: ZoneId,
+        count: u8,
+    },
     Pass,
     // —— 轮转 ——
-    TurnNext { direction: TurnDirection, skip_finished: bool },
-    AfterAllPassParams { to: AfterAllPass },
-    SkipFinished { skip: bool, partner_lead: bool },
+    TurnNext {
+        direction: TurnDirection,
+        skip_finished: bool,
+    },
+    AfterAllPassParams {
+        to: AfterAllPass,
+    },
+    SkipFinished {
+        skip: bool,
+        partner_lead: bool,
+    },
     ReturnToLast,
     // —— 进贡 ——
-    Determine { trigger: TributeTrigger, first_round: FirstRound },
-    PayParams { count: u8, selection: PaySelection },
-    ReturnParams { ceiling: ReturnCeiling, count: u8, fallback: ReturnFallback },
+    Determine {
+        trigger: TributeTrigger,
+        first_round: FirstRound,
+    },
+    PayParams {
+        count: u8,
+        selection: PaySelection,
+    },
+    ReturnParams {
+        ceiling: ReturnCeiling,
+        count: u8,
+        fallback: ReturnFallback,
+    },
     ResistParams,
     // —— 级牌 ——
-    LevelCurrent { scope: LevelScope },
+    LevelCurrent {
+        scope: LevelScope,
+    },
     LevelUpgrade,
     LevelPass {
         combos: Vec<[u8; 2]>,
@@ -94,21 +137,33 @@ pub enum PrimitiveParams {
         reset_on_fail: bool,
     },
     // —— 计分 ——
-    Accumulate { dimension: ScoreDimension },
+    Accumulate {
+        dimension: ScoreDimension,
+    },
     LevelUpParams,
     // —— 视图 / 随机 / 断言 / 发牌 ——
     ViewProject,
-    RngPick { stream: u32 },
-    MinPlayers { count: u8 },
-    CardCount { expected: u32 },
-    ZoneCapacityParams { zone: ZoneId },
+    RngPick {
+        stream: u32,
+    },
+    MinPlayers {
+        count: u8,
+    },
+    CardCount {
+        expected: u32,
+    },
+    ZoneCapacityParams {
+        zone: ZoneId,
+    },
     Shuffle {
         zone: ZoneId,
         per_seat: Option<u16>,
         reveal: Option<bool>,
     },
     /// v2 预留 / v1 未启用 / 未知原语：L1 拒绝（§5.2 第 547–549 行）。
-    Reserved { primitive_id: String },
+    Reserved {
+        primitive_id: String,
+    },
 }
 
 // —— 各原始参数结构体（deny_unknown_fields，默认值用 serde default） ——
@@ -345,11 +400,15 @@ pub fn dispatch(
         }
         "compare.by-rank" => {
             let r: DirectionRaw = parse_raw(params, location, primitive_id)?;
-            PrimitiveParams::ByRank { direction: r.direction }
+            PrimitiveParams::ByRank {
+                direction: r.direction,
+            }
         }
         "compare.by-count" => {
             let r: DirectionRaw = parse_raw(params, location, primitive_id)?;
-            PrimitiveParams::ByCount { direction: r.direction }
+            PrimitiveParams::ByCount {
+                direction: r.direction,
+            }
         }
         "compare.by-ladder" => {
             let _: EmptyRaw = parse_raw(params, location, primitive_id)?;
@@ -465,7 +524,9 @@ pub fn dispatch(
         }
         "assert.card-count" => {
             let r: CardCountRaw = parse_raw(params, location, primitive_id)?;
-            PrimitiveParams::CardCount { expected: r.expected }
+            PrimitiveParams::CardCount {
+                expected: r.expected,
+            }
         }
         "assert.zone-capacity" => {
             let r: ZoneCapacityRaw = parse_raw(params, location, primitive_id)?;

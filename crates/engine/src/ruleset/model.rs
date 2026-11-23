@@ -202,7 +202,20 @@ pub enum AiFeature {
 // ---------- RankKey：必须按字符串字面值反序列化 ----------
 
 const RANK_KEYS: [&str; 15] = [
-    "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A", "little-joker",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "J",
+    "Q",
+    "K",
+    "A",
+    "little-joker",
     "big-joker",
 ];
 
@@ -229,7 +242,9 @@ impl<'de> Deserialize<'de> for RankKey {
         impl<'de> Visitor<'de> for RankKeyVisitor {
             type Value = RankKey;
             fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str("a RankKey string literal (\"2\"..\"10\", J/Q/K/A, little-joker/big-joker)")
+                f.write_str(
+                    "a RankKey string literal (\"2\"..\"10\", J/Q/K/A, little-joker/big-joker)",
+                )
             }
             fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
                 if RANK_KEYS.contains(&value) {
@@ -409,7 +424,10 @@ impl<'de> Deserialize<'de> for PatternDef {
         for key in map.keys() {
             let Some(k) = key.as_str() else { continue };
             if !["id", "primitiveId", "params"].contains(&k) {
-                return Err(de::Error::unknown_field(k, &["id", "primitiveId", "params"]));
+                return Err(de::Error::unknown_field(
+                    k,
+                    &["id", "primitiveId", "params"],
+                ));
             }
         }
         let id_value = map
@@ -430,12 +448,8 @@ impl<'de> Deserialize<'de> for PatternDef {
         let params_map = params_value
             .as_mapping()
             .ok_or_else(|| de::Error::custom("params 必须是 mapping"))?;
-        let params = crate::ruleset::params::dispatch(
-            &primitive_id,
-            params_map,
-            "patterns[]",
-        )
-        .map_err(|e| de::Error::custom(e.message))?;
+        let params = crate::ruleset::params::dispatch(&primitive_id, params_map, "patterns[]")
+            .map_err(|e| de::Error::custom(e.message))?;
         Ok(PatternDef {
             id,
             primitive_id,
@@ -543,12 +557,8 @@ impl<'de> Deserialize<'de> for ActionDef {
         let params_map = params_value
             .as_mapping()
             .ok_or_else(|| de::Error::custom("params 必须是 mapping"))?;
-        let params = crate::ruleset::params::dispatch(
-            &primitive,
-            params_map,
-            "actions[]",
-        )
-        .map_err(|e| de::Error::custom(e.message))?;
+        let params = crate::ruleset::params::dispatch(&primitive, params_map, "actions[]")
+            .map_err(|e| de::Error::custom(e.message))?;
         Ok(ActionDef {
             kind,
             primitive,

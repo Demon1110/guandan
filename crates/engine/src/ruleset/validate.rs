@@ -11,7 +11,7 @@ use std::collections::HashSet;
 pub fn validate(ruleset: &RuleSetBody, levels: &[Level]) -> Validation {
     let mut result = Validation::default();
 
-    let run_l1 = levels.iter().any(|l| *l == Level::L1);
+    let run_l1 = levels.contains(&Level::L1);
     if !run_l1 {
         // L2–L4 本轮未实现：未跑完的级别不进 ran_levels。
         return result;
@@ -43,7 +43,10 @@ pub fn validate(ruleset: &RuleSetBody, levels: &[Level]) -> Validation {
             push(
                 ErrorCode::RsSchemaInvalid,
                 "timing.turnTimeSec",
-                format!("turnTimeSec 必须在 5–120 秒之间，实际 {}", timing.turn_time_sec),
+                format!(
+                    "turnTimeSec 必须在 5–120 秒之间，实际 {}",
+                    timing.turn_time_sec
+                ),
             );
         }
         if !(30..=180).contains(&timing.grace_sec) {
@@ -57,7 +60,10 @@ pub fn validate(ruleset: &RuleSetBody, levels: &[Level]) -> Validation {
             push(
                 ErrorCode::RsSchemaInvalid,
                 "timing.offlineAllSec",
-                format!("offlineAllSec 必须在 60–600 秒之间，实际 {}", timing.offline_all_sec),
+                format!(
+                    "offlineAllSec 必须在 60–600 秒之间，实际 {}",
+                    timing.offline_all_sec
+                ),
             );
         }
     }
@@ -137,7 +143,10 @@ pub fn validate(ruleset: &RuleSetBody, levels: &[Level]) -> Validation {
             push(
                 ErrorCode::RsSchemaInvalid,
                 "level.pass.streakLimit",
-                format!("streakLimit 必须在 1–3 之间，实际 {}", level.pass.streak_limit),
+                format!(
+                    "streakLimit 必须在 1–3 之间，实际 {}",
+                    level.pass.streak_limit
+                ),
             );
         }
     }
@@ -167,11 +176,17 @@ pub fn validate(ruleset: &RuleSetBody, levels: &[Level]) -> Validation {
         .filter(|z| z.scope == crate::ruleset::model::ZoneScope::Private)
         .count();
     if let Some(deal) = ruleset.flow.as_ref().and_then(|f| f.deal.as_ref()) {
-        let rank_count = (ruleset.deck.ranks.len().saturating_sub(ruleset.deck.exclude.len()))
+        let rank_count = (ruleset
+            .deck
+            .ranks
+            .len()
+            .saturating_sub(ruleset.deck.exclude.len()))
             * ruleset.deck.suits.len()
             * ruleset.deck.copies as usize;
         let total = rank_count + ruleset.deck.jokers as usize * ruleset.deck.copies as usize;
-        if deal.per_seat.is_none() && ruleset.seats.count > 0 && total % ruleset.seats.count as usize != 0
+        if deal.per_seat.is_none()
+            && ruleset.seats.count > 0
+            && !total.is_multiple_of(ruleset.seats.count as usize)
         {
             push(
                 ErrorCode::RsSchemaInvalid,
@@ -213,15 +228,7 @@ pub fn validate(ruleset: &RuleSetBody, levels: &[Level]) -> Validation {
                 );
             }
         }
-        if let Some(card_count) = assert.card_count {
-            if card_count > u32::MAX {
-                push(
-                    ErrorCode::RsSchemaInvalid,
-                    "flow.assert.cardCount",
-                    "cardCount 溢出".to_owned(),
-                );
-            }
-        }
+        // cardCount: u32 ≥ 0（§5.1 第 414 行），类型域内无越界可判，跳过范围检查。
     }
 
     // —— lifecycle 固定四段（§5.1 第 391 行、§5.14） ——
@@ -263,9 +270,10 @@ pub fn validate(ruleset: &RuleSetBody, levels: &[Level]) -> Validation {
     // G3（待裁决）：m0-minimal 只含 single、无 pattern.straight-flush 声明时，flushRank
     // 视为惰性、不做冲突检查；否则 m0-minimal 永远过不了 L1。若存在 straight-flush 牌型，
     // 插入位与已有牌型的静态冲突判定规则文档未细化，TODO(M0-GAP-flush-rank) 留待裁决。
-    let has_straight_flush = ruleset.patterns.iter().any(|p| {
-        matches!(p.params, PrimitiveParams::StraightFlush { .. })
-    });
+    let has_straight_flush = ruleset
+        .patterns
+        .iter()
+        .any(|p| matches!(p.params, PrimitiveParams::StraightFlush { .. }));
     if !has_straight_flush {
         // 惰性：无同花顺锚点，跳过冲突检查。
     }

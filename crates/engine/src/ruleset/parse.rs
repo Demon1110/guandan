@@ -27,7 +27,13 @@ impl SchemaError {
 
 impl std::fmt::Display for SchemaError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} @ {}: {}", self.code.code_str(), self.location, self.message)
+        write!(
+            f,
+            "{} @ {}: {}",
+            self.code.code_str(),
+            self.location,
+            self.message
+        )
     }
 }
 

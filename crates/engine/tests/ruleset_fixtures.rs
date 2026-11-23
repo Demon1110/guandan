@@ -70,7 +70,12 @@ fn invalid_rulesets_rejected_at_construction() {
     for rel in cases {
         let src = read_fixture(&format!("{rel}/ruleset.yaml"));
         let err = from_yaml(&src).expect_err(&format!("{rel} 必须构造失败"));
-        println!("[{rel}] code={} location={} message={}", err.code.code_str(), err.location, err.message);
+        println!(
+            "[{rel}] code={} location={} message={}",
+            err.code.code_str(),
+            err.location,
+            err.message
+        );
         assert_eq!(
             err.code,
             ErrorCode::RsSchemaInvalid,

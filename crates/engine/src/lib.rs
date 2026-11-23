@@ -9,6 +9,6 @@
 //! `rand::thread_rng()`、文件 I/O 与网络 I/O。
 
 pub mod contract;
-pub mod ruleset;
 pub mod hash;
+pub mod ruleset;
 pub mod view;
