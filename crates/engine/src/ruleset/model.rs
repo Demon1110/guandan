@@ -324,6 +324,7 @@ pub struct Deck {
     pub ranks: Vec<RankKey>,
     pub suits: Vec<Suit>,
     pub jokers: u8,
+    #[serde(default)]
     pub exclude: Vec<RankKey>,
 }
 
@@ -412,50 +413,70 @@ pub struct PatternDef {
     pub params: crate::ruleset::params::PrimitiveParams,
 }
 
-impl<'de> Deserialize<'de> for PatternDef {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = serde_yaml::Value::deserialize(deserializer)?;
-        let map = value
-            .as_mapping()
-            .ok_or_else(|| de::Error::custom("pattern 必须是 mapping"))?;
-        for key in map.keys() {
-            let Some(k) = key.as_str() else { continue };
-            if !["id", "primitiveId", "params"].contains(&k) {
-                return Err(de::Error::unknown_field(
-                    k,
-                    &["id", "primitiveId", "params"],
-                ));
-            }
+fn build_pattern<'de, D>(value: &serde_yaml::Value, location: &str) -> Result<PatternDef, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let map = value
+        .as_mapping()
+        .ok_or_else(|| de::Error::custom(format!("{location}: pattern 必须是 mapping")))?;
+    for key in map.keys() {
+        let Some(k) = key.as_str() else { continue };
+        if !["id", "primitiveId", "params"].contains(&k) {
+            return Err(de::Error::unknown_field(
+                k,
+                &["id", "primitiveId", "params"],
+            ));
         }
-        let id_value = map
-            .get("id")
-            .ok_or_else(|| de::Error::missing_field("id"))?
-            .clone();
-        let id: PatternId = serde_yaml::from_value(id_value).map_err(de::Error::custom)?;
-        let primitive_id = map
-            .get("primitiveId")
-            .ok_or_else(|| de::Error::missing_field("primitiveId"))?
-            .as_str()
-            .ok_or_else(|| de::Error::custom("primitiveId 必须是字符串"))?
-            .to_owned();
-        let params_value = map
-            .get("params")
-            .cloned()
-            .unwrap_or(serde_yaml::Value::Mapping(Default::default()));
-        let params_map = params_value
-            .as_mapping()
-            .ok_or_else(|| de::Error::custom("params 必须是 mapping"))?;
-        let params = crate::ruleset::params::dispatch(&primitive_id, params_map, "patterns[]")
-            .map_err(|e| de::Error::custom(e.message))?;
-        Ok(PatternDef {
-            id,
-            primitive_id,
-            params,
-        })
     }
+    let id_value = map
+        .get("id")
+        .ok_or_else(|| de::Error::missing_field("id"))?
+        .clone();
+    let id: PatternId = serde_yaml::from_value(id_value).map_err(de::Error::custom)?;
+    let primitive_id = map
+        .get("primitiveId")
+        .ok_or_else(|| de::Error::missing_field("primitiveId"))?
+        .as_str()
+        .ok_or_else(|| de::Error::custom("primitiveId 必须是字符串"))?
+        .to_owned();
+
+    let params_location = format!("{location}.params");
+    let params_map = match map.get("params") {
+        Some(params_value) => params_value
+            .as_mapping()
+            .ok_or_else(|| de::Error::custom(format!("{params_location} 必须是 mapping")))?
+            .clone(),
+        None => {
+            // §5.1 第 392 行：无参原语也必须写空对象 `{}`；有参原语缺省取默认值。
+            if crate::ruleset::params::is_no_param_primitive(&primitive_id) {
+                return Err(de::Error::custom(format!(
+                    "{params_location}: 无参原语 `{primitive_id}` 必须显式写空对象 `{{}}`（§5.1 第 392 行）"
+                )));
+            }
+            serde_yaml::Mapping::default()
+        }
+    };
+    let params = crate::ruleset::params::dispatch(&primitive_id, &params_map, &params_location)
+        .map_err(|e| de::Error::custom(e.message))?;
+    Ok(PatternDef {
+        id,
+        primitive_id,
+        params,
+    })
+}
+
+/// 逐元素反序列化 `patterns[]`，location 带下标 `patterns[{i}]`（§5.3 索引引用）。
+fn deserialize_patterns<'de, D>(deserializer: D) -> Result<Vec<PatternDef>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let values: Vec<serde_yaml::Value> = Deserialize::deserialize(deserializer)?;
+    values
+        .iter()
+        .enumerate()
+        .map(|(i, value)| build_pattern::<D>(value, &format!("patterns[{i}]")))
+        .collect()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -515,57 +536,76 @@ pub struct ActionDef {
     pub params: crate::ruleset::params::PrimitiveParams,
 }
 
-impl<'de> Deserialize<'de> for ActionDef {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = serde_yaml::Value::deserialize(deserializer)?;
-        let map = value
-            .as_mapping()
-            .ok_or_else(|| de::Error::custom("action 必须是 mapping"))?;
-        for key in map.keys() {
-            let Some(k) = key.as_str() else { continue };
-            if !["kind", "primitive", "legalFrom", "params"].contains(&k) {
-                return Err(de::Error::unknown_field(
-                    k,
-                    &["kind", "primitive", "legalFrom", "params"],
-                ));
-            }
+fn build_action<'de, D>(value: &serde_yaml::Value, location: &str) -> Result<ActionDef, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let map = value
+        .as_mapping()
+        .ok_or_else(|| de::Error::custom(format!("{location}: action 必须是 mapping")))?;
+    for key in map.keys() {
+        let Some(k) = key.as_str() else { continue };
+        if !["kind", "primitive", "legalFrom", "params"].contains(&k) {
+            return Err(de::Error::unknown_field(
+                k,
+                &["kind", "primitive", "legalFrom", "params"],
+            ));
         }
-        let kind_value = map
-            .get("kind")
-            .ok_or_else(|| de::Error::missing_field("kind"))?
-            .clone();
-        let kind: ActionKind = serde_yaml::from_value(kind_value).map_err(de::Error::custom)?;
-        let primitive = map
-            .get("primitive")
-            .ok_or_else(|| de::Error::missing_field("primitive"))?
-            .as_str()
-            .ok_or_else(|| de::Error::custom("primitive 必须是字符串"))?
-            .to_owned();
-        let legal_from_value = map
-            .get("legalFrom")
-            .ok_or_else(|| de::Error::missing_field("legalFrom"))?
-            .clone();
-        let legal_from: LegalFrom =
-            serde_yaml::from_value(legal_from_value).map_err(de::Error::custom)?;
-        let params_value = map
-            .get("params")
-            .cloned()
-            .unwrap_or(serde_yaml::Value::Mapping(Default::default()));
-        let params_map = params_value
-            .as_mapping()
-            .ok_or_else(|| de::Error::custom("params 必须是 mapping"))?;
-        let params = crate::ruleset::params::dispatch(&primitive, params_map, "actions[]")
-            .map_err(|e| de::Error::custom(e.message))?;
-        Ok(ActionDef {
-            kind,
-            primitive,
-            legal_from,
-            params,
-        })
     }
+    let kind_value = map
+        .get("kind")
+        .ok_or_else(|| de::Error::missing_field("kind"))?
+        .clone();
+    let kind: ActionKind = serde_yaml::from_value(kind_value).map_err(de::Error::custom)?;
+    let primitive = map
+        .get("primitive")
+        .ok_or_else(|| de::Error::missing_field("primitive"))?
+        .as_str()
+        .ok_or_else(|| de::Error::custom("primitive 必须是字符串"))?
+        .to_owned();
+    let legal_from_value = map
+        .get("legalFrom")
+        .ok_or_else(|| de::Error::missing_field("legalFrom"))?
+        .clone();
+    let legal_from: LegalFrom =
+        serde_yaml::from_value(legal_from_value).map_err(de::Error::custom)?;
+
+    let params_location = format!("{location}.params");
+    let params_map = match map.get("params") {
+        Some(params_value) => params_value
+            .as_mapping()
+            .ok_or_else(|| de::Error::custom(format!("{params_location} 必须是 mapping")))?
+            .clone(),
+        None => {
+            if crate::ruleset::params::is_no_param_primitive(&primitive) {
+                return Err(de::Error::custom(format!(
+                    "{params_location}: 无参原语 `{primitive}` 必须显式写空对象 `{{}}`（§5.1 第 392 行）"
+                )));
+            }
+            serde_yaml::Mapping::default()
+        }
+    };
+    let params = crate::ruleset::params::dispatch(&primitive, &params_map, &params_location)
+        .map_err(|e| de::Error::custom(e.message))?;
+    Ok(ActionDef {
+        kind,
+        primitive,
+        legal_from,
+        params,
+    })
+}
+
+/// 逐元素反序列化 `actions[]`，location 带下标 `actions[{i}]`。
+fn deserialize_actions<'de, D>(deserializer: D) -> Result<Vec<ActionDef>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let values: Vec<serde_yaml::Value> = Deserialize::deserialize(deserializer)?;
+    values
+        .iter()
+        .enumerate()
+        .map(|(i, value)| build_action::<D>(value, &format!("actions[{i}]")))
+        .collect()
 }
 
 /// `legalFrom` 三取值：`patterns`、某个 zone id、某个 phase 名（§5.1）。
@@ -594,16 +634,57 @@ impl<'de> Deserialize<'de> for LegalFrom {
 }
 
 /// 结算变体（§5.1 `settle`）：`level-up` 引用级牌表；`score-only` 无等级表引用。
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-#[serde(tag = "algorithm")]
+///
+/// 显式反序列化：按变体列允许键集，多余键一律拒绝（内部标签枚举会静默吃掉未知键，
+/// 违反「未知键 RS_SCHEMA_INVALID」红线，§5.3 第 561 行）。
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Settle {
-    #[serde(rename = "level-up")]
-    LevelUp {
-        #[serde(rename = "levelTableRef")]
-        level_table_ref: String,
-    },
-    #[serde(rename = "score-only")]
+    LevelUp { level_table_ref: String },
     ScoreOnly,
+}
+
+impl<'de> Deserialize<'de> for Settle {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_yaml::Value::deserialize(deserializer)?;
+        let map = value
+            .as_mapping()
+            .ok_or_else(|| de::Error::custom("settle 必须是 mapping"))?;
+        let algorithm = map
+            .get("algorithm")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| de::Error::missing_field("algorithm"))?;
+        match algorithm {
+            "level-up" => {
+                for key in map.keys() {
+                    let Some(k) = key.as_str() else { continue };
+                    if !["algorithm", "levelTableRef"].contains(&k) {
+                        return Err(de::Error::unknown_field(k, &["algorithm", "levelTableRef"]));
+                    }
+                }
+                let level_table_ref = map
+                    .get("levelTableRef")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| de::Error::missing_field("levelTableRef"))?
+                    .to_owned();
+                Ok(Settle::LevelUp { level_table_ref })
+            }
+            "score-only" => {
+                for key in map.keys() {
+                    let Some(k) = key.as_str() else { continue };
+                    if k != "algorithm" {
+                        return Err(de::Error::unknown_field(k, &["algorithm"]));
+                    }
+                }
+                Ok(Settle::ScoreOnly)
+            }
+            other => Err(de::Error::custom(format!(
+                "unknown settle algorithm `{other}`"
+            ))),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -736,10 +817,12 @@ pub struct RuleSetBody {
     #[serde(rename = "levelInsert")]
     pub level_insert: LevelInsert,
     pub wildcard: Option<Wildcard>,
+    #[serde(deserialize_with = "deserialize_patterns")]
     pub patterns: Vec<PatternDef>,
     pub compare: CompareConfig,
     pub tribute: Option<TributeConfig>,
     pub lifecycle: Vec<Phase>,
+    #[serde(deserialize_with = "deserialize_actions")]
     pub actions: Vec<ActionDef>,
     pub settle: Settle,
     #[serde(rename = "matchCap")]

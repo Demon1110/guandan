@@ -177,7 +177,7 @@ struct SameRankRaw {
 #[serde(deny_unknown_fields)]
 struct StraightRaw {
     length: u8,
-    #[serde(default = "default_true")]
+    #[serde(rename = "wildcardAllowed", default = "default_true")]
     wildcard_allowed: bool,
 }
 #[derive(Deserialize)]
@@ -230,7 +230,7 @@ struct ConsumeCardsRaw {
 struct TurnNextRaw {
     #[serde(default = "default_clockwise")]
     direction: TurnDirection,
-    #[serde(default = "default_true")]
+    #[serde(rename = "skipFinished", default = "default_true")]
     skip_finished: bool,
 }
 #[derive(Deserialize)]
@@ -244,7 +244,7 @@ struct AfterAllPassRaw {
 struct SkipFinishedRaw {
     #[serde(default = "default_true")]
     skip: bool,
-    #[serde(default = "default_true")]
+    #[serde(rename = "partnerLead", default = "default_true")]
     partner_lead: bool,
 }
 #[derive(Deserialize)]
@@ -252,7 +252,7 @@ struct SkipFinishedRaw {
 struct DetermineRaw {
     #[serde(default = "default_last_round_rank")]
     trigger: TributeTrigger,
-    #[serde(default = "default_skip")]
+    #[serde(rename = "firstRound", default = "default_skip")]
     first_round: FirstRound,
 }
 #[derive(Deserialize)]
@@ -284,9 +284,9 @@ struct LevelCurrentRaw {
 struct LevelPassRaw {
     #[serde(default = "default_combos")]
     combos: Vec<[u8; 2]>,
-    #[serde(default = "default_one_u8")]
+    #[serde(rename = "streakLimit", default = "default_one_u8")]
     streak_limit: u8,
-    #[serde(default = "default_true")]
+    #[serde(rename = "resetOnFail", default = "default_true")]
     reset_on_fail: bool,
 }
 fn default_combos() -> Vec<[u8; 2]> {
@@ -326,8 +326,27 @@ struct ZoneCapacityRaw {
 #[serde(deny_unknown_fields)]
 struct ShuffleRaw {
     zone: ZoneId,
+    #[serde(rename = "perSeat")]
     per_seat: Option<u16>,
     reveal: Option<bool>,
+}
+
+/// 无参原语：必须显式写空对象 `{}`，缺 `params` 键即拒绝（§5.1 第 392 行、§5.2 参数表）。
+const NO_PARAM_PRIMITIVES: [&str; 9] = [
+    "pattern.joker-bomb",
+    "action.pass",
+    "compare.by-ladder",
+    "compare.bomb-order",
+    "turn.return-to-last",
+    "tribute.resist",
+    "level.upgrade",
+    "score.level-up",
+    "view.project",
+];
+
+/// 判断原语是否为无参原语（缺 `params` 键应拒绝）。
+pub fn is_no_param_primitive(primitive_id: &str) -> bool {
+    NO_PARAM_PRIMITIVES.contains(&primitive_id)
 }
 
 /// v2 预留与 v1 未启用原语（§5.2 第 547–549 行）：引用即 L1 拒绝。

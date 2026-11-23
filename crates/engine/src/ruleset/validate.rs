@@ -4,7 +4,7 @@
 //! （`ran_levels` 语义是「实际跑完的级别」，§5.4 第 578 行），不伪造通过。
 
 use crate::contract::{ErrorCode, Finding, Level, Validation};
-use crate::ruleset::model::RuleSetBody;
+use crate::ruleset::model::{LegalFrom, RuleSetBody};
 use crate::ruleset::params::PrimitiveParams;
 use std::collections::HashSet;
 
@@ -263,6 +263,16 @@ pub fn validate(ruleset: &RuleSetBody, levels: &[Level]) -> Validation {
                 &format!("actions[{i}].primitive"),
                 format!("原语 `{primitive_id}` 属 v2 预留 / v1 未启用，v1 解释器不收录"),
             );
+        }
+        // §5.1 第 392 行：`turn` 是 play 内轮次子阶段，不是合法 legalFrom 取值。
+        if let LegalFrom::Zone(zone) = &action.legal_from {
+            if zone.0 == "turn" {
+                push(
+                    ErrorCode::RsSchemaInvalid,
+                    &format!("actions[{i}].legalFrom"),
+                    "`turn` 不是合法 legalFrom 取值（§5.1 第 392 行）".to_owned(),
+                );
+            }
         }
     }
 
