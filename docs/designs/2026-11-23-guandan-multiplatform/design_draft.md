@@ -31,14 +31,14 @@
 | 零代码实现路径 | **通用规则 DSL**（原语组合 + 声明式配置，不允许自定义逻辑） | C8 |
 | 编辑器形态 | 积木为主视图 + 源码模式高级视图，两者读写同一份 RuleSet | C9 |
 | 分期 gate | 第 16 周 Web 端 + 本地 bot 能打完整场（不含联机）；第 24 周联机内测 | U1 |
-| 玩法范围 | v1 只做掼蛋与斗地主；麻将留 v2，原语保留但不验证 | U2 |
+| 玩法范围 | v1 只做掼蛋；斗地主、麻将留 v2，原语保留但不验证 | U2 |
 | 租户模型 | 单租户、多玩法，不做多租户隔离 | U3 |
 | AI 口径 | 三档（简单/普通/困难）+ UI 标注"AI 陪练"；人机房不计段位与正式战绩 | U4 |
 | 渠道与移动壳 | 暂不申报版号，首发只做 Web/H5 + 桌面自主分发，商店端与移动壳押后 | U5 |
 | 变现 | v1 **留支付占位不收费**：订单表与支付回调接口先建，不接真实渠道 | U7 |
 | 观战 | **只做回放式观战**，不做实时旁观 | U8 |
 | 部署区域 | 国内单区；域名与 ICP 备案为 M0 前置项 | U6 |
-| 工期基线 | 承诺 34～38 周，按 M0–M4 五段拆分（见 §2.4） | U9 |
+| 工期基线 | 承诺 40～44 周，按 M0–M4 五段拆分（见 §2.4） | U9 |
 | 规则取值 | 由设计者按淮安主流打法起草《规则取值表》，用户逐条确认后冻结 | U10 |
 
 ### 1.3 目标
@@ -48,9 +48,9 @@
 | G1 | v1 四个产物（Web 静态站 + Windows/macOS/Linux 桌面壳）都能完整打完一场掼蛋 | S2 |
 | G2 | 4 人联机可用，含断线重连与超时托管 | S3、S4、S9 |
 | G3 | 完全离线也能与 bot 打完一场 | S2 的离线分支 |
-| G4 | 新增斗地主只写玩法，不动框架核心 | S5 |
+| G4 | 新增掼蛋变体只写玩法配置，不动框架核心 | S5 |
 | G5 | 内测版的架构等于商店版：支付、实名、防沉迷只改服务端与壳层 | S7 |
-| G6 | 平台化：后台零代码配出新玩法并上线，全程不发版 | S12 |
+| G6 | 平台化：后台零代码配出掼蛋变体配置并上线，全程不发版 | S12 |
 
 ### 1.4 成功判据
 
@@ -60,16 +60,16 @@
 | --- | --- |
 | S1 | 同一份 `crates/engine` 产出的 `wasm32-unknown-unknown` 与 native 两个产物，跑同一批 action log，`stateHash` 逐字节一致；CI 100% 通过。**唯一例外**：注入 panic 的专门用例只要求"native 捕获并返回 `RS_INTERNAL_PANIC`、wasm 按 §8.6 的 abort 行为记录"，不要求两端同哈希——该用例标记 `panic-injection` 并从 S1 的分母里剔除，其余用例任何一条不一致即 S1 不成立 |
 | S2 | v1 四个产物（msi / dmg / AppImage / 静态站）在断网环境下完成一局：入座建桌（场级前置动作）→ 发牌 → 出牌 → 结算，四端各至少 1 次人工验收记录。本判据验收粒度为一局；同场"再来一局"的连续流程见 §2.4 第 16 周 gate |
-| S3 | 断网 5 秒后重连，客户端状态与服务端一致（`seatSeq` 与 `viewHash` 校验通过），可继续出牌 |
+| S3 | 断网 5 秒后重连，客户端状态与服务端一致（`seatSeq` 水位与服务端自证的 `viewHash` 校验通过），可继续出牌 |
 | S4 | 4 人真实联机连打 30 局，0 次错误判定（合法动作被拒 / 非法动作被接受）、0 次状态漂移；玩家误点被引擎拒绝不计入本判据分母，本判据与 §7.2 的非法率告警口径分开 |
-| S5 | 新增斗地主时，`crates/table-runtime` 与 `apps/server` 的改动不超过各自总行数的 10%，框架层单测全绿。**注**：S5 是"代码增量"的验收上限，G6／S12 是"零代码配规则"的验收，两者针对不同交付物，不互相替代 |
+| S5 | 新增掼蛋变体配置时，`crates/table-runtime` 与 `apps/server` 的改动不超过各自总行数的 10%，框架层单测全绿。**注**：S5 是"代码增量"的验收上限，G6／S12 是"零代码配规则"的验收，两者针对不同交付物，不互相替代 |
 | S6 | 由 A4 推出的峰值（并发房间 × 3 倍余量）压测：动作回执 P99 < 100ms，进程内存 24 小时无持续增长 |
 | S7 | 接支付、实名、防沉迷时只改 `apps/server` 与壳层，`crates/engine`、`crates/table-runtime` 零改动 |
 | S8 | 四条争议（同花顺与炸弹的序 `flushRank`、逢人配能否组同花顺 `inStraightFlush`、过 A 条件 `level.pass`、抗贡条件 `tribute.resist`）可配置切换，双口径回归全绿 |
 | S9 | 同一手机号账号在 Web 与桌面端登录，战绩与段位一致；联机局断线后在 §6.2 宽限期（默认 90 秒，取值 30–180 秒）内重连可恢复到该局；超宽限按 §6.3 托管与座位释放处置，不承诺离线续局 |
 | S10 | `stateHash` 有唯一算法定义（§5.12：字段范围、序列化规范、哈希函数、是否含规则版本），两端实现由同一份 Rust 代码产出 |
 | S11 | S8 的四条配置各有 ≥3 条黄金用例，任一配置变更触发重跑并给出差异报告 |
-| S12 | 运营者不改代码、不发版，只在后台完成"选玩法族 → 配规则 → dry-run → 灰度 → 全量 → 回滚"，配出一款**族内**新玩法（斗地主），全程不重启服务、不更新客户端包。跨族（麻将）不进 S12，见 R13 的纸面推演结论 |
+| S12 | 运营者不改代码、不发版，只在后台完成"选玩法族 → 配规则 → dry-run → 灰度 → 全量 → 回滚"，配出一款**族内**掼蛋变体配置，全程不重启服务、不更新客户端包。跨族（斗地主、麻将）不进 S12，见 R13 的纸面推演结论 |
 
 ### 1.5 显式假设
 
@@ -90,9 +90,9 @@
 | A11 | 同一 crate 编出的 wasm 与 native 在相同输入下产生相同 `stateHash` | 两端分叉，联机判定与本地 bot 会不一致，严重时退回单一运行时 | CI 跑双产物比对（S1） |
 | A12 | 移动端走 WebView 壳，引擎统一 wasm，不需要原生绑定 | 已由 C4（单套 Web 渲染）消除，本假设在当前范围不生效 | 无需验证，v1 不做移动壳 |
 | A13 | 回放式观战足以满足"看高手怎么打"的需求，不做实时旁观也不明显影响留存 | 若观战是核心留存手段，需补实时旁观（房间扇出 + 协议 + 3～4 周） | 内测问卷 + 回放观看次数，M3 复盘；不成立则进 v2 backlog |
-| A14 | 通用规则 DSL 能表达目标玩法全部规则结构 | 表达不了（如麻将鸣牌优先级、掼蛋进贡链）只能降级"模板 + 参数"，工期回落但零代码上限降低 | **M0 末纸面推演**：只用 RuleSet（不实现代码）写出斗地主与麻将最小对局，写不出来的结构逐条列出是否需新原语；实现级验证排在 M3 接入斗地主时 |
+| A14 | 通用规则 DSL 能表达目标玩法全部规则结构 | 表达不了（如麻将鸣牌优先级、掼蛋进贡链）只能降级"模板 + 参数"，工期回落但零代码上限降低 | **M0 末纸面推演**：只用 RuleSet（不实现代码）写出掼蛋变体与麻将最小对局，写不出来的结构逐条列出是否需新原语；实现级验证排在 M3 接入族内变体时 |
 | A15 | 2 人能在 M0 内跨过 Rust 异步服务端门槛 | 若 M0 末房间并发与断线恢复原型跑不通，基线整体顺延 3～4 周或缩范围 | M0 交付"空转压测"与"断线恢复"两个原型并记录实测 |
-| A16 | 解释执行开销可接受：单次动作解释 < 1ms，单核承载 ≥1500 房间（= §3.2 的 3 倍余量基线） | 需引入预编译缓存（+3～4 周），热更新复杂度上升 | M0 基准：同一 RuleSet 在双产物下各跑 10 万次 `legal_actions` 与 `apply`，记录 P99 |
+| A16 | 解释执行开销可接受：单次动作解释 < 1ms，单核承载 ≥1500 房间（= §3.2 的 3 倍余量基线） | 需引入预编译缓存（+3～4 周），热更新复杂度上升 | M0 基准：在 `m0-minimal` 夹具（§2.4）上双产物各跑 10 万次 `legal_actions` 与 `apply`，记录 P99 |
 | A17 | 编辑器以积木为主视图，源码模式只作研发高级视图，两者读写同一份 RuleSet | 若源码成为主入口，语法错误会进生产 | 已确认（C9）；M0 出交互草图与"非法结构不可构造"验证 |
 
 ### 1.6 术语
@@ -127,7 +127,7 @@
 | `apps/shell-desktop` / `apps/shell-mobile` | Tauri 2（Win/Linux/macOS）先在 M2 做；Capacitor 6（Android/iOS）**押后**（U5：版号暂缓，商店端不进关键路径） | M2 / 押后 |
 | `tools/replay-viewer` | 离线重放器：读导出包复现整局，是故障排查与 S1 比对的实际执行者 | M2 |
 | `tools/rule-authoring` | 规则编辑器核心（积木树 ↔ 源码文本双向转换、结构合法性校验），被 `apps/admin` 复用而非另写一套 | M3 |
-| 玩法 | 掼蛋完整；斗地主完整可玩（用来验证 DSL 表达力与"零代码上新"）；**麻将不进 v1** | M3–M4 |
+| 玩法 | 掼蛋完整；**斗地主、麻将不进 v1**（v2 候选，纸面推演见 R13） | M1–M3 |
 | 运维能力 | 结构化日志、房间指标、`stateHash` 不匹配告警、一键导出回放 | M3 |
 | 合规技术面 | 实名认证与防沉迷的适配层（接口占位 + 开关）。触发点由"上架前"改为"商业化立项"：U5 把商店端移出计划后，"上架前"不再是计划内的时间点 | M3 占位 |
 
@@ -161,11 +161,13 @@
 | 前置 | 第 0 周前 | 域名、ICP 备案、短信模板报备、开源素材授权清单启动 | 这些不占人周，但任一延期都会把 M0 起点后移 |
 | M0 | 第 1–6 周 | 引擎契约与原型、`crates/protocol`、确定性纪律、双产物 CI、空转压测与断线恢复两个原型 | 掼蛋完整规则、账号服务、UI |
 | M1 | 第 7–16 周 | 掼蛋规则、AI-L0/AI-L1、客户端牌桌、**Web 端 + 本地 bot 可完整打完一场（第 16 周硬 gate，不含联机）** | 原生壳、账号服务、联机、观战 |
-| M2 | 第 17–24 周 | 账号与短信、房间、匹配、断线恢复、桌面壳打包、回放重放器；**第 24 周联机内测** | 支付渠道、移动壳（押后）、社交 |
-| M3 | 第 25–32 周 | 回放式观战、战绩与段位、告警、合规适配层占位、**运营后台与玩法配置发布链**、斗地主接入 | 变现渠道、赛事 |
-| M4 | 第 33–38 周 | 平台化收尾：斗地主零代码上线演练、发布链压测、文档与交接 | 麻将（v2）、移动壳（押后） |
+| M2 | 第 17–26 周 | 账号与短信、房间、匹配、断线恢复、桌面壳打包、回放重放器；**第 24 周联机内测**（仍在 M2 区间内） | 支付渠道、移动壳（押后）、社交 |
+| M3 | 第 27–36 周 | 回放式观战、战绩与段位、告警、合规适配层占位、**运营后台与玩法配置发布链**、族内掼蛋变体接入 | 变现渠道、赛事 |
+| M4 | 第 37–44 周 | 平台化收尾：族内掼蛋变体零代码上线演练、发布链压测、文档与交接 | 斗地主/麻将（v2）、移动壳（押后） |
 
-五段周次首尾相接、不重叠：6 + 10 + 8 + 8 + 6 = 38 周是日历跨度上限；34 周是"每段都能压到下限并复用 M0 骨架"的乐观值。所以口径是 34～38 周，不是"38 减重叠"。任一阶段延期，要么从后续阶段同等工作量里扣，要么整体顺延并重报总工期，不允许只改一段而不重算总和。
+五段周次首尾相接、不重叠：6 + 10 + 10 + 10 + 8 = 44 周是日历跨度上限；40 周是"每段都能压到下限并复用 M0 骨架"的乐观值。所以口径是 40～44 周，不是"44 减重叠"。任一阶段延期，要么从后续阶段同等工作量里扣，要么整体顺延并重报总工期，不允许只改一段而不重算总和。
+
+> 工期备注：因保留 172 条全量测试与八层测试全量回归，工期由 34～38 周调整为 40～44 周（用户 2026-11-23 拍板）。M0（第 1–6 周）与 M1（第 7–16 周）周次一字不动；增量 6 周落在 M2（第 17–26 周，+2）、M3（第 27–36 周，+2）、M4（第 37–44 周，+2），M4 收尾必须落在第 44 周。
 
 **gate 口径**：第 16 周的"完整打完一场"指 建桌 → 发牌 → 出牌 → 结算 → 再来一局 全流程跑通（验收粒度同 S2：一局连续跑通，"再来一局"为同场延续）。断线/崩溃的验收按模式拆成两条，各自挂到适用的阶段：
 
@@ -175,21 +177,22 @@
 **合规 gate（U12）**：公网对外开放（不再限于内测白名单）之前，必须拿到"无版号免费内测是否需要实名与防沉迷"的书面答复；答复为"要接"则 `D_compliance`（实名 + 防沉迷接入完成）成为 M3 的硬 gate，未完成不得开放公网注册。M3 的"合规适配层占位"就是为这条留的位置。
 
 **范围冻结规则**：内测开始后新增需求一律进 backlog，不插入当前里程碑；确需插入时，必须同步删掉同等工作量的既有项，并在裁决台账登记。
-  依据：U9 已把基线定为 34～38 周 × 2 人，没有余量吸收插入式需求（`A1`、`A15`）。
+  依据：U9 已把基线定为 40～44 周 × 2 人，没有余量吸收插入式需求（`A1`、`A15`）。
 
 **M0 落地清单（第 1–6 周，照此开工）**：
 
 1. **Workspace 与 crate 骨架**：Cargo workspace 成员为 `crates/engine`、`crates/protocol`、`crates/runtime-spike`；proto 文件固定路径 `crates/protocol/proto/gf/v1.proto`，package `gf.protocol.v1`，服务端与 wasm 客户端共用同一份生成代码（§5.9）。
-2. **引擎最小对外接口**（`crates/engine` 公共 trait，双产物同一份）：`legal_actions(&State) -> Vec<Action>`、`apply(State, Action) -> Result<State, EngineError>`、`view(&State, Seat) -> View`、`validate(&RuleSetBody) -> Validation`；接口签名在 M0 锁定，M1 只补原语实现，不改契约形状。
+2. **引擎最小对外接口**（`crates/engine` 公共 trait，双产物同一份）：`legal_actions(&State) -> Vec<Action>`、`apply(State, Action) -> Result<State, EngineError>`、`view(&State, Seat) -> View`、`validate(&RuleSetBody, levels: &[Level]) -> Validation`；接口签名在 M0 锁定，M1 只补原语实现，不改契约形状。`Validation = { ranLevels: HashSet<Level>, findings: Vec<Finding> }`；`EngineError` 变体清单见 §5.4。
 3. **两个原型落点**：空转压测原型落在 `crates/engine` 的 bench；断线恢复原型落在 `crates/runtime-spike`。**转正判据**：原型中进入 §10.1 契约层双产物比对的代码与测试必须保留并迁入 `crates/table-runtime`；压测脚本与一次性夹具可丢弃，不迁入。
-4. **M0 gate 表**：
+4. **最小夹具 `m0-minimal`**：RuleSet 固定路径 `crates/engine/tests/fixtures/m0-minimal/ruleset.yaml`，版本号 `m0-minimal@1.0.0`；只含发牌、单张出牌、score-only 结算三件事，是 M0 端到端原型、双产物基准与 §10.1 契约比对的共同输入。口径说明：本夹具**走真实 DSL 结算路径**——`settle: { algorithm: score-only }`（即 `Settle::ScoreOnly`，§5.1），只记录名次、不升级、不挂等级表；该变体是 v1 在役变体，不依赖任何等级表。
+5. **M0 gate 表**：
 
 | 验收项 | 判据 | 产出物路径 | 对应假设 | 未达标处置 |
 | --- | --- | --- | --- | --- |
-| Rust 服务端 ↔ wasm 端到端原型 | 同一 RuleSet 两端各跑通一次发牌→出牌→结算，`stateHash` 逐字节一致 | `crates/engine`、`crates/protocol` | A1、A11 | 回退"引擎 Rust + 服务端 Node 跑 wasm"或整体降级 TS 引擎 |
-| 斗地主/麻将纸面推演 | 只用 RuleSet（不写代码）写出两款最小对局，结构缺口逐条列出 | M0 末纸面推演记录 | A14 | 表达不了的结构列为新原语候选，不进 M0 编码 |
+| Rust 服务端 ↔ wasm 端到端原型 | 同一 `m0-minimal` 夹具 RuleSet 两端各跑通一次发牌→出牌→结算，`stateHash` 逐字节一致 | `crates/engine`、`crates/protocol`、`crates/engine/tests/fixtures/m0-minimal/` | A1、A11 | 回退"引擎 Rust + 服务端 Node 跑 wasm"或整体降级 TS 引擎 |
+| 掼蛋变体/麻将纸面推演 | 只用 RuleSet（不写代码）写出两款最小对局，结构缺口逐条列出 | M0 末纸面推演记录 | A14 | 表达不了的结构列为新原语候选，不进 M0 编码 |
 | 空转压测 + 断线恢复两原型 | 两个原型实测跑通；断线重放后 `stateHash` 与断线前一致 | `crates/engine` bench、`crates/runtime-spike` | A15 | 基线顺延 3～4 周或按 R2 缩范围 |
-| 解释执行基准 | 双产物各跑 10 万次 `legal_actions`/`apply` 并记录 P99；目标单次动作解释 <1ms、单核 ≥1500 房间 | §10.5 基准表 | A16 | 引入预编译缓存（+3～4 周），重估工期 |
+| 解释执行基准 | 双产物各在 `m0-minimal` 夹具上跑 10 万次 `legal_actions`/`apply` 并记录 P99；目标单次动作解释 <1ms、单核 ≥1500 房间 | §10.5 基准表 | A16 | 引入预编译缓存（+3～4 周），重估工期 |
 | 非法结构不可构造 | 反序列化层验证非法 RuleSet 无法构造并通过 L1；出交互草图 | `crates/engine` 校验器、草图 | A17 | 源码升为主入口则重新评估编辑器形态 |
 
 未达标项按上表"未达标处置"回退，并在 §11.1 对应风险行登记；M0 末（第 6 周）逐项勾选，任一硬 gate 未过不得进入 M1。
@@ -229,7 +232,7 @@
    依据：S1/S10 要求双端逐局同哈希，上面每一条都会在两端产出不同结果。
 3. **信息隔离**：引擎内部必须持有完整牌局状态（发牌、合法性判定、结算都要它），但对**外**只开 `view(seat)`；凡是跨进程、跨端、跨房间边界传输的状态，一律是裁剪后的视图，服务端不下发其他座位的手牌。（本条替代原稿"不得构造全量手牌"的表述，那句话与引擎必须能判定直接矛盾）
 4. **配置可热更**：规则配置发布不得重启房间进程，运行中的房间继续用旧版本，新房间用新版本。
-5. **人力**：2 人，34～38 周（U9）；后台与运维也由这 2 人承担，不额外配人。后台的**使用者是产品负责人本人**（C7 的"运营者"在 2 人团队里就是他自己），因此后台不需要多角色协作与审批链，但需要单人也能防误操作（见 §8.1）。
+5. **人力**：2 人，40～44 周（U9）；后台与运维也由这 2 人承担，不额外配人。后台的**使用者是产品负责人本人**（C7 的"运营者"在 2 人团队里就是他自己），因此后台不需要多角色协作与审批链，但需要单人也能防误操作（见 §8.1）。
 6. **平台限制**：iOS 无 JIT，移动端若要做只能走 wasm；v1 不做移动壳（U5），桌面壳与 Web 均跑 wasm，因此 v1 不存在 JIT 问题。Android WebView 版本碎片真机回归推迟到移动壳解押时再做。
 
 ### 3.4 外部依赖与前置条件
@@ -284,7 +287,7 @@
 | 语言栈负担 | ○（Rust 一种） | △（+Go 运行时） | △（+Node 运行时） | ×（+Lua） | ○（但要接 SDK） |
 | 运维复杂度 | ○（1 进程 + PG/Redis） | △（Nakama + CockroachDB/PG + Rust 房间服） | △（Node + Rust 子进程） | △（C 服务 + Lua 脚本热更） | ○（托管） |
 | 费用 | 仅服务器 | 软件免费，托管按资源计费 | 软件免费，云服务 $15/月起 | 仅服务器 | 按 CCU 计费，规模化后显著 |
-| 34～38 周内可落地 | ○（平台自写 4～6 周，已在基线内） | △（集成 + 学 Go，且规则后台仍要写，净增 3～5 周） | △（wasm 调试链变长，净增 2～3 周） | × | × |
+| 40～44 周内可落地 | ○（平台自写 4～6 周，已在基线内） | △（集成 + 学 Go，且规则后台仍要写，净增 3～5 周） | △（wasm 调试链变长，净增 2～3 周） | × | × |
 | 多玩法扩展 | ○（注册表 + 配置版本） | △（玩法要挂 Nakama 模块） | △ | × | × |
 
 ### 4.4 结论：主方案 P1（自建 Rust 平台）
@@ -342,7 +345,7 @@
 
 | 决策 | 理由 | 代价 | 依据 / 假设 |
 | --- | --- | --- | --- |
-| 平台层与房间层都自建，不引入通用框架 | 引擎必须同进程；规则后台通用框架不提供；2 人不宜多担一种运行时 | 平台层自写 4～6 周 + 房间层 3～4 周（合计已计入 34～38 周基线）；无社区示例 | S10、C3、C4、`A15` |
+| 平台层与房间层都自建，不引入通用框架 | 引擎必须同进程；规则后台通用框架不提供；2 人不宜多担一种运行时 | 平台层自写 4～6 周 + 房间层 3～4 周（合计已计入 40～44 周基线）；无社区示例 | S10、C3、C4、`A15` |
 | 传输层自研 protobuf over WS | 消息量小，且必须按座位裁剪，通用全量同步不安全 | 需自写重连与心跳语义 | §3 约束 3、§4.1 |
 | 玩法以 RuleSet 声明、由解释器执行（不再每玩法一个 crate） | 运营要零代码上新玩法，规则必须是数据而不是代码 | 解释执行有性能与内存开销；规则语言对外发布后语法不能轻易改 | `C7`、`C8`、`A14`、`A16` |
 | 解释器在 wasm 与 native 用同一份 Rust 实现，两端加载同一版本 RuleSet | 保证本地 bot 与线上判定同源，`stateHash` 双端可比 | wasm 包体增大；解释器要避免平台相关行为 | S10、`A14` |
@@ -374,23 +377,46 @@
 | `rulesetId` | string | ✓ | ✓ | 全局唯一，kebab-case，发布后不可改 |
 | `version` | u32 | —（草稿态 `RuleSetBody` 不含此字段） | ✓（发布时由服务端注入） | 发布后不可变；编辑期用 `draftId`（见 §5.6/§5.8），版本号只在发布时分配；草稿/校验留档一律以 `draft_id` 关联，不用 `version` |
 | `interpreter` | semver range | ✓ | ✓ | 声明所需解释器下限，例如 `>=1.2,<2`；不满足则拒绝加载；发布时把区间解析为具体版本锁定进 `ruleset.pinned_interpreter_version`（§5.8） |
-| `seats` | `{count, teams}` | ✓ | ✓ | `count` 为座位数，取值 2–8；`teams: [[SeatId]]`，每个座位恰好属于一个队，不重叠、不漏座；`teams` 为空表示无阵营（斗地主），此时 `levels`/`aFailStreak` 两数组为空、`level.*` 原语不可用。匹配、补偿、脱敏别名一律按 `count` 参数化，不得写死 4 |
+| `seats` | `{count, teams}` | ✓ | ✓ | `count` 为座位数，取值 2–8；`teams: [[SeatId]]`，每个座位恰好属于一个队，不重叠、不漏座；覆盖不全或重叠在 L2 报 `RS_TEAM_COVERAGE_INVALID`（§5.7）。无阵营玩法（队伍数为空）属 v2 预留，v1 不开放。匹配、补偿、脱敏别名一律按 `count` 参数化，不得写死 4 |
 | `deck` | `{copies, ranks, suits, jokers, exclude[]}` | ✓ | ✓ | `jokers` **必填**，固定 `2`（= 1 大王 + 1 小王）；`ranks: [RankKey]`（`naturalOrder` 子集，字面值 `2..A`）；`suits: [Suit]`（闭集 `S/H/D/C`）；`exclude: [RankKey]`，按点数排除、不含王，缺省空数组（不排除）。总张数 = `(ranks − exclude) × suits × copies + jokers × copies`；掼蛋基线 = 13×4×2 + 2×2 = **108**，与 `zones.hand` 容量 27×4 对齐；其它玩法的总张数必须 ≤ 各 `hand` 区容量之和（`capacity` 是上限，不是当前牌数） |
 | `zones` | `[{id, scope, capacity}]` | ✓ | ✓ | `capacity` 必填且是**上限**（`-1` 表无上限），不是当前牌数。`scope` 只有 `private`（座位私有）与 `shared`（公共）；private 区按 `(seat, zoneId)` 实例化。静态校验、运行时断言与错误码见 §5.4 L2、§5.7 |
-| `levelTable` | `{id, initial, ranks[], upgrade[]}` | ○（`Settle::LevelUp` 引用时 L2 必填） | ○ | 级牌表本体。`levels` 是房间状态字段（**每队一个**，见 §5.13），不是常量；与 `levels` **同按队伍序号索引**的另一个房间状态字段是 `aFailStreak`（`[u8; teams]`，每队一个 u8，取值 **0–3**，记录该队"在 A 上连续未过 A"的局数，某局结算时若该值达到 3，则本队 `levels` 退回 `levelTable.initial`（起点 2）并把该值清零；过 A 即该场结束、计数无意义，见 §5.13）；`@level` 按当前行动方的队求值；`upgrade[]` 给出名次组合对应的升级档 |
+| `levelTable` | `{id, initial, ranks[], upgrade[]}` | ○（`Settle::LevelUp` 引用时 L2 必填） | ○ | 级牌表本体，全 RuleSet 内唯一引用（L2 校验：`level.upgrade`/`settle.levelTableRef` 只能指向本表，不允许出现第二张级牌表，§5.4 L2）。`levels` 是房间状态字段（**每队一个**，见 §5.13），不是常量；与 `levels` **同按队伍序号索引**的另一个房间状态字段是 `aFailStreak`（`[u8; teams]`，每队一个 u8，取值 **0–3**，记录该队"在 A 上连续未过 A"的局数，某局结算时若该值达到 3，则本队 `levels` 退回 `levelTable.initial`（起点 2）并把该值清零；过 A 即该场结束、计数无意义，见 §5.13）；`@level` 按当前行动方的队求值；`upgrade[]` 元素为 `{teamRanks: [u8;2], step: u8}`，`teamRanks` 与 §5.2 `level.pass.combos` 共用同一名次编码（双下 `[1,2]`，其余 `[1,3]`/`[1,4]`），`step` 取值 1–3；同一 `teamRanks` 不得重复（L1 拒绝） |
+| `level` | `{pass: {combos[], streakLimit, resetOnFail}, current: {scope}}` | ○（取默认值即为掼蛋基线） | ○ | 过 A 与级牌取值的**可配置入口**，S8 的"过 A 条件"由此切换：`pass.combos: [[u8;2]]`（非空，元素为两名次组合、取值 1–4 且两值不同，默认 `[[1,2],[1,3]]`）、`pass.streakLimit: u8`（1–3，默认 3，即 `aFailStreak` 阈值；上界 3 与 `aFailStreak` 的冻结值域 0–3 同源，要突破 3 须另走 EGM 裁决）、`pass.resetOnFail: bool`（默认 `true`，达阈值退回 `levelTable.initial` 并清零）；`current.scope: by-team\|global`（默认 `by-team`）。三键语义与 §5.2 `level.pass` 同名参数一致，顶层声明即覆盖原语默认值；`settle.algorithm=score-only` 的 RuleSet 可整段省略。 |
 | `naturalOrder` | `[rankKey]` | ✓ | ✓ | 自然点数有序表（不含级牌位），允许 `little-joker`/`big-joker`；`levelInsert` 给出级牌插入位，引擎载入时合成最终牌力序，合成算法见 §5.13 级牌行 |
 | `levelInsert` | 枚举 | ✓ | ✓ | `@level` 的插入位：`above-A`（插在 A 之后、小王之前，掼蛋基线）或 `below-2`；最终序由 `naturalOrder` + `levelInsert` 在载入期唯一合成 |
 | `wildcard` | `{source, substitute[], inStraightFlush}` | ○ | ○ | 掼蛋的逢人配；`source` 为结构化 `{suit: Suit, rank: RankKey 或占位符 "@level"}`：`suit` 取 `S/H/D/C` 闭集，`rank` 取具体 RankKey 或受控占位符 `@level`，L1 按枚举与占位符校验、不接受自由字符串；§5.10 冻结行里的旧写法 `heart-@level` 即 `{suit: H, rank: "@level"}`，两者等价、以后者为准；`substitute` 用枚举列出可替代范围；`inStraightFlush` 决定能否参与同花顺（C2 争议项之一） |
 | `patterns` | `[{id, primitiveId, params}]` | ✓ | ✓ | 每个牌型必须自带 `id`，供 `compare.ladder` 与 `actions.legalFrom` 引用；引用不存在即 `RS_REF_MISSING`。**`params` 不是自由对象**：它是按 `primitiveId` 分型的固定参数结构体，字段名/类型/取值/默认值见 §5.2 参数表；未知键、缺失必填键一律在 L1 拒绝（`RS_SCHEMA_INVALID`） |
-| `compare` | `{ladder[], bombOrder, flushRank}` | ✓ | ✓ | 跨牌型压制顺序用枚举列表（元素必须是 `patterns[].id`）；`bombOrder` 决定炸弹之间谁大：`count-then-rank` 或 `rank-then-count`；**`flushRank` 是"同花顺与炸弹的序"这个争议项的唯一开关**：取 `below-bomb-5`（插在 5 张炸之前）、`above-bomb-5`（插在 5 张炸之后、6 张炸之前）、`above-bomb-6`（插在 6 张炸之后、7 张炸之前）或 `above-bomb-8`（高于 8 张炸），四值各自产生不同 ladder；**`guandan-classic` v3 取 `above-bomb-5`**（即 4 张炸 < 5 张炸 < 同花顺 < 6 张 < 7 张 < 8 张 < 四王炸），其余三值是留给其他 RuleSet 的可选值；不同取值分别得到不同 `stateHash` 作为生效判据（§10.3），**不需要改 ladder 本身** |
-| `tribute` | `{enabled, trigger, pairs[], returnPolicy, resist}` | ○（掼蛋必填） | ○ | `enabled=false` 时整段 `tribute` 不运行。`trigger` 为闭集枚举，当前唯一取值 `last-round-rank`（按上局名次选贡方，参数结构见 §5.2 `tribute.determine`）；`pairs` 是"谁向谁"的**一对一映射数组**（`{payer, receiver, when}`），不是两个独立列表；`payer`/`receiver` 为闭集枚举 `first`/`second`/`third`/`fourth`，依次对应 §5.13 第 1/2/3/4 名，无 `last` 别名；`when` 取值 `single-loss`（单贡：末游→头游）或 `double-loss`（双下：对位进贡，末游→头游、三游→二游），`trigger` 只定进贡依据来源，分支由 `when` 选定；`returnPolicy` 取 `largest-under-ten` 或 `any-when-none`；`resist` 为 `two-big-jokers` 或 `none`，其中 `two-big-jokers` 按贡方两家合计持两张大王判定，不要求在同一人手里，单贡时即贡方自己持两张；抗贡成立则进贡与还贡均不发生（判定口径见 §5.13 抗贡行） |
+| `compare` | `{ladder[], bombOrder, flushRank}` | ✓ | ✓ | `ladder` 只列**不参与 `flushRank` 插入**的牌型（元素必须是 `patterns[].id`）；`straight-flush-*` 不得出现在 `ladder` 中（L1 报 `RS_SCHEMA_INVALID`），其位次唯一由 `flushRank` 在载入期合成，做法与级牌 `naturalOrder + levelInsert` 同一套。`bombOrder` 决定炸弹之间谁大：`count-then-rank` 或 `rank-then-count`；**`flushRank` 是"同花顺与炸弹的序"这个争议项的唯一开关**：取 `below-bomb-5`（插在 5 张炸之前）、`above-bomb-5`（插在 5 张炸之后、6 张炸之前）、`above-bomb-6`（插在 6 张炸之后、7 张炸之前）或 `above-bomb-8`（高于 8 张炸），四值各自在载入期合成不同阶梯；**`guandan-classic` v3 取 `above-bomb-5`**（即 4 张炸 < 5 张炸 < 同花顺 < 6 张 < 7 张 < 8 张 < 四王炸），其余三值是留给其他 RuleSet 的可选值；`flushRank` 插入位与已有牌型冲突时 L1 报 `RS_REF_MISSING`；不同取值分别得到不同 `stateHash` 作为生效判据（§10.3），**不需要改 ladder 本身** |
+| `tribute` | `{enabled, trigger, pairs[], resist, pay, return, firstRound}` | ○（掼蛋必填） | ○ | `enabled=false` 时整段 `tribute` 不运行。`trigger` 为闭集枚举，当前唯一取值 `last-round-rank`（按上局名次选贡方，参数结构见 §5.2 `tribute.determine`）；`pairs` 是"谁向谁"的**一对一映射数组**（`{payer, receiver, when}`），不是两个独立列表；`payer`/`receiver` 为闭集枚举 `first`/`second`/`third`/`fourth`，依次对应 §5.13 第 1/2/3/4 名，无 `last` 别名；`when` 取值 `single-loss`（单贡：末游→头游）或 `double-loss`（双下：对位进贡，末游→头游、三游→二游），`trigger` 只定进贡依据来源，分支由 `when` 选定；还贡参数统一收归 `tribute.return` 三键 `ceiling`/`count`/`fallback`（§5.2）并由本段承载，`return` 在 `enabled=true` 时必填、缺任一键即 L1 `RS_SCHEMA_INVALID`，不再设 `returnPolicy` 重复键；`pay` 形如 `{count: u8（1–2，默认 1）, selection: max-rank-except-wildcard（当前唯一取值，默认该值）}`、`firstRound` 取 `skip`/`play`（默认 `skip`，场次首局是否跳过 `tribute`，§5.13）同样由本段承载；`resist` 为 `two-big-jokers` 或 `none`，其中 `two-big-jokers` 按贡方两家合计持两张大王判定，不要求在同一人手里，单贡时即贡方自己持两张；抗贡成立则进贡与还贡均不发生（判定口径见 §5.13 抗贡行） |
 | `lifecycle` | `[phase]` | ✓ | ✓ | 固定四段 `[deal, tribute, play, settle]`；**有动作的 phase 必须至少一条 `legalFrom` 指向它，零动作 phase（`deal`/`tribute`/`settle`）豁免**（`deal` 由 `deal.shuffle` 自动执行、`tribute` 由 `tribute.*` 原语自动执行、`settle` 由结算纯函数自动执行，玩家均不提交动作）。`turn` 是 `play` 内的轮次子阶段，**不是 phase** |
-| `actions` | `[{kind, primitive, legalFrom, params}]` | ✓ | ✓ | `kind` 是动作类型（`play`/`pass`/`claim`/`declare`）；`tribute`/`return` 不由玩家提交，属引擎自动执行（§5.13/§5.9）。`primitive` 指向实际执行的原语，`legalFrom` 只允许三种取值：`patterns`（受牌型约束）、某个 zone 的 id、某个 phase 名（如 `play`）；`turn` 不是合法取值。`params` 与 `patterns[].params` 同一套分型规则（§5.2）：无参原语必须写空对象 `{}`，有默认值的键可省略，必填键不得省。**`kind` 不能当幂等键**（一局内会重复出现），幂等键见 §6.4 的 `requestId` |
-| `settle` | `{algorithm, levelTableRef?}` | ✓ | ✓ | 拆两个 ADT 变体：`Settle::LevelUp{levelTableRef}`（`algorithm: level-up`，`levelTableRef` 必填且引用 `levelTable.id`）与 `Settle::ScoreOnly{}`（`algorithm: score-only`，无等级表引用，用于斗地主等无阵营玩法）；不再隐式引用外部表名 |
+| `actions` | `[{kind, primitive, legalFrom, params}]` | ✓ | ✓ | `kind` 是 v1 闭集枚举，仅 `play`/`pass`；`claim`/`declare` 及其对应原语 `action.claim`/`action.declare` 移出 v1、标 v2 预留，RuleSet 中出现即 L1 拒绝（`RS_SCHEMA_INVALID`）。`tribute`/`return` 不由玩家提交，属引擎自动执行（§5.13/§5.9）。`primitive` 指向实际执行的原语，`legalFrom` 只允许三种取值：`patterns`（受牌型约束）、某个 zone 的 id、某个 phase 名（如 `play`）；`turn` 不是合法取值。`params` 与 `patterns[].params` 同一套分型规则（§5.2）：无参原语必须写空对象 `{}`，有默认值的键可省略，必填键不得省。**`kind` 不能当幂等键**（一局内会重复出现），幂等键见 §6.4 的 `requestId` |
+| `settle` | `{algorithm, levelTableRef?}` | ✓ | ✓ | v1 含两个 ADT 变体并列：`Settle::LevelUp{levelTableRef}`（`algorithm: level-up`，`levelTableRef` 必填且引用 `levelTable.id`）与 `Settle::ScoreOnly{}`（`algorithm: score-only`，无等级表引用，只记名次、不升级）；两种变体都不隐式引用外部表名。`score-only` 在 v1 有两个用途：`m0-minimal` 夹具的最小结算路径（§2.4）与 v2 的无阵营玩法；**v1 不开放无阵营玩法本身**（`seats.teams` 仍须覆盖全座，见本节 `seats` 行） |
 | `matchCap` | `{rounds: u16}` | ○ | ○ | 安全局数上限（场次终止判据之一，§5.13）；`rounds` 取值 1–99，缺省 12；越界值在 L1 拒绝；仅防死循环，不是胜负判据；随 `ruleset.body` 持久化 |
-| `view` | `{fields[], schemaVersion}` | ✓ | ✓ | `fields` 只允许三种写法：`seat.levels`、某个 zone 的 id（私有区按 zoneId 引用，不写 `seat.hand`）、`lastPlay`；其它写法一律 `RS_REF_MISSING`。`schemaVersion: u16` 标识这份字段白名单的版本：**字段集合或顺序变化必须 +1，只增不改序**；它是房间快照 `viewSchemaVersion` 的来源，房间创建时锁定（§5.9/§5.12/§9.2）。传输出入一律按白名单（`project`）生成，避免"漏写一条就漏牌"
+| `view` | `{fields[], schemaVersion}` | ✓ | ✓ | `fields` 只允许三种写法：`seat.levels`、某个 zone 的 id（私有区按 zoneId 引用，不写 `seat.hand`）、`lastPlay`；其它写法一律 `RS_REF_MISSING`。`schemaVersion: u16` 标识这份字段白名单的版本：**字段集合或顺序变化必须 +1，只增不改序**；版本号由 RuleSet 作者分配，后台不统一发号（§5.16/§9.2）。它是房间快照 `viewSchemaVersion` 的来源，房间创建时锁定（§5.9/§5.12/§9.2）；客户端白名单缓存键为 `(rulesetId, viewSchemaVersion)` 二元组（§9.2）。传输出入一律按白名单（`project`）生成，避免"漏写一条就漏牌"
 | `timing` | `{turnTimeSec, graceSec, offlineAllSec}` | ○ | ○ | 计时器可调参数：`turnTimeSec` 5–120 秒（默认 30）、`graceSec` 30–180 秒（默认 90）、`offlineAllSec` 60–600 秒（默认 300）；越界值在 L1 拒绝；缺省取括号内默认值 |
 | `ai` | `{features[], hint}` | ○ | ○ | 给 AI 的特征与提示开关，不影响判定。`features` 取值集合见 §5.11 |
+| `flow` | `{deal, turn, score, rng, assert}` | ○ | ○ | 运行期流程参数归集（发牌、轮转、计分、RNG、断言五类原语的顶层默认值）；**整段缺省则五个子对象全取默认值**，各子对象逐键类型/取值/默认值见下表 |
+
+**`flow` 子对象逐键定义**：
+
+| 子对象 | 键 | 类型 | 取值 | 默认值 |
+| --- | --- | --- | --- | --- |
+| `flow.deal` | `perSeat` | u16 | 1–108 | `deck` 总张数 ÷ `seats.count` 的整除值；不整除时该默认值无定义，必须显式声明 `perSeat`，否则 L1 `RS_SCHEMA_INVALID`（v1 不定义余量发牌） |
+| `flow.deal` | `zone` | `ZoneId` | `zones` 里的 private 区 id | `hand`（缺省时取唯一 private 区；存在多个 private 区且未显式声明则 L1 `RS_SCHEMA_INVALID`） |
+| `flow.deal` | `reveal` | bool | `true` / `false` | `false`（`false` = 发牌结果只对各自座位可见，私有区按 `(seat, zoneId)` 实例化；`true` = 整手发牌结果对全桌公开，仅调试与 M0 骨架使用） |
+| `flow.turn` | `direction` | 枚举 | `clockwise` / `counterclockwise` | `clockwise` |
+| `flow.turn` | `skipFinished` | bool | — | `true` |
+| `flow.turn` | `partnerLead` | bool | — | `true`（接风开关；顶层唯一承载位就是本键，§5.10 接风行） |
+| `flow.turn` | `afterAllPass` | 枚举 | `last-player` / `next-player` | `last-player` |
+| `flow.score` | `dimension` | 枚举 | `team` / `player` | `team` |
+| `flow.rng` | `stream` | u32 | 0–3 | `0` |
+| `flow.assert` | `minPlayers` | u8? | 1–8 | 缺省（不做玩家数断言） |
+| `flow.assert` | `cardCount` | u32? | ≥0 | 缺省（不做牌数断言） |
+| `flow.assert` | `zoneCapacity` | `[ZoneId]?` | 区号闭集 | 缺省空表 |
+
+键名映射（顶层 `flow` 键与原语字段同义不同名，L1 按本映射对齐，不接受两套写法混用）：`flow.deal.zone`↔`deal.shuffle.zone`、`flow.turn.skipFinished`↔`turn.skip-finished.skip`、`flow.turn.afterAllPass`↔`turn.after-all-pass.to`、`flow.assert.cardCount`↔`assert.card-count.expected`、`flow.assert.zoneCapacity`↔`assert.zone-capacity.zone`（顶层是区号集合，逐项对各区断言）、`flow.rng.stream`↔`rng.pick.stream`。
+
+`flow.score` 取舍说明：v1 不建独立计分表本体；`score.table` 原语与其 `tableRef` 键移出 v1 清单、标 v2 预留（§5.2）。v1 计分只按 `flow.score.dimension` 归集名次与队级升级，不挂外部分值表；未来需要按外部分值表查表时，再在 v2 恢复 `score.table`。
 
 必填性图例：✓ 必填；○ 可选；— 该态不存在。条件必填写作 `○（条件式）`，条件式必须能被 L2 判定（如 `levelTable` 行：`Settle::LevelUp` 引用它时由 L2 判为必填），不得出现 L2 判不了的附注。
 
@@ -400,20 +426,20 @@
 rulesetId: guandan-classic
 interpreter: ">=1.2,<2"
 seats: { count: 4, teams: [[0,2],[1,3]] }
-deck: { copies: 2, ranks: [2,3,4,5,6,7,8,9,10,J,Q,K,A], suits: [S,H,D,C], jokers: 2, exclude: [] }
+deck: { copies: 2, ranks: ["2","3","4","5","6","7","8","9","10","J","Q","K","A"], suits: [S,H,D,C], jokers: 2, exclude: [] }
 zones:
   - { id: hand,    scope: private, capacity: 27 }   # 上限 27，按 (seat, hand) 实例化
   - { id: discard, scope: shared,  capacity: -1 }   # 无上限
 levelTable:
   id: guandan-level
-  initial: 2
-  ranks: [2,3,4,5,6,7,8,9,10,J,Q,K,A]
-  upgrade: [ { combo: { winnerRank: 1, loserRank: 2 }, step: 3 },
-             { combo: { winnerRank: 1, loserRank: 3 }, step: 2 },
-             { combo: { winnerRank: 1, loserRank: 4 }, step: 1 } ]
-naturalOrder: [2,3,4,5,6,7,8,9,10,J,Q,K,A,little-joker,big-joker]
+  initial: "2"
+  ranks: ["2","3","4","5","6","7","8","9","10","J","Q","K","A"]
+  upgrade: [ { teamRanks: [1,2], step: 3 },
+             { teamRanks: [1,3], step: 2 },
+             { teamRanks: [1,4], step: 1 } ]
+naturalOrder: ["2","3","4","5","6","7","8","9","10","J","Q","K","A",little-joker,big-joker]
 levelInsert: above-A
-wildcard: { source: { suit: H, rank: "@level" }, substitute: [2,3,4,5,6,7,8,9,10,J,Q,K,A], inStraightFlush: false }
+wildcard: { source: { suit: H, rank: "@level" }, substitute: ["2","3","4","5","6","7","8","9","10","J","Q","K","A"], inStraightFlush: false }
 patterns:
   - { id: single,           primitiveId: pattern.same-rank,           params: { count: 1 } }
   - { id: pair,             primitiveId: pattern.same-rank,           params: { count: 2 } }
@@ -439,18 +465,25 @@ tribute:
     - { payer: fourth,       receiver: first,  when: single-loss }
     - { payer: fourth,       receiver: first,  when: double-loss }
     - { payer: third,        receiver: second, when: double-loss }
-  returnPolicy: largest-under-ten
+  return: { ceiling: under-ten, count: 1, fallback: smallest }
   resist: two-big-jokers
 lifecycle: [deal, tribute, play, settle]
 actions:
   - { kind: play,    primitive: action.require-legal, legalFrom: patterns, params: { force: true, consume: hand } }
   - { kind: pass,    primitive: action.pass,         legalFrom: play,     params: {} }
+flow:
+  deal:   { zone: hand, perSeat: 27, reveal: false }
+  turn:   { direction: clockwise, skipFinished: true, partnerLead: true, afterAllPass: last-player }
+  score:  { dimension: team }
+  rng:    { stream: 0 }
+  assert: { minPlayers: 4, cardCount: 108 }
 matchCap: { rounds: 12 }
 settle: { algorithm: level-up, levelTableRef: guandan-level }
 view: { schemaVersion: 1, fields: [hand, seat.levels, discard, lastPlay] }
 ```
 
 > 本示例是**草稿态** `RuleSetBody`：不含 `version`，发布时由服务端注入版本号并复制进 `ruleset`（§5.6/§5.8）。
+> 示例中的点数一律按 `RankKey` 字符串字面值书写（`"2"`…`"10"`、`"J"`、`"Q"`、`"K"`、`"A"`，王为 `little-joker`/`big-joker`），与 L1 类型校验口径一致，不接受数字类型。
 
 这段 YAML 是**校验基准**：L1–L4 必须能把它跑通；示例过不了自己定的校验，即视为设计缺陷而不是示例笔误。
 
@@ -458,63 +491,62 @@ view: { schemaVersion: 1, fields: [hand, seat.levels, discard, lastPlay] }
 
 | 类别 | 原语 | 关键参数 | 允许改状态 |
 | --- | --- | --- | --- |
-| 发牌 | `deal.shuffle` / `deal.draw` / `deal.reveal` | 数量、目标区、是否公开 | 是 |
-| 牌型 | `pattern.same-rank` / `pattern.straight` / `pattern.consecutive-pairs` / `pattern.consecutive-triples` / `pattern.with-attachment` / `pattern.all-same-suit` / **`pattern.bomb`** / **`pattern.straight-flush`** / **`pattern.joker-bomb`** | 张数（`bomb` 支持 4～8）、连续长度、是否允许通配 | 否 |
-| 比较 | `compare.by-rank` / `compare.by-count` / `compare.by-ladder` / **`compare.bomb-order`** | 比较维度（枚举）、压制表 id、炸弹序策略 | 否 |
-| 行动 | `action.require-legal` / `action.consume-cards` / `action.pass` / **`action.claim`** / **`action.declare`** | 是否强制、消耗区；`claim`/`declare` 对应同名 `kind` | 是 |
+| 发牌 | v1：`deal.shuffle`（落点区读顶层 `flow.deal.zone`）；**v1 未启用**：`deal.draw` / `deal.reveal` | 数量、目标区、是否公开 | 是 |
+| 牌型 | v1：`pattern.same-rank` / `pattern.straight` / `pattern.consecutive-pairs` / `pattern.consecutive-triples` / **`pattern.bomb`** / **`pattern.straight-flush`** / **`pattern.joker-bomb`**；**v2 预留**：`pattern.with-attachment` / `pattern.all-same-suit` | 张数（`bomb` 支持 4～8）、连续长度、是否允许通配 | 否 |
+| 比较 | `compare.by-rank` / `compare.by-count` / `compare.by-ladder` / **`compare.bomb-order`** | 比较维度（枚举）、炸弹序策略 | 否 |
+| 行动 | v1：`action.require-legal` / `action.consume-cards` / `action.pass`；**v2 预留**：`action.claim` / `action.declare` | 是否强制、消耗区 | 是 |
 | 轮转 | `turn.next` / `turn.after-all-pass` / `turn.skip-finished` / `turn.return-to-last` | 方向、全过后回谁、是否跳过已出完的人 | 是 |
-| **进贡** | **`tribute.determine`** / **`tribute.pay`** / **`tribute.return`** / **`tribute.resist`** | 谁是贡方/受方（`pairs[]` 的 `when` 分支）；贡牌与还贡牌**由引擎按策略自动选定**（`pay`：除红桃级牌外点数最大、同点数取牌 id 最小；`return`：按 `returnPolicy` 选定），贡方/受方没有选牌权；选定结果经 `TributeEvent` 回传；`resist` 命中后的分支 | 是 |
-| **级牌** | **`level.current`** / **`level.upgrade`** / **`level.pass`** | 当前级牌来源、升级档位表引用、过 A 判定 | 是 |
-| 计分 | `score.table` / `score.accumulate` / `score.level-up` | 查表 id、累加维度 | 是 |
+| **进贡** | **`tribute.determine`** / **`tribute.pay`** / **`tribute.return`** / **`tribute.resist`** | 谁是贡方/受方（`pairs[]` 的 `when` 分支）；贡牌与还贡牌**由引擎按策略自动选定**（`pay`：除红桃级牌外点数最大、同点数取牌 id 最小；`return`：按 `tribute.return` 三键选定），贡方/受方没有选牌权；选定结果经 `TributeEvent` 回传；`resist` 命中后的分支 | 是 |
+| **级牌** | **`level.current`** / **`level.upgrade`** / **`level.pass`** | 当前级牌来源、过 A 判定；升级档位读顶层唯一 `levelTable` | 是 |
+| 计分 | v1：`score.accumulate` / `score.level-up`；**v2 预留**：`score.table` | 累加维度 | 是 |
 | 视图 | `view.project` | 可见字段集合（白名单），读顶层 `view.fields` | 否 |
-| 随机 | `rng.pick` / `rng.range` | 只能调用引擎注入的 RNG | 是 |
+| 随机 | v1：`rng.pick`（`stream` 读顶层 `flow.rng.stream`）；**v1 未启用**：`rng.range` | 只能调用引擎注入的 RNG | 是 |
 | 断言 | `assert.min-players` / `assert.card-count` / **`assert.zone-capacity`** | 用于 dry-run 前置检查 | 否 |
 
 **原语参数结构（`params` 的唯一合法形状）**：每个 `primitiveId` 对应一个固定参数结构体，`patterns[].params` 与 `actions[].params` 都只能是该结构体的实例。L1 按 `primitiveId` 分型反序列化：未知键拒绝、缺失必填键拒绝、类型不符拒绝，一律 `RS_SCHEMA_INVALID`；`serde_json::Value` 不能作为参数容器（§5.3 红线）。下表"取值"列写 `必填` 的键不得省略，其余键可省并取默认值。
 
 | 原语 | 参数字段（类型｜取值｜默认值） |
 | --- | --- |
-| `deal.shuffle` | `zone: ZoneId`｜必填，发牌落点区；`perSeat: u16`｜1–27，默认 = `deck` 总张数 ÷ `seats.count` 的整除值；`reveal: bool`｜默认 `false` |
+| `deal.shuffle` | `zone: ZoneId`｜必填，发牌落点区（v1 由顶层 `flow.deal.zone` 承载，§5.1）；`perSeat: u16`｜1–27，默认 = `deck` 总张数 ÷ `seats.count` 的整除值；`reveal: bool`｜默认 `false` |
 | `deal.draw` | `zone: ZoneId`｜必填；`count: u16`｜1–108，默认 1；`reveal: bool`｜默认 `false` |
 | `deal.reveal` | `zone: ZoneId`｜必填；`toSeats: [u8]`｜默认 `[]`（空表 = 全桌可见） |
 | `pattern.same-rank` | `count: u8`｜1–8，必填 |
 | `pattern.straight` | `length: u8`｜5–12，必填；`wildcardAllowed: bool`｜默认 `true` |
 | `pattern.consecutive-pairs` | `pairs: u8`｜2–10，必填（掼蛋取 3） |
 | `pattern.consecutive-triples` | `triples: u8`｜2–6，必填（掼蛋取 2） |
-| `pattern.with-attachment` | `attachment: PatternId`｜必填；`count: u8`｜1–4，必填 |
-| `pattern.all-same-suit` | `count: u8`｜1–8，必填；`suitMustMatch: bool`｜默认 `true` |
 | `pattern.bomb` | `count: u8`｜4–8，必填 |
 | `pattern.straight-flush` | `length: u8`｜5–12，必填 |
 | `pattern.joker-bomb` | 无参：只能为空对象 `{}`，出现任何键即拒绝 |
 | `compare.by-rank` | `direction: asc\|desc`｜默认 `asc` |
 | `compare.by-count` | `direction: asc\|desc`｜默认 `asc` |
 | `compare.by-ladder` | 无参：读顶层 `compare.ladder` |
-| `compare.bomb-order` | `order: count-then-rank\|rank-then-count`｜默认 `count-then-rank`（`guandan-classic` 取此值） |
+| `compare.bomb-order` | 无参：读顶层 `compare.bombOrder` |
 | `action.require-legal` | `force: bool`｜默认 `true`（必须能压过才合法）；`consume: ZoneId`｜默认 `hand` |
 | `action.consume-cards` | `zone: ZoneId`｜必填；`count: u8`｜0–8，默认 `0`（`0` 表"按本次出牌张数"） |
 | `action.pass` | 无参：只能为空对象 `{}` |
-| `action.claim` | `claimKind: bomb-count\|joker-bomb`｜必填 |
-| `action.declare` | `declareKind: stop\|pass-all`｜必填 |
 | `turn.next` | `direction: clockwise\|counterclockwise`｜默认 `clockwise`；`skipFinished: bool`｜默认 `true` |
 | `turn.after-all-pass` | `to: last-player\|next-player`｜默认 `last-player` |
-| `turn.skip-finished` | `skip: bool`｜默认 `true`；`partnerLead: bool`｜默认 `true`（接风开关，§5.10 接风行） |
+| `turn.skip-finished` | `skip: bool`｜默认 `true`；`partnerLead: bool`｜默认 `true`（接风开关，顶层承载位为 `flow.turn.partnerLead`，§5.10 接风行） |
 | `turn.return-to-last` | 无参：只能为空对象 `{}` |
-| `tribute.determine` | `trigger: last-round-rank`｜默认 `last-round-rank`（当前唯一取值）；`firstRound: skip\|play`｜默认 `skip`（场次首局跳过 `tribute`，§5.13） |
-| `tribute.pay` | `count: u8`｜1–2，默认 1；`selection: max-rank-except-wildcard`｜默认该值（当前唯一取值） |
+| `tribute.determine` | `trigger: last-round-rank`｜默认 `last-round-rank`（当前唯一取值）；`firstRound: skip\|play`｜默认 `skip`（场次首局跳过 `tribute`，§5.13）。v1 承载位为顶层 `tribute.trigger`/`tribute.firstRound`（§5.1） |
+| `tribute.pay` | `count: u8`｜1–2，默认 1；`selection: max-rank-except-wildcard`｜默认该值（当前唯一取值）。v1 承载位为顶层 `tribute.pay`（§5.1） |
 | `tribute.return` | `ceiling: under-ten\|none`｜默认 `under-ten`；`count: u8`｜1–2，默认 1；`fallback: smallest\|largest`｜默认 `smallest` |
-| `tribute.resist` | `mode: two-big-jokers\|none`｜默认取顶层 `tribute.resist` |
-| `level.current` | `scope: by-team\|global`｜默认 `by-team`（掼蛋每队一个 `levels`） |
-| `level.upgrade` | `tableRef: string`｜必填，必须等于某个 `levelTable.id` |
-| `level.pass` | `combos: [[u8,u8]]`｜默认 `[[1,2],[1,3]]`（名次组合，`1+2`/`1+3` 即过 A）；`streakLimit: u8`｜1–9，默认 3（`aFailStreak` 阈值）；`resetOnFail: bool`｜默认 `true`（达阈值退回 `levelTable.initial` 并清零） |
-| `score.table` | `tableRef: string`｜必填 |
+| `tribute.resist` | 无参：读顶层 `tribute.resist` |
+| `level.current` | `scope: by-team\|global`｜默认 `by-team`（掼蛋每队一个 `levels`）。v1 承载位为顶层 `level.current`（§5.1） |
+| `level.upgrade` | 无参：引用顶层唯一 `levelTable`（L2 校验全 RuleSet 内不出现第二张级牌表） |
+| `level.pass` | `combos: [[u8;2]]`｜默认 `[[1,2],[1,3]]`（名次组合，`1+2`/`1+3` 即过 A；编码与 `levelTable.upgrade[].teamRanks` 共用同一套）；`streakLimit: u8`｜1–3，默认 3（`aFailStreak` 阈值；上界与冻结值域 0–3 同源，>3 须另走 EGM 裁决）；`resetOnFail: bool`｜默认 `true`（达阈值退回 `levelTable.initial` 并清零）。v1 的实际承载位是顶层 `level.pass`（§5.1），本节是同一结构的原语侧定义 |
 | `score.accumulate` | `dimension: team\|player`｜默认 `team` |
-| `score.level-up` | `algorithm: level-up\|score-only`｜默认 `level-up` |
+| `score.level-up` | 无参：结算变体由顶层 `settle.algorithm` 决定 |
 | `view.project` | 无参：读顶层 `view.fields`（白名单），不接受额外键 |
 | `rng.pick` | `stream: u32`｜0–3，默认 0 |
 | `rng.range` | `min: u32`、`max: u32`｜必填（`min ≤ max`）；`stream: u32`｜0–3，默认 0 |
 | `assert.min-players` | `count: u8`｜1–8，必填 |
 | `assert.card-count` | `expected: u32`｜必填 |
 | `assert.zone-capacity` | `zone: ZoneId`｜必填 |
+
+**v2 预留原语**（v1 ADT 不收录，RuleSet 引用即 L1 拒绝 `RS_SCHEMA_INVALID`）：`pattern.with-attachment`、`pattern.all-same-suit`、`action.claim`、`action.declare`、`score.table`。这五个原语在 §5.2 分类表里同样按 v2 标注，v1 的解释器不实现它们。
+
+**v1 未启用原语**（口径同上：v1 的 Primitive ADT 不收录，RuleSet 引用即 L1 `RS_SCHEMA_INVALID`）：`deal.draw`、`deal.reveal`、`rng.range`。三者参数定义保留在参数表，v2 启用时再补各自的顶层承载位；v1 基线的发牌只走 `deal.shuffle`、随机只走 `rng.pick`，因此 §5.1 不需要为它们新增承载键。不启用的理由：v1 是一次性发牌到 `flow.deal.zone` 指定的区（发完即进入 `play`），观战走回放式重放（§6 观战章 / U8），既没有中场抽牌也没有翻牌需求；`rng.range` 仅在 v2 的随机玩法参数里才需要。
 
 **红线（必须在类型系统里保证，不靠文档约定）**：
 
@@ -534,12 +566,17 @@ view: { schemaVersion: 1, fields: [hand, seat.levels, discard, lastPlay] }
 
 | 级别 | 检查什么 | 失败表现 | 耗时预算 |
 | --- | --- | --- | --- |
-| L1 结构 | JSON Schema + ADT 反序列化；`timing` 各字段与 `matchCap.rounds` 取值范围校验；`patterns[].params`/`actions[].params` 按 `primitiveId` 分型校验（§5.2 参数表），未知键、缺失必填键、类型不符一律拒绝 | 字段缺失、类型不符、未知原语、计时参数越界、参数键越界 | <10ms |
-| L2 引用 | 所有 ID 能在索引里找到；`lifecycle` 每个有动作的 phase 都有可执行原语；`seats.teams` 覆盖全部座位且不重叠、`count` 在 2–8 内；**静态牌堆校验**：`(ranks − exclude) × suits × copies + jokers × copies` = 总张数（掼蛋基线 13×4×2 + 2×2 = 108，与 §5.1 同式），且总张数 ≤ 各 `hand` 区容量之和（容量是上限，不是当前牌数）；每区 `capacity` ≥ 0 或 −1（−1 表无上限，不参与静态求和） | 指向不存在的牌型/区域；phase 无可执行原语；牌堆静态张数不符；容量取值非法 | <50ms |
-| L3 可玩性 | 随机发牌 + 随机合法动作跑 200 局：必须全部终局（终局条件即 §5.13「局终止与名次」）、无死锁、非法动作率 0。必须记录每局 seed 与失败局的最小动作序列，失败可复现 | 死循环、无终局、非法动作 | **预算 ≤ 90 秒（4 并发）**：单局 300 步 × 0.8ms ≈ 0.24s，200 局串行约 48s，4 并发约 12s；90s 预留 7 倍余量给"慢机器 + 失败局留档" |
+| L1 结构 | JSON Schema + ADT 反序列化；`seats.count` 不在 2–8 内、`timing` 各字段与 `matchCap.rounds` 取值范围校验；`patterns[].params`/`actions[].params` 按 `primitiveId` 分型校验（§5.2 参数表），未知键、缺失必填键、类型不符一律拒绝；`ladder` 出现 `straight-flush-*` 元素拒绝；`levelTable.upgrade[]` 同一 `teamRanks` 重复或 `step` 不在 1–3 拒绝；`level.pass.combos` 为空表、元素不在 1–4 或两值相同、`level.pass.streakLimit` 不在 1–9 拒绝；`flushRank` 插入位与已有牌型冲突拒绝 | 字段缺失、类型不符、未知原语、计时参数越界、参数键越界、`ladder` 混入插入型牌型、升级档重复/越界；分别落 `RS_SCHEMA_INVALID`（结构/枚举/取值）或 `RS_REF_MISSING`（插入位冲突） | <10ms |
+| L2 引用 | 所有 ID 能在索引里找到；`lifecycle` 每个有动作的 phase 都有可执行原语；`seats.teams` 覆盖全部座位且不重叠（`count` 的 2–8 范围已在 L1 判，本级别不重复）；**静态牌堆校验**：`(ranks − exclude) × suits × copies + jokers × copies` = 总张数（掼蛋基线 13×4×2 + 2×2 = 108，与 §5.1 同式），且总张数 ≤ 各 `hand` 区容量之和（容量是上限，不是当前牌数）；每区 `capacity` ≥ 0 或 −1（−1 表无上限，不参与静态求和）；`levelTable` 全 RuleSet 唯一引用，`level.upgrade`/`settle.levelTableRef` 不得指向第二张级牌表 | 指向不存在的牌型/区域（`RS_REF_MISSING`）；phase 无可执行原语（`RS_PHASE_UNIMPLEMENTED`）；队伍覆盖不全或重叠（`RS_TEAM_COVERAGE_INVALID`）；牌堆静态张数不符或总张数超出 `hand` 区容量之和（`RS_DECK_COUNT_MISMATCH`）；容量取值非法（`RS_CAPACITY_INVALID`）；级牌表引用不唯一（`RS_REF_MISSING`） | <50ms |
+| L3 可玩性 | 随机发牌 + 随机合法动作跑 200 局：必须全部终局（终局条件即 §5.13「局终止与名次」）、无死锁、非法动作率 0；dry-run 期单次 `legal_actions` 实测候选枚举峰值超 4096 条即判本级别失败。必须记录每局 seed 与失败局的最小动作序列，失败可复现 | 死循环、无终局、非法动作（`RS_NO_TERMINATION`/`RS_ILLEGAL_ACTION_RATE`）；候选枚举峰值超 4096（`RS_QUOTA_EXCEEDED`，归 L3，不在载入期 L2 设闸门） | **预算 ≤ 90 秒（4 并发）**：单局 300 步 × 0.8ms ≈ 0.24s，200 局串行约 48s，4 并发约 12s；90s 预留 7 倍余量给"慢机器 + 失败局留档" |
 | L4 回归 | 黄金用例（真实对局录制或手工构造的 action log）逐条重放，`stateHash` 必须一致 | 规则改动破坏了旧局 | 按用例数线性，单条 ≤ 1s |
 
-**运行时牌数断言**（不属于 L2 静态校验，在发牌后与每步 `apply` 后由引擎断言）：Σ 各区**当前**牌数 = deck 总张数，且每区当前牌数 ≤ `capacity`（`capacity = -1` 的区跳过容量检查）。守恒失败报 `RS_ZONE_CONSERVATION`，超上限报 `RS_ZONE_CAPACITY`，两码触发条件与 §5.7 逐字一致。
+**运行时牌数断言**（不属于 L2 静态校验，在发牌后与每步 `apply` 后由引擎断言）：Σ 各区**当前**牌数 = deck 总张数，且每区当前牌数 ≤ `capacity`（`capacity = -1` 的区跳过容量检查）。守恒失败报 `RS_ZONE_CONSERVATION`，超上限报 `RS_ZONE_CAPACITY`，两码触发条件与 §5.7 逐字一致；二者与 L2 的 `RS_CAPACITY_INVALID` 明确分工：前者是运行期当前牌数超上限，后者是载入期 `capacity` 配置取值非法。
+
+**校验结果类型与引擎错误**：
+
+- `Validation = { ranLevels: HashSet<Level>, findings: Vec<Finding> }`，`Level = L1|L2|L3|L4`，`Finding = { level: Level, code: ErrorCode, severity: Severity, location: String, message: String }`，其中 `ErrorCode` 是 §5.7 全表 25 个码的枚举、`Severity = Blocker|Major|Minor`。`validate(&RuleSetBody, levels: &[Level]) -> Validation`：入参 `levels` 声明本次要跑的级别集合，`ranLevels` 记录实际跑完的级别；`findings` 元素结构见 §5.6。
+- `EngineError` 变体清单（`apply`/`legal_actions` 的错误出口）：`IllegalAction { reason }`（动作非法，运行期拒绝）、`QuotaExceeded`（候选枚举峰值超 4096，对应 `RS_QUOTA_EXCEEDED`）、`Internal { message }`（引擎内部不变量破坏，按 `RS_INTERNAL_PANIC` 同族告警处置）、`Panic`（native 侧 panic 被 `catch_unwind` 捕获，对应 `RS_INTERNAL_PANIC`）、`ZoneConservation`（Σ 各区当前牌数 ≠ deck 总张数，对应 `RS_ZONE_CONSERVATION`）、`ZoneCapacity { zone: ZoneId, count: u32 }`（某区当前牌数 > `capacity`，对应 `RS_ZONE_CAPACITY`）。
 
 L3 与 L4 都在**发布时**跑，不在编辑时跑；编辑时只跑 L1、L2 并实时标红。
 
@@ -561,33 +598,34 @@ L3 与 L4 都在**发布时**跑，不在编辑时跑；编辑时只跑 L1、L2 
 | `PUT /admin/rulesets/{id}/drafts/{draftId}` | `RuleSetBody`（草稿态，无 `version`） | `{draftId, rev}` | 覆盖草稿（**只对草稿生效**），必须带 `If-Match: rev`；`rev` 不匹配返回 409。已发布的 `version` 一律拒绝写 |
 | `POST /admin/rulesets/{id}/drafts/{draftId}/validate` | `{levels: [L1,L2,L3,L4]}` | `{taskId}` | **异步**：立即返回任务号，结果轮询 `GET …/tasks/{taskId}`；L3/L4 必然超出 HTTP 超时 |
 | `GET /admin/tasks/{taskId}` | — | `{state: running\|done\|failed, findings[], stats}` | 校验与发布任务的统一查询口 |
-| `POST /admin/rulesets/{id}/publish` | `{draftId, stage: canary}` | `{releaseId}` | `publish` **不新建 `ruleset_release` 行**：只把当前 `stage=validated` 的 `(ruleset_id, draft_id, rev)` 行推进到 `canary`，并返回**同一个 `releaseId`**。入参 `stage` 固定 `canary`、不接受其它值；`draft → validated` 由校验任务完成且无 Blocker 后推进（见状态机表），publish 不跨级；当前状态非 `validated` 或 `stage` 非法返回 409。`Idempotency-Key` 必填 |
+| `POST /admin/rulesets/{id}/publish` | `{draftId, stage: canary}` | `{releaseId}` | 四步事务，任一步失败则 stage 不推进并留审计：①把草稿 `body` 复制进 `ruleset`；②分配不可变 `version`；③解析 `interpreter` 区间并锁定进 `pinned_interpreter_version`；④推进 stage 进 `canary`。`ruleset_release` 只在进 `canary` 时创建行；`draft`/`validated` 不留 release 行，其状态由 `ruleset_validation` 聚合派生。入参 `stage` 固定 `canary`、不接受其它值；`draft → validated` 由校验任务完成且无 Blocker 后推进（见状态机表），publish 不跨级；当前状态非 `validated` 或 `stage` 非法返回 409。`Idempotency-Key` 必填 |
 | `POST /admin/releases/{releaseId}/promote` | `{stage: full, reason, totp}` | `{releaseId}` | 承担 `canary` → `full` 推进：`canary` 达标后由人工按 TOTP 确认调用本接口写入 `full`；跨级返回 409；`Idempotency-Key` 必填 |
-| `POST /admin/rulesets/{id}/rollback` | `{reason}` | `{releaseId}` | 回滚候选集 = 同 `ruleset_id` 下 `stage` 曾到过 `full` 且未 `retired` 的版本，按 `first_activated_at` 倒序取最近一个；候选为空返回 `RS_NO_ACTIVE_VERSION`（409，无可回滚版本，不切指针）；出参 `releaseId` 为**目标版本**的 release 行（不是坏版本行）；`Idempotency-Key` 必填，**回滚不需要 TOTP**（§8.1） |
+| `POST /admin/rulesets/{id}/rollback` | `{badReleaseId, reason}` | `{releaseId}` | 入参 `badReleaseId` 指明被回滚的坏版本（服务端也可据此排除当前 active）。回滚候选集 = 同 `ruleset_id` 下曾到过 `full`、未 `retired`，且**排除当前 active**、**排除 `rolled_back` 旧行**的版本，按 `activated_at` 倒序取最近一个；候选为空返回 `RS_NO_ACTIVE_VERSION`（409，无可回滚版本，不切指针）；出参 `releaseId` 为**目标版本**的 release 行（不是坏版本行）；`Idempotency-Key` 必填，**回滚不需要 TOTP**（§8.1） |
 | `GET /admin/games` | — | `[{gameId, activeVersion, stage, roomCount, canaryVersion}]` | 展示用，不做判定 |
 | `GET /admin/audit` | `{actor, from, to, action}` | `[{ts, actor, action, target, before, after, ip, sessionId}]` | 字段与 `audit` 库的 `audit_log` 表一致（见 §5.8） |
 | `GET /api/games` | — | `[{gameId, activeVersion, minClientVersion}]` | **客户端侧**接口；`minClientVersion` 是**独立配置项**（§5.16），不由 `interpreter` 区间推导 |
 
-**`gameId` 与 `rulesetId` 的映射**：`gameId` 标识玩法族（如 `guandan`、`landlords`），一个 `gameId` 在任一时刻对应一份生效的 RuleSet 版本；`rulesetId` 是 RuleSet 身份（kebab-case），同一 `rulesetId` 可有多个不可变 `version`。建房与匹配入参传 `gameId`：新建房间按 `gameId` 取 `game:{id}:active_ruleset` 指向的 `(rulesetId, version)`；10% 灰度房取 `game:{id}:canary_ruleset`。版本选取的唯一真相在 `ruleset_release` 表，Redis 键只是缓存（§5.8/§9.5）。
+**`gameId` 与 `rulesetId` 的映射**：`gameId` 标识玩法族（如 `guandan`、`guandan-variant`），一个 `gameId` 在任一时刻对应一份生效的 RuleSet 版本；`rulesetId` 是 RuleSet 身份（kebab-case），同一 `rulesetId` 可有多个不可变 `version`。建房与匹配入参传 `gameId`：新建房间按 `gameId` 取 `game:{id}:active_ruleset` 指向的 `(rulesetId, version)`；10% 灰度房取 `game:{id}:canary_ruleset`。版本选取的唯一真相在 `ruleset_release` 表，Redis 键只是缓存（§5.8/§9.5）。
 
-**校验结果 `findings[]` 结构**（`GET /admin/tasks/{taskId}` 出参与 `ruleset_validation.findings` 同形）：`Finding{level: L1|L2|L3|L4, code: §5.7 错误码, severity: Blocker|Major|Minor, location: string, message: string}`。severity 判定：发布闸门失败类码（`RS_SCHEMA_INVALID`、`RS_REF_MISSING`、`RS_PHASE_UNIMPLEMENTED`、`RS_NO_TERMINATION`、`RS_ILLEGAL_ACTION_RATE`、`RS_L4_MISMATCH`、`RS_GOLDEN_REGRESSION_FAILED`、`RS_QUOTA_EXCEEDED`、`RS_INTERPRETER_TOO_OLD`）为 **Blocker**，阻塞进 `canary`；运行期与操作类码（`RS_ZONE_CONSERVATION`、`RS_ZONE_CAPACITY`、`RS_INTERNAL_PANIC`、`RS_SEAT_TAKEN`、`AUTH_INVALID`、`CLIENT_TOO_OLD`、`RATE_LIMITED`、`STALE_SEQ`、`TOO_LATE`、`RS_CANARY_BLOCKED`、`RS_VERSION_LOCKED_BY_ROOMS`、`VERSION_CONFLICT`、`RS_NO_ACTIVE_VERSION`）为 Major/Minor，不进发布闸门判定。`validated` 进入条件"无 Blocker 级 finding"即按本表判定。
+**校验结果 `findings[]` 结构**（`GET /admin/tasks/{taskId}` 出参与 `ruleset_validation.findings` 同形）：`Finding{level: L1|L2|L3|L4, code: ErrorCode（§5.7 全表枚举）, severity: Severity（Blocker/Major/Minor）, location: string, message: string}`。severity 判定：发布闸门失败类码（`RS_SCHEMA_INVALID`、`RS_REF_MISSING`、`RS_PHASE_UNIMPLEMENTED`、`RS_NO_TERMINATION`、`RS_ILLEGAL_ACTION_RATE`、`RS_L4_MISMATCH`、`RS_GOLDEN_REGRESSION_FAILED`、`RS_QUOTA_EXCEEDED`、`RS_INTERPRETER_TOO_OLD`、`RS_DECK_COUNT_MISMATCH`、`RS_CAPACITY_INVALID`、`RS_TEAM_COVERAGE_INVALID`）为 **Blocker**，阻塞进 `canary`；运行期与操作类码（`RS_ZONE_CONSERVATION`、`RS_ZONE_CAPACITY`、`RS_INTERNAL_PANIC`、`RS_SEAT_TAKEN`、`AUTH_INVALID`、`CLIENT_TOO_OLD`、`RATE_LIMITED`、`STALE_SEQ`、`TOO_LATE`、`RS_CANARY_BLOCKED`、`RS_VERSION_LOCKED_BY_ROOMS`、`VERSION_CONFLICT`、`RS_NO_ACTIVE_VERSION`）为 Major/Minor，不进发布闸门判定。`validated` 进入条件"无 Blocker 级 finding"即按本表判定。
 
 发布语义：`canary` 只对新建房间的 10% 生效，观察窗口 30 分钟；窗口内出现 `stateHash`/`viewHash` 不匹配、`action_illegal` 超标（CPU 超预算按 §8.6 处置，不计入本判定）或崩溃率超标，自动回退到上一 `active` 版本（候选集口径见 §5.6 rollback 行）并落审计；达标后由人工经 `promote` 接口带 TOTP 确认转 `full`（§9.4）。**不再设 `ramp5`/`ramp25` 两个中间档**：内测规模下单档灰度 + 一次全量已经足够，多两级只增加人工推进成本（§8 的 YAGNI 剪枝）。
 
-**`stage` 只推进、不新建**：`publish` 不新建 `ruleset_release` 行，只把 `validated` 行推进到 `canary` 并返回同一个 `releaseId`；灰度的 `promote` 与回滚同理，只改该行的 `stage`（回滚目标行的 `release_id` 即 `POST rollback` 的出参）。
+**发布事务与行创建口径**：`ruleset_release` 只在进 `canary` 时创建行；`draft`/`validated` 阶段不建 release 行，其阶段状态由 `ruleset_validation` 聚合派生，不单独存 `stage` 列。`publish` 四步（复制 body → 分配 `version` → 锁定 `pinned_interpreter_version` → 推进 stage）在同一事务内完成，任一步失败则 stage 不推进、已写中间痕迹留审计；`promote` 与回滚只改既有 release 行的 `stage`（回滚目标行的 `release_id` 即 `POST rollback` 的出参）。
 
 **低样本出口**：canary 观察窗口内样本动作数 < 200 时，不按比率判定，改为"零 P0 事件"判定并把窗口延长到 2 小时；满 2 小时仍 < 200 的，由人工 TOTP 决定放行（`promote` 到 `full`）或回滚，决定与理由落审计，不允许流程停在无人拍板的位置。
 
-**发布状态机**（接口 `stage`、表 `stage`、文档阶段名必须一一对应；`draft`/`validated` 也落在 `ruleset_release` 同一行记录里，见 §5.8）：
+**发布状态机**（接口 `stage`、表 `stage`、文档阶段名必须一一对应；`draft`/`validated` 由 `ruleset_validation` 聚合派生，不落 release 行，见 §5.8）：
 
 | 状态 | 进入条件 | 允许的下一步 |
 | --- | --- | --- |
-| `draft` | 新建或 PUT 草稿（`stage` 落在 `ruleset_release` 的同一 `release_id` 上，`activated_at` 为空） | `validated`（L1–L4 全过） |
+| `draft` | 新建或 PUT 草稿（`ruleset_draft` 行；`activated_at` 为空） | `validated`（L1–L4 全过） |
 | `validated` | 校验任务 `done` 且无 Blocker 级 finding | `canary` |
-| `canary` | `publish` 把同一行的 `stage` 由 `validated` 推进为 `canary`（不新建行），10% 新房间 | `full`（经 `promote` + 人工 TOTP 确认） / `rolled_back` / 低样本待决后人工放行或回滚 |
-| `full` | 全量，成为 `active` | `retired` |
-| `rolled_back` | 回退，`stage` 记录为 `rolled_back`（**不写 `retired`**） | 只读，可重新发布新版本 |
-| `retired` | 明确下线（不再被任何房间引用且人工确认） | 只读 |
+| `canary` | `publish` 事务推进进 `canary`，此时创建 `ruleset_release` 行，10% 新房间 | `full`（经 `promote` + 人工 TOTP 确认） / `rolled_back` / 低样本待决后人工放行或回滚 |
+| `full` | 全量，进入 active 候选；**active 唯一判定式 = `stage=full` 且 `activated_at` 最大** | `superseded`（被新的 `full` 取代） / `retired`（人工确认下线） / `rolled_back` |
+| `superseded` | 曾到 `full`，已被更新的 `full` 版本取代；仍可作为回滚目标 | `retired` / 经回滚选为目标后回到 `full` 指针 |
+| `rolled_back` | 回退旧行（**不写 `retired`**） | 重新校验通过后可合法转移回 `canary` / `full`；否则只读，可重新发布新版本 |
+| `retired` | 人工确认下线（不再被任何房间引用且人工确认）；`retired` 只表示人工确认下线，与"被取代"无关 | 只读 |
 
 ### 5.7 错误码
 
@@ -604,19 +642,22 @@ L3 与 L4 都在**发布时**跑，不在编辑时跑；编辑时只跑 L1、L2 
 | `RS_ZONE_CONSERVATION` | **运行时**守恒失败：Σ 各区当前牌数 ≠ deck 总张数（与 §5.4 运行时断言同一条件） | 判该场流局，按 §6.5 处置 |
 | `RS_ZONE_CAPACITY` | **运行时**某区当前牌数 > `capacity`（`capacity = -1` 的区跳过本检查；与 §5.4 运行时断言同一条件） | 判该场流局，按 §6.5 处置 |
 | `RS_PHASE_UNIMPLEMENTED` | `lifecycle` 里的有动作 phase 没有任何可执行原语（归入 L2 引用完整性校验） | 拒绝加载 |
-| `RS_QUOTA_EXCEEDED` | RuleSet 载入期 L2 静态校验、发布校验与 dry-run 时 `legal_actions` 候选枚举超过 4096 条静态上限；**不用于运行期单步动作拒绝** | 拒绝加载/拒绝发布或判 dry-run 结果无效，记 `action_quota_exceeded_total`；RuleSet 侧按缺陷处理 |
+| `RS_DECK_COUNT_MISMATCH` | L2 静态牌堆校验：`(ranks − exclude) × suits × copies + jokers × copies` 与 deck 声明总张数不符，或该总张数超过各 `hand` 区 `capacity` 之和 | 拒绝发布，标出张数公式两侧取值与容量上限 |
+| `RS_CAPACITY_INVALID` | L2 静态校验：某区 `capacity` 取值非法（既不是 ≥0 的整数，也不是 −1 无上限）；与运行期 `RS_ZONE_CAPACITY` 分工：本码管载入期配置取值，后者管运行期当前牌数超上限 | 拒绝发布，标出非法区号与取值 |
+| `RS_TEAM_COVERAGE_INVALID` | L2 校验：`seats.teams` 未覆盖全部座位，或座位在多个队中重复出现 | 拒绝发布，标出漏座/重叠座位号 |
+| `RS_QUOTA_EXCEEDED` | L3 dry-run 期单次 `legal_actions` 实测候选枚举峰值超过 4096 条；**不在载入期 L2 设静态闸门，不用于运行期单步动作拒绝** | 判 dry-run 结果无效、拒绝发布，记 `action_quota_exceeded_total`；RuleSet 侧按缺陷处理 |
 | `RS_GOLDEN_REGRESSION_FAILED` | L4 回归种子库出现失败（与 `RS_L4_MISMATCH` 分工：本码只管回归种子库） | 拒绝发布，输出首个失败用例 id 与 `matchId`/`roomSeq` |
 | `RS_INTERNAL_PANIC` | 解释器在 native 侧 panic 且被 `catch_unwind` 捕获 | 该动作返回失败、房间继续（§8.6），并记 `room_panic_total` |
-| `RS_SEAT_TAKEN` | 进房时目标座位已被占；或房间已满、无空座可分配 | 409；客户端按返回的可用座位重选，或提示房间已满 |
+| `RS_SEAT_TAKEN` | 进房时目标座位已被占；或房间已满、无空座可分配 | 不经 HTTP 409：经 `JoinAck.reason` 返回，并附 `availableSeats[]`；客户端按可用座位重选，或提示房间已满（§5.9） |
 | `AUTH_INVALID` | token 缺失、过期或签名不符；短信验证码错误或过期；或请求携带的 `seat` 与 token 绑定座位不一致 | 401，客户端跳登录；座位不一致另记指标（§5.9） |
 | `CLIENT_TOO_OLD` | `clientVersion` 低于服务端当前的 `minClientVersion` 下限 | 426，客户端提示升级并停止入座（`minClientVersion` 定义见 §5.16） |
 | `RATE_LIMITED` | 单账号动作频率超限 | 429，返回 `retryAfterMs` |
-| `STALE_SEQ` | 动作 `seatSeq` 小于该座位当前水位（按座位水位判定，与 `TOO_LATE` 区分） | 409，客户端重新拉增量（见 §6.2） |
-| `TOO_LATE` | 动作与超时同 tick 竞态落败：动作在"超时事件"入队之后到达（`STALE_SEQ` 是序号过期，本码是竞态落败，两者不混用） | HTTP 409；丢弃该动作、不推进 `seatSeq`、不计入该座位超时次数；客户端按座位水位重拉增量，不重发同一动作 |
+| `STALE_SEQ` | 动作 `seatSeq` 小于该座位当前水位（按座位水位判定，与 `TOO_LATE` 区分） | 动作级：写入 `ActionAck.reason`；客户端重新拉增量（见 §6.2） |
+| `TOO_LATE` | 动作与超时同 tick 竞态落败：动作在"超时事件"入队之后到达（`STALE_SEQ` 是序号过期，本码是竞态落败，两者不混用） | 动作级：写入 `ActionAck.reason`；丢弃该动作、不推进 `seatSeq`、不计入该座位超时次数；客户端按座位水位重拉增量，不重发同一动作 |
 | `VERSION_CONFLICT` | `If-Match` 的 `rev` 与草稿当前 `rev` 不符 | 409，返回当前 `rev` 与字段级差异 |
 | `RS_NO_ACTIVE_VERSION` | 回滚候选集为空：同 `ruleset_id` 下无曾到 `full` 且未 `retired` 的版本 | 409，提示无可回滚版本，不切指针 |
 
-**载体映射**：牌桌走 WS 帧、不带 HTTP 状态码。连接级错误（`AUTH_INVALID`、`CLIENT_TOO_OLD`）经 WS Close code 断开连接并附错误码；其余动作级错误只写入 `ActionAck.reason`，不断连；HTTP 状态码（401/409/426/429 等）仅用于后台与玩家侧 REST 接口。
+**载体映射（四分）**：牌桌走 WS 帧、不带 HTTP 状态码。①连接级错误（`AUTH_INVALID`、`CLIENT_TOO_OLD`）经 WS Close code 断开连接并附错误码；②请求级错误（`RS_SEAT_TAKEN`）经入座响应帧 `JoinAck.reason` 返回并附 `availableSeats[]`；③动作级错误只写入 `ActionAck.reason`，不断连；④HTTP 状态码（401/409/426/429 等）仅用于后台与玩家侧 REST 接口。
 
 ### 5.8 存储结构
 
@@ -626,7 +667,7 @@ L3 与 L4 都在**发布时**跑，不在编辑时跑；编辑时只跑 L1、L2 
 | --- | --- | --- |
 | `ruleset_draft` | `draft_id, ruleset_id, draft_key, rev, body jsonb, updated_by, updated_at` | 草稿可反复覆盖，`rev` 用于 `If-Match`；同一 `baseVersion` 可并存多份草稿，以 `draft_id` 去重；草稿态 `body` 不含 `version` |
 | `ruleset` | `ruleset_id, version, body_hash, body jsonb, pinned_interpreter_version, frozen_at` | 发布时从草稿复制，**此后只读**；`body` 与 `status` 分离，`status` 在 release 表；`pinned_interpreter_version` 是发布时把 `interpreter` 区间解析锁定的具体解释器版本（回放头 `interpreterVersion` 同值） |
-| `ruleset_release` | 主键 `(ruleset_id, draft_id, rev)`；`release_id, ruleset_id, draft_id, rev, version(可空), stage(draft/validated/canary/full/rolled_back/retired), activated_at, first_activated_at, rolled_back_at, operator` | 状态机唯一真相（§5.6）；`draft`/`validated` 行 `version` 为空，以 `draft_id` 关联，不从 `version` 建唯一键；`activated_at` 为空即未生效。`first_activated_at` 是首次进入 `full` 的时刻，**永不可改写**；`activated_at` 为最近一次生效时刻。回滚时：坏版本行写 `rolled_back`，目标版本行 `activated_at` 更新为回滚时刻、`first_activated_at` 不动，`POST rollback` 出参返回目标版本 `release_id`。本表是版本状态唯一真相，Redis 中的 `active_ruleset`/`canary_ruleset` 指针只是缓存（§5.8 Redis 清单、§9.5） |
+| `ruleset_release` | 主键 `release_id`（`ruleset_id` 普通索引）；`release_id, ruleset_id, draft_id, rev(普通列，不入主键), version, stage(canary/full/superseded/rolled_back/retired), activated_at, first_activated_at, rolled_back_at, operator` | 状态机唯一真相（§5.6）；**只在进 `canary` 时创建行**；`draft`/`validated` 阶段不留 release 行，其阶段由 `ruleset_validation` 聚合派生，不单独存 `stage` 列。`activated_at` 为空即未生效；`first_activated_at` 是首次进入 `full` 的时刻，**永不可改写**；`activated_at` 为最近一次生效时刻。**active 唯一判定式 = `stage=full` 且 `activated_at` 最大**。`superseded` = 曾到 `full`、已被更新 `full` 取代、仍可回滚；`retired` = 人工确认下线。回滚时：坏版本行写 `rolled_back`，目标版本行 `activated_at` 更新为回滚时刻、`first_activated_at` 不动，`POST rollback` 出参返回目标版本 `release_id`。本表是版本状态唯一真相，Redis 中的 `active_ruleset`/`canary_ruleset` 指针只是缓存（§5.8 Redis 清单、§9.5） |
 | `ruleset_validation` | 主键 `(ruleset_id, draft_id, rev, level)`；`task_id, ruleset_id, draft_id, rev, level, passed, findings jsonb, stats jsonb, seed_list jsonb, ran_at` | L1–L4 留档；`seed_list` 保证可复现；草稿/校验阶段无 `version`，一律按 `draft_id + rev` 关联 |
 
 **审计单独一张库**：`audit_log` 不属于上表（它不是规则发布链的一部分），独立 schema `audit` + 只允许 append 的库角色，业务侧账号无删除权（§8.8）。
@@ -636,12 +677,12 @@ L3 与 L4 都在**发布时**跑，不在编辑时跑；编辑时只跑 L1、L2 
 | 表 | 关键字段 | 说明 |
 | --- | --- | --- |
 | `player_profile` | `player_id, phone_hash, phone_tail4, nickname, created_at, status` | 手机号只存哈希 + **尾号 4 位**（展示用，§8.4），原文不落库；`phone_hash = HMAC-SHA256(server_salt, 规范化后的 11 位手机号)`；盐为单盐存环境变量，轮换按 §9.7 破坏性变更五步执行，不预留双盐列/双次查找结构 |
-| `player_stat` | `player_id, game_id, rating, rating_games, placement_left, rank_level, rounds_total, wins, updated_at` | 段位字段名叫 `rank_level`（**不叫 `level`**，避免与房间级牌混淆）。`rating` 是整数内部评分，新账号初始 **1000**；`rating_games` 是已计入评分的场次数；`placement_left` 是定级赛剩余场次（10 → 0，**0 表示已定级**）。段位算法见 §5.13 后附表：`placement_left > 0` 为定级期，定级期只累计 `rating`、不改 `rank_level`、不进排行；定级赛（前 10 场，人机房 `ai-practice` 与自定义房不计）结束后按这 10 场的**胜率**落到 `rank_level` 1–4，第 5 档只能靠后续 Elo 升上去。`rating` 与 `rank_level` 按**场**结算，写入 §6.6 的结算事务。`human-casual`/`bot`/`mixed` 不写本表的段位、评分与排行字段；`ai-practice` 是人机房/离线局的模式侧别名，不是 `matchType` 字面值，落库记 `bot`，同不写本表字段（按 §5.15 真值表判定） |
+| `player_stat` | `player_id, game_id, rating, rating_games, placement_left, rank_level, rounds_total, wins, updated_at` | 段位字段名叫 `rank_level`（**不叫 `level`**，避免与房间级牌混淆）。`rating` 是整数内部评分；`rating_games` 是已计入评分的场次数；`placement_left` 是定级赛剩余场次；`rank_level` 为档位字段。**v1 只保留字段与跨端一致（S9）**：定级分档、Elo 式浮动与 K 衰减算法整体降为 v2 预留（§5.13、§8.7、§10.2 R18/R19）；`rating`/`rank_level` 只在服务端结算事务内用整数运算算出，**不进 `stateHash`、不进双端比对**。`human-casual`/`bot`/`mixed` 不写本表的段位、评分与排行字段；`ai-practice` 是人机房/离线局的模式侧别名，不是 `matchType` 字面值，落库记 `bot`，同不写本表字段（按 §5.15 真值表判定） |
 | `round_record` | `match_id, round_no, players jsonb, result jsonb, levels_after jsonb, ruleset_version, engine_version, interpreter_version, started_at, ended_at` | 一局一行。`players` = `[{seat, player_id, rank}]`，`rank` 按 §5.13「局终止与名次」的规则填写（1–4 名，全表唯一口径）；`result`（结构名 `settlement`）= `{winner_team, ranks: [seat...], points}`，`ranks` 按名次 1→4 列 seat；`levels_after` 为按队伍序号升序的 `u8` 数组（每队级牌快照）；`aFailStreak` 不落本表，由动作日志确定性重放重建（§6.5/§7.7），旧存档/旧快照缺该字段时按 0 初始化；三处 jsonb 形状以本行为准，对账、战绩查询与 §9.7 迁移断言按同一结构比对 |
 | `match_record` | `match_id, game_id, match_type(human-ranked/human-casual/bot/mixed), winner_team(可空), end_reason(passed-a/safety-cap/aborted), seats_count, started_at, ended_at` | 一场一行；`matchType` 只在这里定义，其它地方引用它。`winner_team` 为胜方队序号，平局时为空；`end_reason` 标记场次终止原因（`passed-a` 过 A、`safety-cap` 达安全局数上限、`aborted` 整场流局或全员离线超时中止，按 §6.3/§6.5 处置）；段位与积分按**场**结算 |
 | `settlement_dead_letter` | `settlement_id, match_id, round_no, payload jsonb, failed_at, retries, resolved_at` | 结算三次写库失败后的死信，**只用于结算补写**，人工按 `settlementId` 补写（§6.6）；流局补偿不走本表 |
 | `settlement_compensation` | `compensation_id, match_id, reason, issued(bool), created_at` | 流局补偿记录表：补偿记录先落库、`issued=false` 不发放；支付接口启用后才置 `issued=true` 并发放（§6.5/§9.5） |
-| `settlement_event` | `event_id, match_id, round_no, created_at` | 结算事件计数表：与 `round_record` 在同一结算事务内插入（§6.6 对账第一条等式的右侧"房间结算事件条数"）；只追加，不更新、不删除 |
+| `settlement_event` | `settlement_id(主键), match_id, round_no, created_at` | 结算事件计数表：**在结算尝试发起时、进入 `settlementId` 事务之前单独插入**，以 `settlementId` 唯一（§6.6 对账第一条等式）；只追加，不更新、不删除 |
 | `invite_code` | `code, created_by, created_at, used_by, used_at, expires_at, status` | 短信降级通道（§6.7）；8 位大写码唯一索引，一码一用，7 天有效，**无批次字段** |
 | `order` | `order_id, player_id, sku, amount_cents, currency, status(created/paid/refunded), created_at` | **占位表**（U7）：v1 不产生数据，但表与接口先建 |
 | `payment_callback` | `callback_id, order_id, channel, payload jsonb, verified, received_at` | 支付回调占位，验签字段预留 |
@@ -665,17 +706,17 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 
 | 方向 | 消息 | 关键字段 | 语义 |
 | --- | --- | --- | --- |
-| C→S | `JoinRoom` | `matchId, seat?, clientVersion` | 入座或续座；**座位由服务端分配并在响应里返回 `seat`**，`seat` 字段只用于续座（带回原座位）；目标座已被占返 `RS_SEAT_TAKEN`，房间已满无空座同码拒绝。`clientVersion` 低于 `minClientVersion` 返回 `CLIENT_TOO_OLD`（定义见 §5.16） |
+| C→S | `JoinRoom` | `matchId, seat?, clientVersion` | 入座或续座；`seat` 字段只用于续座（带回原座位）；入座结果一律经 `JoinAck` 返回。`clientVersion` 低于 `minClientVersion` 返回 `CLIENT_TOO_OLD`（定义见 §5.16） |
+| S→C | `JoinAck` | `matchId, seat, accept, availableSeats[], reason?` | 入座响应帧：成功与 `RS_SEAT_TAKEN` 都走本帧。`accept=true` 时 `seat` 为服务端分配的座位；`accept=false` 时 `reason` 取 §5.7 错误码（`RS_SEAT_TAKEN`），`availableSeats[]` 为当前可分配座位号空表（房间已满时为空表） |
 | C→S | `Reconnect` | `matchId, seat, lastSeatSeq` | `lastSeatSeq` 之后的增量由服务端补齐；该座位 `lastSeatSeq` 对应的 `roomSeq` 早于缓冲起点（换算按动作记录双序号列，见 §6.5）时只发 `RoomSnapshot` 并以快照 `roomSeq` 为新起点（§6.2） |
 | C→S | `SubmitAction` | `matchId, seat, requestId, seatSeq, kind, payload` | `requestId` 为幂等键（§6.4）；`seatSeq` 为**每座位**单调递增；**服务端以 token 绑定的座位为准**，请求 `seat` 与绑定座位不一致返回 `AUTH_INVALID` 并记指标；`payload` 结构见下 |
 | C→S | `Heartbeat` | `matchId, seat, clientSeq` | 客户端每 15 秒一次；服务端 30 秒内未收到该座位任何消息即判掉线（**唯一判定点**，§6.2 同步） |
-| S→C | `RoomSnapshot` | `matchId, seat, roomSeq, lastSeatSeq, viewHash, viewSchemaVersion, view, snapshotReset` | 全量视图（按 `view.fields` 裁剪）。`view` 的类型是 **`bytes`**，内容是 canonical JSON，编码规则见 §5.12；`viewSchemaVersion: u16` 是这份 `view` 用的白名单版本（取自 RuleSet `view.schemaVersion`，房间创建时锁定）；**不下发 `stateHash`**；`snapshotReset: bool`，缺省 false，true 表示客户端必须丢弃本地状态并接受本快照（§6.2） |
+| S→C | `RoomSnapshot` | `matchId, seat, rulesetId, rulesetVersion, roomSeq, lastSeatSeq, viewHash, viewSchemaVersion, view, snapshotReset` | 全量视图（按 `view.fields` 裁剪）。`rulesetId`/`rulesetVersion` 为房间创建时锁定的 RuleSet 身份与版本，与 `viewSchemaVersion` 组成客户端白名单缓存键 `(rulesetId, viewSchemaVersion)`（§9.2）。`view` 的类型是 **`bytes`**，内容是 canonical JSON，编码规则见 §5.12；`viewSchemaVersion: u16` 是这份 `view` 用的白名单版本（取自 RuleSet `view.schemaVersion`，房间创建时锁定）；**不下发 `stateHash`**；`snapshotReset: bool`，缺省 false，true 表示客户端必须丢弃本地状态并接受本快照（§6.2） |
 | S→C | `RoomDelta` | `matchId, roomSeq, events[]` | 增量事件；断线期间存最近 200 条（§6.2）。`roomSeq` 是房间广播序；本消息是房间广播，**不带 `seatSeq`**，座位水位只在 `Reconnect`/`ActionAck` 按座位传递 |
 | S→C | `ActionAck` | `requestId, seatSeq, roomSeq, accepted, reason?` | 回执；`reason` 取 §5.7 错误码**全表** |
 | S→C | `PhaseChange` | `phase, deadlineMs` | 阶段切换（发牌/进贡/出牌/结算） |
-| S→C | `SettleResult` | `roundNo, roomSeq, result, levelsAfter, nextDealInMs, viewHash` | 结算广播；`levelsAfter` 是**每队**级牌（§5.13）；`roomSeq` 是本帧房间广播序，客户端结算后算 `viewHash` 必须取本帧 `roomSeq` 作为尾部输入（§5.12），不得使用本地缓存值 |
+| S→C | `SettleResult` | `roundNo, roomSeq, result, levelsAfter, nextDealInMs` | 结算广播；`levelsAfter` 是**每队**级牌（§5.13）；`roomSeq` 是本帧房间广播序。本帧不携带 `viewHash`，客户端不重算视图哈希（§5.12/§7.2） |
 | S→C | `TrusteeState` | `seat, mode(ai\|human), reason` | 托管状态变化 |
-| C→S | `ViewMismatchReport` | `matchId, seat, roomSeq, clientViewHash, clientPlatform` | 客户端算出的 `viewHash` 与服务端下发的不一致时上报；服务端只落指标与日志，不回消息。上报按 `(matchId, seat, roomSeq)` 去重、单房间设上限；该信号为 P1 定位线索，P0 只保留服务端重算视图与已下发值不一致（§7.2） |
 
 **`SubmitAction.payload` 按 `kind` 分型**（proto 用 `oneof`，每型独立消息）：
 
@@ -688,7 +729,7 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 
 **`RoomDelta.events[]` 分型**：`PlayedEvent{seat, cards, patternId}`、`PassedEvent{seat}`、`TributeEvent{from, to, card}`、`LevelChangedEvent{team, from, to}`、`TurnChangedEvent{seat, deadlineMs}`、`RoundSettledEvent{roundNo}`。新增事件类型只允许加 `oneof` 分支（§9.2）。
 
-约定：`stateHash` 永不下发（§5.12）；下发的是 `viewHash`，客户端收到快照与结算后各算一次并回报不一致（§7.2 的 P1 线索指标）；`view` 的字段集合由 §5.1 `view.fields` 决定、编码由 §5.12「视图编码」固定为 canonical JSON bytes，服务端不得下发白名单外的字段；`viewSchemaVersion` 与 `view` 同帧下发，客户端不得跳过它自行推断白名单。
+约定：`stateHash` 永不下发（§5.12）；`viewHash` 由服务端在每次下发前自算并自证，**客户端不重算、不上报视图哈希**（§7.2 的 P0 只保留服务端重算视图与已下发值不一致；`ViewMismatchReport` 帧不进 v1 协议，调试构建如需本地比对由客户端私有实现，不进线上链路）；`view` 的字段集合由 §5.1 `view.fields` 决定、编码由 §5.12「视图编码」固定为 canonical JSON bytes，服务端不得下发白名单外的字段；`viewSchemaVersion` 与 `view` 同帧下发，客户端不得跳过它自行推断白名单。
 
 **本地存档契约（按模式分流；§2.4 第 16 周 gate 与离线恢复的载体依据）**
 
@@ -719,11 +760,11 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 | 四王炸 | `pattern.joker-bomb` | 最高，压所有炸弹与同花顺 | 定 |
 | 单张/对/三/顺子/三连对/二连三 | `patterns` | 顺子 5 张、`plate-3` 为 3 连对、`steel-2` 为 2 组三张连 | 定 |
 | 进贡配对 | `tribute.pairs[]` | 单贡：末游→头游；双下（对位进贡）：末游（第 4 名）→头游（第 1 名）、三游（第 3 名）→二游（第 2 名），一对一映射，不交叉 | 定 |
-| 还贡 | `tribute.returnPolicy` | 受贡方还一张不大于 10 的牌；全大于 10 时还其中最小的一张 | 定 |
+| 还贡 | `tribute.return`（`ceiling`/`count`/`fallback` 三键） | 受贡方还一张不大于 10 的牌；全大于 10 时还其中最小的一张 | 定 |
 | 抗贡 | `tribute.resist` | 贡方两家合计持有 2 张大王即可抗贡（不要求在同一人手里），本局不进贡 | 定 |
 | 升级档 | `levelTable.upgrade` | 双下 +3、1+3 +2、1+4 +1（按队结算） | 定 |
 | 过 A | `level.pass` | 打 A 那一局，本方名次组合为 `1+2` 或 `1+3`（本方拿到头游、且末游是对家）即算过 A；`1+4`（本方头游但队友末游）不算，其余组合（本方未拿头游）也不算；未过 A 不退档，该队 `levels` 保持 A 继续在 A 打下一局，同一队连续 3 局在 A 上未过才退回 `levelTable.initial`（起点 2）并把该队 `aFailStreak` 清零；跨 A 的超额升级数作废 | 定 |
-| 接风 | `turn.skip-finished` 的队友判定参数（引擎原语判定，不进顶层 RuleSet 字段） | 某座位出完牌的同一轮里，若其队友是最后压牌者，则该队友在下一轮直接领出，跳过其余两家；`turn.return-to-last` 只管"全过后回到最后出牌者"，不负责接风 | 定 |
+| 接风 | `flow.turn.partnerLead`（顶层 `flow` 键，默认 `true`） | 某座位出完牌的同一轮里，若其队友是最后压牌者，则该队友在下一轮直接领出，跳过其余两家；`turn.return-to-last` 只管"全过后回到最后出牌者"，不负责接风 | 定 |
 | 托管出牌 | `ai.hint` + 托管策略 | 固定"出最小合法牌"，排序键 = 牌力升序、同牌力按牌 id 升序 | 定 |
 
 确认结果的差异：同花顺位置、进贡配对、抗贡三项按拍板结果实改（`above-bomb-5`、对位进贡、贡方两家合计两张大王），过 A 按用户口径放宽（`1+2` 或 `1+3` 即算过 A、`1+4` 不算），还贡、升级档、接风维持原值。以上取值即 `guandan-classic` v3 的生效口径，与 §5.13 的逐条规格一致。
@@ -745,11 +786,11 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 | 名字 | 输入 | 谁算 | 用途 |
 | --- | --- | --- | --- |
 | `stateHash` | 全量状态（含所有座位手牌） | 服务端、CI 的 native/wasm 双跑 | 恢复校验、漂移检测、双端一致门禁。**永不发给客户端** |
-| `viewHash(seat)` | `view(seat)` 投影 | 服务端在每次下发前算；客户端收到 `RoomSnapshot` 与 `SettleResult` 后算 | 视图一致性线索指标 `viewhash_mismatch_total`（P1，见 §7.2；P0 只保留服务端重算不一致） |
+| `viewHash(seat)` | `view(seat)` 投影 | **只由服务端在每次下发前算并自证**；客户端不重算、不上报 | 视图一致性 P0 指标：服务端重算视图与已下发值不一致即告警（§7.2） |
 
-**纳入 `stateHash` 的字段**（共 10 项，按下列固定顺序拼接，不按 map 迭代顺序）：
+**纳入 `stateHash` 的字段**（第 2–10 项共 9 段按下列固定顺序拼接，不按 map 迭代顺序；第 1 项是旁挂版本字段，不进拼接）：
 
-1. `engineVersion`、`interpreterVersion`、`rulesetVersion`（三个版本串，UTF-8）
+1. 版本旁挂字段（**不进哈希拼接**）：`engineVersion`、`interpreterVersion`、`rulesetVersion` 与哈希并列存放；比对时先比版本三元组，版本一致再比哈希（跨版本用 `(版本, 哈希)` 二元组判定，§9.2）
 2. `phase`（枚举序号 u16）、`turnSeat`（u8）、`levels`（**每队一个 u8**，按队伍序号升序，存 `levelTable.ranks` 下标；§5.13）
 3. `seats`（按座位号升序）：`seat(u8)`；**手牌不在本段重复计入**，手牌只在第 4 项的私有区进哈希一次
 4. `zones`（按 `(seat u8, zoneId u16)` 升序）：`seat`、`zoneId`、`cards`（牌 id 升序）。private 区按 `(seat, zoneId)` 实例化；u16 区号在 RuleSet 解析期按声明序分配并冻结；同一批手牌只在本段进哈希一次，`seats[].hand` 只是视图字段、不进哈希
@@ -760,12 +801,32 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 9. `aFailStreak`（**每队一个 u8**，按队伍序号升序，取值 **0–3**；某局结算时若该值达到 3，则本队 `levels` 退回 `levelTable.initial`（起点 2）并把该值清零；过 A 即该场结束、计数无意义；两端必须同值；§5.13）
 10. `finishOrder`（按出完先后升序的 `seat(u8)` 序列；结束时未出完的座位不列入；无出完记录时为空序列；与 §5.13「局终止与名次」同一口径，重放与崩溃恢复据此重建 `rank`）
 
-**`viewHash(seat)` 定义**（与 `stateHash` 同级闭合，客户端必须能据此算出与服务端逐位一致的值）：
+**`viewHash(seat)` 定义**（服务端自证口径）：
 
-- 纳入字段：`view` 字段的编码字节（即 §5.12「视图编码」的 canonical JSON bytes）+ `seat(u8)` + `roomSeq(u64)`（后两者按 little-endian 定宽追加在字节流尾部）；`levels` 是否在内取决于白名单；`clientPlatform` **必须排除**（纳入则两端值天然不同）。
+- 纳入字段：`view` 字段的编码字节（即本节「视图编码」的 canonical JSON bytes）+ `seat(u8)` + `roomSeq(u64)`（后两者按 little-endian 定宽追加在字节流尾部）；`levels` 是否在内取决于白名单；`clientPlatform` **必须排除**（纳入则两端值天然不同）。
 - 哈希函数与截断：BLAKE3-256 取前 8 字节（16 个十六进制字符），与 `stateHash` 同一函数、同一截断长度。
 
 **视图编码（`RoomSnapshot.view` 与所有下发视图的唯一编码）**：`view` 是 `bytes`，内容为 canonical JSON，规则六条固定——① 顶层是对象，**键序 = `view.fields` 白名单序**（不是字母序、不是 map 迭代序）；② 单行、无空白、无缩进；③ 键名与枚举字面值只用 ASCII，键名不得重复；④ 数组元素定序：牌 id 升序、`seat` 升序；⑤ 字符串 UTF-8、不做 NFC 归一化；⑥ 不写 `null`——字段缺值直接不出现，出现白名单外的键即视为服务端违约（P0，服务端重算视图即可定位）。`viewSchemaVersion` 随每次下发一起给，客户端按它选白名单并逐字段解码，因此**动态字段集不需要 proto 静态 schema**，`crates/protocol` 只声明 `bytes` 与 `u16` 两个字段。
+
+**牌 id 编码**：牌 id 为 u16，在 RuleSet 载入期一次性分配并冻结，运行期不变。编码 = deck 序 × 副本号：先按 `suits` 声明序（`S/H/D/C`）× `ranks` 自然序排基础牌序，同一基础牌的第 `k` 张副本（`k` 从 0 起）占相邻 id；大小王按 `little-joker`/`big-joker` 排在序尾。双端必须按同一载入期结果取 id，不允许运行期按牌面重新编号。
+
+**字段级编码表**（逐白名单键定 JSON 值类型、缺值行为、数组定序；本表内容即 `viewSchemaVersion` 锁定的白名单形状，白名单集合或顺序变化必须 +1，§5.1）：
+
+| 白名单键 | JSON 值类型 | 缺值行为 | 数组 / 元素定序 |
+| --- | --- | --- | --- |
+| `<zoneId>`（private / shared 区） | 对象 `{"cards": <cardId[]>}`；private 区只含本座位手牌 | 区为空时 `cards: []`，键不省略 | `cards` 按牌 id 升序 |
+| `seat.levels` | `u8[]`（元素为 `levelTable.ranks` 的下标，与 `stateHash` 第 2 项同口径、不写牌面键），按队伍序号升序 | 无队伍级牌状态时该键不出现 | 队伍序号升序 |
+| `lastPlay` | 对象 `{"seat": u8, "patternId": string, "cards": <cardId[]>}` | 本回合无人出过牌时该键不出现 | `cards` 按牌 id 升序；`seat` 单值不定序 |
+
+**定值向量（双端比对锚点）**：覆盖上表全部白名单字段的一条固定视图，canonical bytes 如下（单行、无空白，键序 = 白名单序 `hand, seat.levels, discard, lastPlay`）：
+
+```
+{"hand":{"cards":[0,1,2]},"seat.levels":[2,2],"discard":{"cards":[10,11]},"lastPlay":{"seat":1,"patternId":"single","cards":[5]}}
+```
+
+- canonical bytes 长度：129 字节（UTF-8）。
+- SHA-256 指纹（对上述 canonical bytes 真算，双端逐字节比对锚点）：`9e0b756d600f8eb6b74b098f804735c752a2232f0ca3772673a3a4da51afcc72`。
+- 该向量对应的 `viewHash` 仍按本节定义由 BLAKE3-256 从同一 canonical bytes 追加 `seat`/`roomSeq` 定宽尾段推导；改动白名单形状后必须换新向量并重算指纹。
 
 **明确排除**：任何时间戳、连接/在线状态、托管标记（它只影响 UI 与超时策略，不影响合法动作）、日志与审计、客户端版本、昵称头像。
 
@@ -799,7 +860,7 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 | 谁进贡 | 上局末游向头游进贡 1 张；上局双下（三、四名同队）时对位进贡：末游（第 4 名）→头游（第 1 名）、三游（第 3 名）→二游（第 2 名），各 1 张，一对一映射，不交叉 |
 | 贡牌选择 | 由引擎按"除红桃级牌外点数最大、同点数取牌 id 最小"**自动选定**，贡方没有选择权（避免"必须最大"与"自选"两规则互斥）；选定结果经 `TributeEvent{from, to, card}` 广播；进贡/还贡不由玩家提交动作（§5.9），贡方与受贡方均无 payload |
 | 抗贡 | 贡方两人合计持 2 张大王（单贡时贡方自己持 2 张大王）即可抗贡；抗贡为两家合计一次性判定，双下不存在只免一家的部分抗贡。抗贡成立则**进贡与还贡均不发生**，整段 `tribute` 跳过：不进入进贡动作序列、不发 `TributeEvent`，`stateHash` 第 7 项取占位值（`fromSeat=toSeat=0`、`card` 为空），相位由 `deal` 直接转 `play`（§6.3 转移表） |
-| 还贡 | 受贡方还 1 张**不大于 10** 的牌；若手牌全大于 10，则还其中最小的一张（`returnPolicy: largest-under-ten` 的兜底分支）。该兜底分支由 **L3 随机对局的种子用例**覆盖，不在 L1 覆盖（L1 只做结构校验） |
+| 还贡 | 按 `tribute.return` 三键 `ceiling`/`count`/`fallback` 选定：`ceiling: under-ten` 还 1 张**不大于 10** 的牌；若手牌全大于 10，按 `fallback: smallest` 还其中最小的一张。该兜底分支由 **L3 随机对局的种子用例**覆盖，不在 L1 覆盖（L1 只做结构校验） |
 | 顺序 | `tribute` 是独立 phase，与 `play` 分离；进贡完成后 `stateHash` 里 `tribute` 段归零 |
 
 **play（出牌）**
@@ -812,7 +873,7 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 | 逢人配 | 红桃级牌可替代除大小王外任意一张牌；`wildcard.inStraightFlush=false` 时不得用于同花顺 |
 | 比较 | 同牌型比 `patternKey = (countKey, rankKey)`（张数优先、再点数）；炸弹按 `bombOrder`；`straight-flush` 与 `bomb` 的相对位置由 `compare.flushRank` 决定（§5.1）；本版 `flushRank=above-bomb-5`，最终压制阶梯 `bomb-4` < `bomb-5` < `straight-flush-5` < `bomb-6` < `bomb-7` < `bomb-8` < `joker-bomb` |
 | 过牌 | 无牌可压或主动不要，`pass` 记入事件；三家连续 `pass` 后由最后出牌者重新领出 |
-| 接风 | 含义固定为：某座位出完牌的同一轮里，若其队友是最后压牌者，则该队友在下一轮直接"领出"，跳过其余两家；`turn.return-to-last` 只负责"全过后回到最后出牌者"，**不负责接风**，接风由 `turn.skip-finished` + 队友判定实现 |
+| 接风 | 含义固定为：某座位出完牌的同一轮里，若其队友是最后压牌者，则该队友在下一轮直接"领出"，跳过其余两家；`turn.return-to-last` 只负责"全过后回到最后出牌者"，**不负责接风**，接风由 `flow.turn.partnerLead` + 队友判定实现 |
 
 **settle（结算与升级）**
 
@@ -828,50 +889,15 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 
 `levels` 的存放位置：房间状态字段 `levels`（每队一个 u8，存 `levelTable.ranks` 的数组下标：0 对应 `initial`=2、12 对应 A；序列化、`stateHash` 拼接与双端比较一律按下标，不存牌面键），**不在手牌区、不在 `player_stat`**（后者的 `rank_level` 是段位，字段名不叫 `level`，见 §5.8）；一场（match）内逐局累积，写进 `round_record.levels_after`。队级计数器 `aFailStreak`（`[u8; teams]`，每队一个 u8，取值 **0–3**）与 `levels` 同位置同索引：只有该队 `levels=A` 的局才更新它——过 A 则该队本场随即结束（计数不再使用、不参与任何判定），未过 A 则结算时 `+1` 并写入；某局结算时若该值达到 3，则本队 `levels` 退回 `levelTable.initial`（起点 2）并把该值清零；过 A 即该场结束、计数无意义。该队不在 A 上打的局不改动它（此时它恒为 0）。
 
-**结算的执行顺序**（`settle` 纯函数，四步固定，不得调换）：① 按本节「局终止与名次」定出 1–4 名 → ② 判过 A：该队 `levels=A` 且本方组合为 `1+2`/`1+3` 即过 A，本场结束 → ③ 未过 A 且该队 `levels=A`：`aFailStreak[team] += 1` 并写入，写入后达到 3 则 `levels` 退回 `levelTable.initial`（起点 2）、`aFailStreak[team]` 清零 → ④ 该队 `levels≠A`：按升级档推进 `levels`（跨 A 停在 A，超额作废）。
+**结算的执行顺序**（`settle` 纯函数，四步固定，不得调换）：① 按本节「局终止与名次」定出 1–4 名 → ② 判过 A：该队 `levels=A` 且本方组合为 `1+2`/`1+3` 即过 A，本场结束 → ③ 未过 A 且该队 `levels=A`：`aFailStreak[team] += 1` 并写入，写入后达到 3（阈值读顶层 `level.pass.streakLimit`，基线 3）则 `levels` 退回 `levelTable.initial`（起点 2）、`aFailStreak[team]` 清零 → ④ 该队 `levels≠A`：按升级档推进 `levels`（跨 A 停在 A，超额作废）。
 
 **升级跨 A 的处置**：从 K 打 `1+2`/`1+3`/`1+4` 升级时，先在 A 停留一局（不越级），下一局在 A 上打 `1+2` 或 `1+3` 即算"过 A"；即 `level` 到达 A 后所有超额升级数作废，不累积（`1+4` 到达 A 同此处置）。这样"过 A"永远只由"在 A 的那一局名次组合是否为 `1+2` 或 `1+3`"决定。到达 A 之后，若该局未过 A，该队 `levels` 保持 A（**不退档**），继续在 A 上打下一局；只有连续 3 局在 A 上都未过，才按下面「过 A」段退回起点 2。
 
-**过 A**：`levels[team]=A` 的一局，本方名次组合为 `1+2` 或 `1+3`（本方拿到头游、且末游是对家）即算过 A，本场随即结束；`1+4`（本方头游但队友末游）不算，其余组合（本方未拿头游）也不算。**未过 A 时不退档**：该队 `levels` 保持 A，继续在 A 上打下一局。同一队在 A 上**连续 3 局未过**（`aFailStreak[team]` 满 3）时，该队 `levels` 退回 `levelTable.initial`（起点 2）并把 `aFailStreak[team]` 清零。跨 A 的超额升级数作废（到 A 即停，不累积）。
+**过 A**：`levels[team]=A` 的一局，本方名次组合为 `1+2` 或 `1+3`（本方拿到头游、且末游是对家）即算过 A，本场随即结束；`1+4`（本方头游但队友末游）不算，其余组合（本方未拿头游）也不算。**未过 A 时不退档**：该队 `levels` 保持 A，继续在 A 上打下一局。同一队在 A 上**连续 3 局未过**（`aFailStreak[team]` 满 3）时，该队 `levels` 退回 `levelTable.initial`（起点 2）并把 `aFailStreak[team]` 清零。跨 A 的超额升级数作废（到 A 即停，不累积）。本节写的「3 局」与「`1+2`/`1+3`」是**掼蛋基线取值**，实际判定读顶层 `level.pass`（`streakLimit` 与 `combos`，§5.1），切换后判定逻辑与四条口径不变：`1+2`/`1+3` 算过 A、`1+4` 不算、未过 A 不退档、达 `streakLimit` 才退回起点 2。
 
 **场次终止**：一场（`match`）的终止条件二选一：①某队过 A；②触达安全局数上限（RuleSet `matchCap.rounds`，缺省 **12 局**、取值 1–99，仅防死循环，**不是胜负判据**）。未过 A 达上限时，以各队当前 `levels` 档位较高者为胜方，档位相同记平局（`winner_team` 为空）；该判定只比 `levels` 档位，`aFailStreak` 不参与比较。整场流局或全员离线超时导致中止的，记 `aborted`（按 §6.3/§6.5 处置）。结果写入 `match_record.winner_team` 与 `end_reason`（`passed-a` / `safety-cap` / `aborted`）；段位与积分按**场**结算，"连续 3 局在 A 上未过则退回起点 2"只作用于队级牌 `levels`（见本节「过 A」段），不影响段位与积分。
 
-**段位算法：定级赛分档 + 后续 Elo 式浮动**（三张表一并定义；字段 `rating` / `rating_games` / `placement_left` / `rank_level` 见 §5.8）
-
-*表一：定级分档表*（新账号前 10 场为定级赛，只累计 `rating`、不改 `rank_level`；**人机房（`ai-practice`）与自定义房不计入定级赛**；定级赛每场仍按表二更新式写 `rating`，第 10 场结算顺序为：①写本场 Elo 更新 →②`placement_left` 归 0，按这 10 场的**胜率**按下表落位 `rank_level`；其后每场才走表三映射）：
-
-| 定级赛胜率 | 落位 `rank_level` |
-| --- | --- |
-| `< 30%` | 1 |
-| `[30%, 50%)` | 2 |
-| `[50%, 70%)` | 3 |
-| `≥ 70%` | 4 |
-
-区间左闭右开，边界 30% / 50% / 70% 归入上一档；胜率 =（胜场 + 0.5 × 平场）/ 已赛场次，平局按表二 `S=0.5` 折算计入分子，未赛场次剔除出分母。
-
-定级最高只到 4；第 5 档不在定级表里，只能靠后续 Elo 升上去。
-
-*表二：Elo 参数表*
-
-| 参数 | 取值 | 说明 |
-| --- | --- | --- |
-| `R` | 整数内部评分，新账号初始 **1000** | 即 `player_stat.rating`；`R'` 为结算后的新值 |
-| `E` | `E = 1 / (1 + 10^((R_opp − R)/400))` | 期望胜率；团队赛取**两队平均分**作为 `R_opp` |
-| `S` | 1（胜）/ 0.5（平）/ 0（负） | 一场一结算，按 `match_record.winner_team` 判该玩家所在队的胜负；平局 `winner_team` 为空 |
-| `K` | 档位：`rating_games` 1–20 场 `K = 40`，≥21 场 `K = 32`；定级赛 10 场同样递增 `rating_games`，"前 20 场"自第 1 场 `human-ranked` 起算。叠加 §8.7 衰减：最终 `K = 档位 K × 衰减系数`（系数 1.0 / 0.5 / 0）；`K = 0` 的场次不写 `rating`、不递增 `rating_games`、不计定级场次 | 两端同值，不做平台差异 |
-| 更新式 | `R' = R + K × (S − E)` | 按场结算，写回 `player_stat.rating` |
-
-*表三：`rating → rank_level` 阈值表*（**占位，阈值 M1 首轮实测后锁定**；本节只定「由 `rating` 映射到 `rank_level` 1–5」这条规则，不预先写死数字）：优先级——定级结束那一场以表一胜率落位写入 `rank_level`；其后每场 Elo 更新 `rating` 后才按本表映射 `rank_level`；表一与本表对定级末场给出不同值时，以表一为准。
-
-| `rank_level` | 所需 `rating`（累计） |
-| --- | --- |
-| 1 新手 | 待实测锁定 |
-| 2 初级 | 待实测锁定 |
-| 3 中级 | 待实测锁定 |
-| 4 高级 | 待实测锁定 |
-| 5 大师 | 待实测锁定 |
-
-`rating` 与 `rank_level` 按场结算，写入 §6.6 的结算事务；定级期（`placement_left > 0`）只累计 `rating`、不改 `rank_level`、不进排行；`rating_games` 用于判定 `K` 档。评分防刷分口径见 §8.7；`human-ranked` 之外的对局按 §5.15 真值表判定。
+**段位与评分（v1 口径）**：字段 `rating` / `rating_games` / `placement_left` / `rank_level` 保留（§5.8），跨端一致（S9 仍成立）。定级赛分档、Elo 式浮动、K 衰减与 `rating → rank_level` 阈值映射整体降为 v2 预留（对应 R18/R19，§10.2）；v1 不在本节定义定级分档表、Elo 参数表与阈值表。评分只在服务端结算事务内用整数运算算出，**不进 `stateHash`、不进双端逐步比对**；`human-ranked` 之外的对局按 §5.15 真值表判定，不写本表字段。**v1 的最小口径**（只求可判定、跨端一致，不引入任何阈值表）：`human-ranked` 每场结算，胜方 `rating += 1`、负方 `rating -= 1`（初始 0，整数，允许负值），`rating_games += 1`；`rank_level` 在 v1 不随对局变化（恒为初始档 `0`，「固定分档」在 v1 的落点就是这一档，分档表本身 v2 提供），`placement_left` 不消耗、恒 0；排行榜按 `(rating, rating_games)` 降序取前 N。
 
 ### 5.14 生命周期与升级路径
 
@@ -892,7 +918,7 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 | `DELETE /api/match/queue/{ticketId}` | — | `{ok}` | 退出队列 |
 | `GET /api/match/queue/{ticketId}` | — | `{state: waiting\|matched\|timeout, matchId?}` | 轮询结果（v1 不推 WS 匹配事件，降低一条长连接）；matched 后客户端凭 `matchId` 经网关粘性路由接入房间（§4.5），不单发实例地址 |
 | `POST /api/room/create` | `{gameId, mode, seatsCount}` | `{matchId, inviteCode?}` | 建房；按 §5.6 `gameId` 与 `rulesetId` 映射取生效 RuleSet；`seatsCount` 取 RuleSet 的 `seats.count`，不由客户端随意指定 |
-| `POST /api/room/join` | `{inviteCode}` | `{matchId, seat}` | 凭邀请码进房；座位由服务端分配并返回（§5.9） |
+| `POST /api/room/join` | `{inviteCode}` | `{matchId, seat, accept, availableSeats[], reason?}` | 凭邀请码进房；入座结果与 §5.9 `JoinAck` 同构：成功返回分配座位，`RS_SEAT_TAKEN` 经 `reason` 返回并附 `availableSeats[]`，不经 HTTP 409 |
 | `GET /api/history/matches` | `{gameId?, cursor, limit}` | `[{matchId, matchType, endReason, winnerTeam, startedAt, rounds}]` | 按玩家分页返回战绩摘要（`match_record`/`round_record` 聚合） |
 | `GET /api/replays/{matchId}` | — | 脱敏回放包或下载地址 | 只对已结束房间返回；玩家读取本人回放不属敏感导出（§8.3） |
 | `GET /api/compliance/status` | `{playerId}` | `{verified, minor, dailyMinutesLeft}` | **合规适配层的唯一接口**（§2.1 的"接口占位 + 开关"）：开关关闭时恒返回 `{verified:true, minor:false, dailyMinutesLeft:-1}`，U12 答复为"要接"后由适配器填充真实值 |
@@ -903,12 +929,12 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 
 | 入队 `mode` | `matchType` | 写 `player_stat` | 进排行榜 | 计段位 |
 | --- | --- | --- | --- | --- |
-| `ranked` | `human-ranked` | ✓ | ✓ | ✓（按 §5.13：定级赛按胜率落 1–4，之后 Elo 浮动） |
+| `ranked` | `human-ranked` | ✓ | ✓ | ✓（段位字段落库，v1 计算口径见 §5.13 最小口径：`rating` 按场 ±1、`rank_level` 恒初始档；定级分档与浮动算法 v2 预留） |
 | `casual` | `human-casual` | ✗（只写 `round_record`） | ✗ | ✗ |
 | `mixed`（含 bot 补位） | `mixed` | ✗ | ✗ | ✗ |
 | 纯 bot / 离线局（`ai-practice`） | `bot` | ✗ | ✗ | ✗ |
 
-**「计段位」一列按 §5.13 的三张表判**：`human-ranked` 的玩家在 `placement_left > 0` 时只累计 `rating`，定级期内 `rank_level` 不改、不进排行，第 10 场结算后按胜率落位，其后按 Elo 浮动；定级赛只认 `human-ranked`，`ai-practice`（人机房，模式侧别名，落库 `matchType` 记 `bot`）与自定义房不计入定级赛；其余 `mode` 一律不计段位、不写 `rating`。
+**「计段位」一列口径**：`human-ranked` 写入 `rating`/`rank_level` 字段并进排行榜；定级分档、Elo 浮动与阈值映射属 v2 预留（§5.13、R18/R19），v1 不在本段判定级落位。`ai-practice`（人机房，模式侧别名，落库 `matchType` 记 `bot`）与自定义房不计段位；其余 `mode` 一律不计段位、不写 `rating`。
 
 `human-ranked` 之外的房间不写段位与排行字段；离线局不上云、不计战绩（§6.6 三档可信度）。
 
@@ -922,6 +948,7 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 - 上调时机：协议 sunset 后（§9.2）、或旧版本出现无法在服务端兜底的问题（如 wasm 语义依赖）。
 - 上调后旧客户端行为：`JoinRoom`/`login` 直接返回 `CLIENT_TOO_OLD`，客户端只展示"请升级"页，不再进入大厅。
 - 下调不提供（历史上调即不可回退）。
+- `viewSchemaVersion` 由 **RuleSet 作者分配**：每 RuleSet 内自增，只增不改序；后台不统一发号、不跨 RuleSet 对齐编号。客户端白名单缓存键为 `(rulesetId, viewSchemaVersion)` 二元组（§9.2）。
 
 
 
@@ -968,7 +995,7 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 | 托管满 3 局 | **局间**移出房间，座位开放给其他玩家或 bot；新入座者继承该座位所在队的 `levels`（队级牌是队的属性，不随人走），战绩按座位累计；该座位已产生的局照常结算 | 不可逆，需重新进房 |
 | 全员离线超过 5 分钟 | 整场判"流局"，不计分、不扣分 | 不可逆 |
 
-**竞态的唯一裁决规则**：动作与超时同 tick 到达时，以"服务端单写者队列的入队顺序"为准——房间所有输入（玩家动作、tick、系统事件）都进同一个串行队列，队列里先执行的先生效；若动作在"超时事件"入队之前已入队，则动作有效且不判超时，反之判超时并丢弃动作，返回 `TOO_LATE`（§5.7：HTTP 409，不推进 `seatSeq`、不计入该座位超时次数，客户端按座位水位重拉增量）。同 tick 内**不按时间戳比较**，避免时钟粒度造成两端结论不同。
+**竞态的唯一裁决规则**：动作与超时同 tick 到达时，以"服务端单写者队列的入队顺序"为准——房间所有输入（玩家动作、tick、系统事件）都进同一个串行队列，队列里先执行的先生效；若动作在"超时事件"入队之前已入队，则动作有效且不判超时，反之判超时并丢弃动作，返回 `TOO_LATE`（§5.7：写入 `ActionAck.reason`，不推进 `seatSeq`、不计入该座位超时次数，客户端按座位水位重拉增量）。同 tick 内**不按时间戳比较**，避免时钟粒度造成两端结论不同。
 
 **相位转移条件**（`lifecycle` 四段 `deal → tribute → play → settle`；进/退条件唯一规格在此，§5.14 引用本节；相位机只按本表转移，不存在表外跳转）：
 
@@ -1009,12 +1036,12 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 结算涉及三件事：战绩、积分、房间状态。顺序固定为：
 
 1. 计算结算（纯函数，输入 `state`，输出 `Settlement`）；
-2. 以 `settlementId = f"{matchId}:{roundNo}"`（带分隔符，避免 `m1`+`23` 与 `m12`+`3` 撞键）为幂等键写入 PG（事务内写 `round_record` 与 `player_stat`）；
+2. 在进入 `settlementId` 事务**之前**，先以 `settlementId = f"{matchId}:{roundNo}"`（带分隔符，避免 `m1`+`23` 与 `m12`+`3` 撞键）为唯一键单独插入一条 `settlement_event`（结算尝试记账，先于业务事务落库）；随后在同一 `settlementId` 幂等事务内写 `round_record` 与 `player_stat`；
 3. 写入成功后才把房间标为 `round-ended`，并广播结算结果；
 4. 写库失败则房间停在 `settling`，后台任务按指数退避重试（上限 **3 次**，不是 10 次）；3 次仍失败即**放弃自动重试**：房间转 `settle-failed`，广播"本局结算失败（可重试）"并允许开下一局，失败局写进 `settlement_dead_letter` 表由人工按 `settlementId` 补写，补写成功后才补算战绩与积分——不引入"永久卡在结算中"的状态。
 
 **对账任务**：每日跑两份报表，**只比条数，不比百分比**（"版本号偏差 0.1%"这类说法无法定义分母，原稿作废）：
-1. 条数等式：`round_record` 条数 + `settlement_dead_letter` 条数 = `settlement_event` 条数（房间结算事件计数）。结算事件由服务端在结算事务内写入 `settlement_event` 表（§5.8），与 `round_record` 同一事务插入，不依赖日志导出与对象存储；`settlement_dead_letter` 行尚未计入 `round_record`，故在左侧相加；差异条数 > 0 即告警；
+1. 条数等式：成功写入的 `round_record` 条数 + 未补写的 `settlement_dead_letter` 条数 = `settlement_event` 条数（结算尝试次数）。`settlement_event` 在结算尝试发起时、进入 `settlementId` 事务之前单独插入（§5.8），以 `settlementId` 唯一，不依赖日志导出与对象存储；`settlement_dead_letter` 行尚未计入 `round_record`，故在左侧相加；已人工补写成功的死信不再计入左侧；差异条数 > 0 即告警；
 2. `order.status=paid` 金额合计 vs `payment_callback` 验签通过金额合计，差异金额 > 0 即告警（v1 无真实订单，该报表恒为空，**不列入 P0 清单**）。
 
 只告警、不冻结：首版没有值班团队，"冻结当日结算修正"没人解冻，反而会卡住次日结算（见 §7.5）。
@@ -1069,10 +1096,10 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 | 指标 | 类型 | 维度 | 阈值与动作 |
 | --- | --- | --- | --- |
 | `statehash_mismatch_total` | Counter | `match_id, seat` | **>0 即 P0**：10 分钟内出现任意一次，立即告警并自动导出该局回放 |
-| `viewhash_mismatch_total` | Counter | `match_id, seat, room_seq, client_platform` | **>0 即 P1**：客户端自报的 `viewHash` 仅作定位线索，按 `(matchId, seat, roomSeq)` 去重、单房间设上报上限；P0 只保留服务端重算视图与已下发值不一致（计入 `statehash_mismatch_total` 口径） |
+| `viewhash_mismatch_total` | Counter | `match_id, seat, room_seq` | **>0 即 P0**：服务端下发前重算 `viewHash`，与已下发视图不一致即记一次并告警；客户端不重算、不上报视图哈希（§5.9/§5.12），不设 `client_platform` 维度 |
 | `action_illegal_total` | Counter | `ruleset_version, action_kind` | 5 分钟窗口内 非法动作 / 该窗口**总动作数** >0.1% → P1（分母见下） |
 | `action_cpu_overrun_total` | Counter | `ruleset_version` | >0.1% → P2；CPU 超预算的处置口径见 §8.6 CPU 炸弹行，本指标只计数 |
-| `action_quota_exceeded_total` | Counter | `ruleset_id` | 加载期/发布校验/dry-run 候选枚举超 4096 上限即记一次 → P2；运行期不再按步拒绝（§5.7 `RS_QUOTA_EXCEEDED`） |
+| `action_quota_exceeded_total` | Counter | `ruleset_id` | L3 dry-run 期单次 `legal_actions` 实测候选枚举峰值超 4096 即记一次 → P2；不在载入期 L2 设闸门，运行期不按步拒绝（§5.7 `RS_QUOTA_EXCEEDED`） |
 | `room_panic_total` | Counter | `ruleset_version` | 解释器 native 侧 panic 被 `catch_unwind` 捕获即记一次 → P2，随 `process_crash_total` 一并观察 |
 | `action_ack_p99` | Histogram | `game_id` | >300ms 持续 5 分钟 → P2（体验预警）；100ms 是 §1.4 S6 压测容量基线目标，300ms 是线上体验告警线，二者用途不同 |
 | `room_active` | Gauge | `game_id, ruleset_version` | 相对**前 15 分钟滑动均值**下跌 30% → P1 |
@@ -1124,7 +1151,7 @@ P0 之外不做自动干预，只有两项自动动作：`canary` 指标超标�
 | 场景 | 第一步 | 第二步 | 第三步 |
 | --- | --- | --- | --- |
 | 玩家报"出不了牌" | 用 `matchId + roomSeq` 查日志，看 `legal_check` 的拒绝原因 | 比对客户端提交的 `card_ids` 与服务端手牌 | 若手牌不一致 → 查 `statehash_mismatch`，按漂移处理 |
-| 两端看到的牌不一样 | 取该局 trace，比对服务端逐步 `state_hash`（用于漂移检测）与两侧 `viewHash` 上报记录（用于首处分歧定位）；两类哈希先按 §5.12 投影后再相比 | 定位第一个分歧的 `roomSeq` | 导出回放，用离线重放器复现 |
+| 两端看到的牌不一样 | 取该局 trace，比对服务端逐步 `state_hash`（用于漂移检测）与服务端自证的 `viewHash` 记录（用于首处分歧定位）；两类哈希先按 §5.12 投影后再相比 | 定位第一个分歧的 `roomSeq` | 导出回放，用离线重放器复现 |
 | 结算对不上 | 查 `settlement_pending_age` 与 `round_record` | 核对 `settlement_id` 是否重复写入 | 跑当日对账报表，看条数或金额差异 |
 | 发布后新房间异常 | 看 `canary_illegal_rate` 与 `room_active` 按版本的变化 | 确认是否已自动回滚 | 用 L3 dry-run 复跑该 RuleSet，定位具体原语 |
 
@@ -1212,7 +1239,7 @@ P0 之外不做自动干预，只有两项自动动作：`canary` 指标超标�
 | 风险 | 防护 |
 | --- | --- |
 | RuleSet 注入任意代码 | 类型系统拒绝（§5.3）；解释器只认固定原语 |
-| CPU 炸弹（超大枚举、无限递归） | 候选枚举 4096 条为**加载期/发布期静态上限**：超限拒绝加载或拒绝发布，同一码 `RS_QUOTA_EXCEEDED`（载入期 L2、发布校验、dry-run 通用，§5.7）；运行时单动作预算 **5ms**，超预算记 `action_cpu_overrun_total`（P2），**不判该动作非法、不按步拒绝、不进非法率、不参与 canary 判定、不作回滚条件、不对房间限流**——合法性只由规则决定，不能由机器快慢决定；本条是 CPU 超预算的唯一口径，其余章节只引用本节 |
+| CPU 炸弹（超大枚举、无限递归） | 候选枚举 4096 条为 **L3 dry-run 期实测峰值上限**：单次 `legal_actions` 实测峰值超 4096 判 dry-run 无效、拒绝发布，同一码 `RS_QUOTA_EXCEEDED`（不在载入期 L2 设静态闸门，§5.7）；运行时单动作预算 **5ms**，超预算记 `action_cpu_overrun_total`（P2），**不判该动作非法、不按步拒绝、不进非法率、不参与 canary 判定、不作回滚条件、不对房间限流**——合法性只由规则决定，不能由机器快慢决定；本条是 CPU 超预算的唯一口径，其余章节只引用本节 |
 | 解释器 panic 拖垮进程 | 服务端 native：动作执行包在 `catch_unwind` 内，panic 转为"该动作失败"并记 `RS_INTERNAL_PANIC`；**wasm 侧没有 unwind**（`panic=abort`），策略是"panic 即整实例重载"。S1 的例外条款写在 §1.4 里（`panic-injection` 用例不参与双端同哈希判定），本表不另立例外 |
 | 恶意 RuleSet 拖慢全体 | v1 单实例 + 网关粘性路由，不做房间迁移（§4.5）。CPU 超预算按本节 CPU 炸弹行口径处置：只记 `action_cpu_overrun_total` 并走 P2 告警（§7.2），不另设判定 |
 | 越权读取他人手牌 | `view.project` 是唯一出口，引擎不提供全量视图 API |
@@ -1226,7 +1253,7 @@ P0 之外不做自动干预，只有两项自动动作：`canary` 指标超标�
 | 异常行为检测 | 出牌耗时分布、连胜异常、同 IP 多账号、`statehash` 不一致计数 | 只做打点与告警，不做自动封禁 |
 | 客户端完整性 | 上报客户端版本与包哈希，异常版本进灰度名单 | 不做强校验（会误伤绕开渠道更新的用户） |
 | 记牌器 | 属"用公开信息辅助"，不封堵 | 这是合规能力，不是外挂 |
-| 评分防刷分 | 同一对对手 24 小时内重复对局：衰减系数第 1–2 场 1.0、第 3–4 场 0.5、第 5 场起 0；最终 `K = 档位 K（40/32，§5.13 表二）× 衰减系数`，先按 `rating_games` 定档位 K，再乘衰减系数；系数 0 即 `K = 0`，该场不写 `rating`、不递增 `rating_games`、不计定级场次；24 小时窗口外系数恢复 1.0。人机房（`ai-practice`）与自定义房不写 `rating`；断线判负按正常 `K` 计；中途主动退出按判负处理、`K` 不变（不做惩罚加倍） | 只改 `rating` 的实际变动量，不改判定与结算口径（§5.13、§6.6） |
+| 评分防刷分 | **v2 预留**：重复对局衰减系数、档位 K 与 K 衰减随段位/Elo 浮动整体降为 v2（R18/R19，§5.13/§10.2），v1 不实现刷分衰减算法。`rating`/`rank_level` 只在服务端结算事务内用整数运算算出，不进 `stateHash`、不进双端逐步比对；人机房（`ai-practice`）与自定义房不写 `rating` | 评分口径改动不影响判定与结算（§5.13、§6.6） |
 
 ### 8.8 审计
 
@@ -1260,13 +1287,13 @@ P0 之外不做自动干预，只有两项自动动作：`canary` 指标超标�
 
 | 变更类型 | 允许的兼容承诺 | 落地动作 |
 | --- | --- | --- |
-| engine 补丁版本 | 判定结果不变 | 回放 `stateHash` 必须一致，CI 强制 |
+| engine 补丁版本 | 判定结果不变 | 回放先比版本三元组 `(engineVersion, interpreterVersion, rulesetVersion)`，版本一致再比 `stateHash`（版本串是旁挂字段、不进哈希拼接，§5.12）；engine 补丁版本下 `stateHash` 必须一致，CI 强制。跨版本比对一律用 `(版本, 哈希)` 二元组，不跨版本直接比哈希 |
 | engine 次版本（新增原语） | 老 RuleSet 行为不变 | 老 RuleSet 不引用新原语即不受影响 |
 | interpreter 次版本 | 向后兼容老 RuleSet | RuleSet 的 `interpreter` 区间校验 |
 | interpreter 主版本 | **不承诺兼容** | 强制要求老 RuleSet 迁移，或冻结旧解释器版本继续服务（双版本并存上限 3 个月） |
 | RuleSet 新版本 | 只影响新房间 | 运行中房间锁版本（§5.5） |
 | 协议字段 | 只增不删、不改语义，**但每次增字段同时登记 sunset 条件** | 服务端按 `clientVersion` 做特性开关；**sunset 规则**：某字段上线满 3 个月且旧版本客户端占比 < 1%，即可删除该特性开关与旧字段，`minClientVersion` 同步上调（§5.16），不承诺无限期维护 N 套分支 |
-| 视图白名单（`viewSchemaVersion`） | 只增不改序；版本号单调递增（u16，溢出即视为协议主版本变更） | 服务端按房间锁定的 `viewSchemaVersion` 下发 `view`（§5.9/§5.12）；客户端按版本号缓存白名单。旧客户端遇到未知 `viewSchemaVersion` 只渲染已知字段、**不参与该次 `viewHash` 比对**（避免假阳性），并在下次登录按 `minClientVersion` 拉起更新；删字段的唯一合法路径是先把它移出白名单并抬版本号，不允许原地改序 |
+| 视图白名单（`viewSchemaVersion`） | 只增不改序；版本号由 **RuleSet 作者分配**、每 RuleSet 内自增（u16，溢出即视为协议主版本变更），后台不统一发号、不跨 RuleSet 对齐编号 | 服务端按房间锁定的 `viewSchemaVersion` 下发 `view`（§5.9/§5.12）；客户端白名单缓存键为 `(rulesetId, viewSchemaVersion)` 二元组（`rulesetId`/`rulesetVersion` 随 `RoomSnapshot` 下发）。旧客户端遇到未知 `viewSchemaVersion` 只渲染已知字段、不做视图哈希比对（避免假阳性），并在下次登录按 `minClientVersion` 拉起更新；删字段的唯一合法路径是先把它移出白名单并抬版本号，不允许原地改序 |
 | DB 表结构 | 只前滚迁移 | 破坏性变更走"影子表 → 双写 → 切换 → 观察 → 删旧"五步 |
 
 **最贵的一条**：`interpreter` 主版本变更会让所有历史 RuleSet 失效。因此规则语言的语法要一次设计到位（`A14` 的风险点），而**解释器版本存档**是兜底：保留旧解释器二进制，老 RuleSet 按 `ruleset.pinned_interpreter_version` 选择对应的旧解释器；`interpreter` 区间内多版本并存时，一律以发布时锁定的 `pinned_interpreter_version` 为准。
@@ -1291,7 +1318,7 @@ P0 之外不做自动干预，只有两项自动动作：`canary` 指标超标�
 | `canary` | 新建房间的 10% | 30 分钟 | 该版本新建房间内 非法率 ≤0.05%、`statehash` 不一致 0、服务端复核 `viewHash` 不一致 0、`process_crash_total` 次数 0（次数 >0 即回滚，不按比率）；CPU 超预算按 §8.6 处置，不计入本判定 | 自动回滚 |
 | `full` | 100% | 持续 | 指标与 canary 同口径不恶化；`action_ack_p99` ≤ 发布前 7 日均值 ×1.1。首次发布无 7 日基线时，只用绝对值上限 `action_ack_p99 < 300ms`（§7.2 P2 线）；自第二个版本起才比对 7 日均值 | 回滚到候选集最近一个 `active`（口径见 §5.6 rollback 行） |
 
-三处枚举对齐：本节阶段名、§5.6 接口的 `stage`、`ruleset_release.stage` 用同一套字符串（`draft/validated/canary/full/rolled_back/retired`）。**取消 `ramp5`/`ramp25`**：内测规模下多两级只增加人工推进成本，不增加安全性（§8 的 YAGNI 剪枝）。
+三处枚举对齐：本节阶段名、§5.6 接口的 `stage`、`ruleset_release.stage` 用同一套字符串；release 行阶段集合为 `canary/full/superseded/rolled_back/retired`，`draft`/`validated` 由 `ruleset_validation` 聚合派生、不落 release 行（§5.8）。**取消 `ramp5`/`ramp25`**：内测规模下多两级只增加人工推进成本，不增加安全性（§8 的 YAGNI 剪枝）。
 
 **内测初期的样本量问题**：canary 覆盖 10% 新建房间，30 分钟仍可能只出个位数房间。因此增加准入条件：**该阶段样本动作数 < 200 时，不按比率判定，改为"零 P0 事件"判定**，并延长观察窗口至 2 小时；满 2 小时仍 < 200 的，由人工 TOTP 决定放行（`promote` 到 `full`）或回滚，决定与理由落审计（出口条件见 §5.6）。
 
@@ -1305,7 +1332,7 @@ P0 之外不做自动干预，只有两项自动动作：`canary` 指标超标�
 | 决策人 | `canary` 阶段系统自动；`full` 阶段由管理员在 5 分钟内决定 |
 | 时间预算 | 从决定到新房间不再使用坏版本 ≤5 分钟。两步顺序：先改 `ruleset_release` 表目标行（唯一真相），再重建对应 Redis 指针；表改成功而指针重建失败时，新房间回源查表判定版本，失败落告警并重试，不以 Redis 指针为真相 |
 | 已开局房间 | **不重放、不回滚**，按锁定版本打完；若该版本被判定有致命缺陷，强制流局并按 §6.5 处置：补偿记录落 `settlement_compensation` 表（`issued=false` 不发放）；`settlement_dead_letter` 仅用于结算补写 |
-| 回滚后的 RuleSet | `stage` 记为 `rolled_back`（**不是 `retired`**），该版本只读、不可再推进；要改就发新版本。`retired` 只用于"明确下线且不再被任何房间引用" |
+| 回滚后的 RuleSet | `stage` 记为 `rolled_back`（**不是 `retired`**）；该版本经重新校验通过后可合法转移回 `canary`/`full`，否则只读、要改就发新版本。`superseded` 表示曾到 `full`、已被更新 `full` 取代、仍可回滚；`retired` 只表示人工确认下线（与"被取代"无关），不再被任何房间引用 |
 
 ### 9.6 客户端兼容
 
@@ -1346,14 +1373,14 @@ P0 之外不做自动干预，只有两项自动动作：`canary` 指标超标�
 
 | 编号 | 风险（与 §11.1 同名） | 测试用例 | 通过判据 |
 | --- | --- | --- | --- |
-| R1 | 规则判定写错 + DSL 表达力不够（两条风险共用一个编号，名册见 §11.1 同名行） | ①黄金用例覆盖牌型全表、进贡/还贡/升级档位残局（§10.3 手工构造 40 条）；②M0 末纸面推演斗地主 RuleSet（不实现）；掼蛋基线 RuleSet 走 L1–L4 | ①与 §5.13 规格逐点一致、逐步 `stateHash` 一致；②纸面完整规则不需新增原语；基线校验全过，否则触发降级（`A14`） |
-| R2 | 34～38 周基线不成立 | 第 16 周 gate 验收：Web + 本地 bot 打完一场（含再来一局、杀进程后恢复） | 验收记录入台账；未过即按 R2 缩范围 |
+| R1 | 规则判定写错 + DSL 表达力不够（两条风险共用一个编号，名册见 §11.1 同名行） | ①黄金用例覆盖牌型全表、进贡/还贡/升级档位残局（§10.3 手工构造 40 条）；②M0 末纸面推演族内掼蛋变体 RuleSet（不实现）；掼蛋基线 RuleSet 走 L1–L4 | ①与 §5.13 规格逐点一致、逐步 `stateHash` 一致；②纸面完整规则不需新增原语；基线校验全过，否则触发降级（`A14`） |
+| R2 | 40～44 周基线不成立 | 第 16 周 gate 验收：Web + 本地 bot 打完一场（含再来一局、杀进程后恢复） | 验收记录入台账；未过即按 R2 缩范围 |
 | R3 | 解释器性能不达标 | §10.5 基准 + M3 压测；按 A4 峰值 ×3 倍余量空转 | P99 达预算；实测上限写回 §4.8；房间密度不低于实测上限 60% |
-| R4 | 规则语法返工 | 表达力矩阵：掼蛋 + 斗地主（纸面）+ 麻将（纸面）对照原语清单 | 语法冻结评审通过；发布后只做加法 |
+| R4 | 规则语法返工 | 表达力矩阵：掼蛋 + 族内变体（纸面）+ 麻将（纸面）对照原语清单 | 语法冻结评审通过；发布后只做加法 |
 | R5 | 商店渠道缺位 | Web 分享链路走查：从链接到打完一局 | ≤3 步，且无需安装 |
 | R6 | 2 人上下文过载 | 每两周一次"近两周改动 crate 分布"审查记录；owner 分工表（一人引擎 + DSL，一人平台 + 客户端） | 同一周内无人切换三个以上模块；crate 边界即职责边界 |
 | R7 | 状态漂移 | §10.4 双端一致性；断线恢复故障注入（含 `snapshotReset` 分支） | 每步 `stateHash` 一致；恢复后哈希与断线前一致 |
-| R8 | bot 体验差 | bot 对 bot 对子胜率：固定种子、固定名单文件 `golden/bot_matchup.txt`（bot 对子胜率专用，与 §10.4 一致性快速集 `fast20.txt` 分开，§10.3 注册）；三档各跑固定集 | 对子胜率硬断言：`easy` 对 `normal` ≤30%、`normal` 对 `easy` ≥60%、`hard` 对 `normal` ≥60%；胜率区间随版本调整，测试只断言对子胜率，不冻结算法与区间 |
+| R8 | bot 体验差 | bot 对 bot 对子胜率：固定种子、固定名单文件 `golden/bot_matchup.txt`（bot 对子胜率专用，与 §10.4 一致性快速集 `fast20.txt` 分开，§10.3 注册）；三档各跑固定集。**生效时点：三条胜率断言挂到 M2 之后执行；M0 gate 与 M1 gate 不受本断言约束** | 对子胜率硬断言：`easy` 对 `normal` ≤30%、`normal` 对 `easy` ≥60%、`hard` 对 `normal` ≥60%；胜率区间随版本调整，测试只断言对子胜率，不冻结算法与区间 |
 | R9 | 四端打包与签名卡住 | 四端产物构建与安装冒烟（§10.7） | 四产物均可安装并进房 |
 | R10 | 素材授权问题 | `../../assets/license.md` 全表可查 + 抽样核对许可原文 | 0 条缺原文 |
 | R11 | 人机混合房引发不满 | 集成用例：`mixed` 房结算后查 `player_stat`；AI 座位标注走查 | 该表 diff 为空；AI 座位标注可见 |
@@ -1365,8 +1392,8 @@ P0 之外不做自动干预，只有两项自动动作：`canary` 指标超标�
 | R16 | 发布链被绕过 | 每月演练：注入非法 RuleSet 走发布链 | 被 L2/L3 拦下；人为绕过时 canary 自动回滚 |
 | R3 | 性能回退 | 基准固定基线，超阈值阻断合并 | `legal_actions` P99 退化 >10% 即阻断 |
 | R17 | 客户端兼容断裂 | 旧版本客户端进房冒烟 | 旧版能看到玩法列表与 `minClientVersion` 提示 |
-| R18 | 定级赛归属 | 集成：新账号连续 10 场 `human-ranked` 结算，其中第 3 场插入 1 局 `ai-practice`、第 6 场插入 1 局自定义房 | `placement_left` 只被 `human-ranked` 递减；第 10 场结算后 `rank_level` 等于这 10 场胜率对应档；定级期内 `rank_level` 不改、不进排行 |
-| R19 | 同对手重复对局 K 衰减 | 集成：同一对对手在 24 小时内跑 5 场 `human-ranked`（固定种子、固定 `rating` 初值），逐场断言 `rating` 增量 | 第 1–2 场取当前 `K` 档（40/32）、第 3–4 场 `Δrating` 减半、第 5 场 `Δrating = 0`（不写 `rating`）；24 小时窗口外恢复全 `K` |
+| R18 | 定级赛归属 | **v2 预留**：定级赛归属与 `rank_level` 落位算法随段位体系整体降 v2（§5.13/§8.7）；v1 只保留 `rating`/`rank_level` 字段落库，不跑定级落位断言 | v1 不判定级落位；v2 立项后按本表补集成用例 |
+| R19 | 同对手重复对局 K 衰减 | **v2 预留**：重复对局衰减系数与 K 衰减随 Elo 浮动整体降 v2（§5.13/§8.7）；v1 不实现刷分衰减 | v1 不跑 `Δrating` 衰减断言；v2 立项后按本表补集成用例 |
 
 ### 10.3 黄金用例怎么来
 
@@ -1388,7 +1415,7 @@ P0 之外不做自动干预，只有两项自动动作：`canary` 指标超标�
 3. 比对：逐步比对 `stateHash`、`legal_actions` 的排序结果（排序也必须一致，否则客户端提示顺序会不同）。
 4. 门禁：任何一步不一致即失败，并输出第一处分歧的 `roomSeq` 与两边状态摘要。
 5. 频率：每次提交跑固定名单 `golden/fast20.txt`（§10.3）；每晚跑全量（含所有黄金用例）。
-6. 段位与评分的两条用例——**定级赛 10 场归属**、**同对手重复对局 `K` 衰减**（§10.2）——随每晚全量集跑，门禁同第 4 条（任何一步不一致即失败）；它们比对的是结算写入的 `rating` / `rank_level` 终值，不参与逐步 `stateHash` 比对。
+6. 段位与评分的两条用例——**定级赛 10 场归属**、**同对手重复对局 `K` 衰减**（§10.2 R18/R19）——随段位体系整体降 v2 预留，v1 全量集不跑；v2 立项后补入。`rating`/`rank_level` 终值不参与逐步 `stateHash` 比对。
 
 ### 10.5 性能基准
 
@@ -1432,10 +1459,10 @@ P0 之外不做自动干预，只有两项自动动作：`canary` 指标超标�
 
 | # | 风险 | 概率 | 影响 | 触发信号（什么时候知道它成真了） | 缓解手段 | 验证点 |
 | --- | --- | --- | --- | --- | --- | --- |
-| R1 | **规则判定写错 + DSL 表达力不够**（R1 = 规则判定写错 + DSL 表达力不够，两条风险共用一个编号）：①牌型、进贡、升级档位等规则本体实现与 §5.13 规格不符；②麻将的鸣牌仲裁、掼蛋的进贡链这类结构写不出来 | 高 | 高 | ①黄金用例出现合法被拒 / 非法被接受，或残局结果与规格不符；②M0 末纸面推演斗地主时，"必须加新原语才能表达"出现超过 3 次 | ①黄金用例覆盖牌型全表与进贡/升级残局，并与 §5.13 逐点对照；②降级为"族内模板 + 参数"，工期回落 6～8 周，麻将族推迟 | ①§10.2 R1 的判定用例全绿；②**M0 末（第 6 周）gate**：斗地主能否只靠 RuleSet（纸面）写出完整规则；M3 接入时再实测 |
-| R2 | **34～38 周基线不成立**：2 人同时做引擎、DSL、平台、四端、后台 | 高 | 高 | 第 16 周 gate 没达成（Web + 本地 bot 打不完一整场）；或第 20 周时 M2 剩余工作量 > 计划一半 | 三档缩范围：先砍斗地主（只做掼蛋）→ 再砍桌面壳（只留 Web）→ 最后砍回放式观战 | 16 周 gate 硬验收（§2.4），未过即触发缩范围 |
-| R3 | **解释器性能不达标**：单动作超预算，单实例房间密度掉到实测上限的 60% 以下 | 中 | 中 | M0 基准测试 P99 超预算；M3 压测房间密度 < 上限 60% | RuleSet 预编译为字节码；原语内枚举加缓存；必要时单实例改多进程 | M0 基准：`legal_actions` / `apply` P99（§10.5）；M3 压测给出单实例上限 |
-| R4 | **规则语法返工**：主版本不兼容，历史 RuleSet 全部失效 | 中 | 高 | 表达第二款玩法（斗地主）时需要改已有原语语义 | 语法冻结前用"掼蛋 + 斗地主（纸面）+ 麻将（纸面）"做表达力矩阵；发布后只做加法 | 语法冻结评审（M0 末），都走纸面，不做可运行对局 |
+| R1 | **规则判定写错 + DSL 表达力不够**（R1 = 规则判定写错 + DSL 表达力不够，两条风险共用一个编号）：①牌型、进贡、升级档位等规则本体实现与 §5.13 规格不符；②麻将的鸣牌仲裁、掼蛋的进贡链这类结构写不出来 | 高 | 高 | ①黄金用例出现合法被拒 / 非法被接受，或残局结果与规格不符；②M0 末纸面推演族内掼蛋变体时，"必须加新原语才能表达"出现超过 3 次 | ①黄金用例覆盖牌型全表与进贡/升级残局，并与 §5.13 逐点对照；②降级为"族内模板 + 参数"，工期回落 6～8 周，麻将族推迟 | ①§10.2 R1 的判定用例全绿；②**M0 末（第 6 周）gate**：族内变体能否只靠 RuleSet（纸面）写出完整规则；M3 接入时再实测 |
+| R2 | **40～44 周基线不成立**：2 人同时做引擎、DSL、平台、四端、后台 | 高 | 高 | 第 16 周 gate 没达成（Web + 本地 bot 打不完一整场）；或第 20 周时 M2 剩余工作量 > 计划一半 | 三档缩范围：先砍桌面壳（只留 Web）→ 再砍回放式观战 → 最后砍族内变体配置能力 | 16 周 gate 硬验收（§2.4），未过即触发缩范围 |
+| R3 | **解释器性能不达标**：单动作超预算，单实例房间密度掉到实测上限的 60% 以下 | 中 | 中 | M0 基准测试 P99 超预算；M3 压测房间密度 < 上限 60% | RuleSet 预编译为字节码；原语内枚举加缓存；兜底手段为单实例改多进程 | M0 基准：`legal_actions` / `apply` P99（§10.5）；M3 压测给出单实例上限 |
+| R4 | **规则语法返工**：主版本不兼容，历史 RuleSet 全部失效 | 中 | 高 | 表达第二款族内变体时需要改已有原语语义 | 语法冻结前用"掼蛋 + 族内变体（纸面）+ 麻将（纸面）"做表达力矩阵；发布后只做加法 | 语法冻结评审（M0 末），都走纸面，不做可运行对局 |
 | R5 | **商店渠道缺位**：暂不申报版号，移动端只能侧载/TestFlight，拿不到应用商店的自然流量与内购通道 | 高 | 中 | 上线 3 个月后新增用户主要来自 Web 分享、留存依赖熟人传播 | 首发 Web/H5 + 桌面自主分发；用内测数据验证留存与付费意愿，再决定是否为商店渠道把版号排回关键路径 | 每季度看一次渠道机会成本（`A9` 修订版） |
 | R6 | **2 人上下文过载**：引擎、DSL、平台、四端、后台五线并行 | 高 | 中 | 同一周内两人都在切换三个以上模块 | 固定 owner（一人引擎 + DSL，一人平台 + 客户端）；crate 边界即职责边界 | 每两周看一次"近两周改动的 crate 分布" |
 | R7 | **状态漂移**：双端或恢复后哈希不一致 | 中 | 高 | `statehash_mismatch_total` > 0 | 确定性纪律 + 双端一致性测试 + 重放恢复 | §10.4 每次提交 |
@@ -1446,11 +1473,11 @@ P0 之外不做自动干预，只有两项自动动作：`canary` 指标超标�
 | R12 | **短信通道受阻**：模板报备失败或限额不够 | 低 | 中 | M2 账号链路阻塞 | 测试号白名单兜底；备一家服务商 | M2 前完成报备 |
 | R13 | **表达力上限未被验证**：v1 只做出牌族的两款玩法，`window` / 仲裁原语从未被真实玩法压过 | 中 | 高 | v2 接麻将时才发现结构性缺口，需要改原语语义（连带 R4） | v1 不把 `window.open` / `window.arbitrate` 纳入类型与枚举；v2 启动前先做一次"麻将最小对局"纸面推演，确认需要后按 engine 次版本加回并补测 | v2 立项时用纸面规则逐条对照原语清单 |
 | R14 | **死锁 / 无法终局**：相位机或规则配置导致某局无法出完 | 中 | 高 | L3 随机对局出现不终局局，报 `RS_NO_TERMINATION` | 终局条件写死在 §5.13「局终止与名次」；L3 跑 200 局闸门，失败留最小动作序列 | §10.2 R14：100% 终局、非法动作率 0 |
-| R15 | **结算账不平**：结算事务计数与战绩记录对不上 | 中 | 高 | 每日对账报表条数差异非零 | `settlement_event` 与 `round_record` 同一事务插入；死信人工补写（§6.6） | §10.2 R15：幂等键不重复、对账差异 0 |
+| R15 | **结算账不平**：结算事务计数与战绩记录对不上 | 中 | 高 | 每日对账报表条数差异非零 | `settlement_event` 在结算尝试发起时、进入 `settlementId` 事务之前单独插入；死信人工补写（§6.6） | §10.2 R15：幂等键不重复、对账差异 0 |
 | R16 | **发布链被绕过**：非法 RuleSet 绕过 L1–L4 闸门进入 canary 或全量 | 中 | 高 | 演练注入非法 RuleSet 未被拦；线上出现闸门外版本 | 发布只走 §5.6 接口，闸门结果落 `ruleset_validation` 留档，审计留痕 | §10.2 R16：被 L2/L3 拦下，人为绕过时 canary 自动回滚 |
 | R17 | **客户端兼容断裂**：旧版本客户端进房或列表异常 | 中 | 中 | 旧版冒烟看不到玩法列表或 `minClientVersion` 提示 | 协议只增不删，`minClientVersion` 特性开关（§5.16/§9.2） | §10.2 R17：旧版能看到玩法列表与升级提示 |
-| R18 | **定级赛归属错误**：非 `human-ranked` 场次被计入定级或段位 | 低 | 中 | `player_stat` 定级场次、`rank_level` 与 §5.15 真值表不符 | 定级只认 `human-ranked`，`ai-practice` 与自定义房不计（§5.15） | §10.2 R18：`placement_left` 只被 `human-ranked` 递减 |
-| R19 | **同对手刷分**：重复对局刷高 `rating` | 中 | 中 | `rating` 增量异常集中于少数固定对手对 | 24 小时内重复对局 K 衰减（§8.7），`K=0` 场不写 `rating` | §10.2 R19：逐场断言 `rating` 增量符合衰减档位 |
+| R18 | **定级赛归属错误**：非 `human-ranked` 场次被计入定级或段位（**v2 预留**：定级归属与落位算法随段位体系降 v2，§5.13/§10.2 R18） | 低 | 中 | v1 不跑定级落位判定；v2 立项后按 §5.15 真值表核对 | v1 只保留 `rating`/`rank_level` 字段落库；定级只认 `human-ranked`，`ai-practice` 与自定义房不计 | v2 立项后补 §10.2 R18 集成用例 |
+| R19 | **同对手刷分**：重复对局刷高 `rating`（**v2 预留**：重复对局衰减与 K 衰减随 Elo 浮动降 v2，§8.7/§10.2 R19） | 中 | 中 | v1 不实现刷分衰减；v2 立项后观察 `rating` 增量是否集中于少数固定对手对 | v1 不写衰减系数；v2 按 24 小时重复对局 K 衰减处置 | v2 立项后补 §10.2 R19 集成用例 |
 
 ### 11.2 未决项（需要人拍板，设计者不代替决定）
 
@@ -1464,7 +1491,7 @@ P0 之外不做自动干预，只有两项自动动作：`canary` 指标超标�
 | U6 | 是否计划海外发行 | 影响服务器位置、数据合规与支付渠道 | **已定（2026-11-23）**：只做国内；服务器放国内并走 ICP 备案，产品只做中文 | settled |
 | U7 | v1 是否接真实支付 | 决定账务层与合规成本 | **已定（2026-11-23）**：留支付占位不收费（`order`/`payment_callback`/`refund` 三表先建），不接渠道 | settled |
 | U8 | 观战留不留 | 影响房间层工作量与协议复杂度 | **已定（2026-11-23）**：只做回放式观战，不做实时旁观 | settled |
-| U9 | 工期基线怎么定 | 决定能否对外报交付时间 | **已定（2026-11-23）**：拆到 M0–M4 五段并承诺 34～38 周，阶段延期必须重算总和 | settled |
+| U9 | 工期基线怎么定 | 决定能否对外报交付时间 | **已定（2026-11-23，round-05 修订）**：拆到 M0–M4 五段并承诺 40～44 周（因保留 172 条全量测试与八层全量回归，由 34～38 周上调 +6 周），阶段延期必须重算总和 | settled |
 | U10 | 掼蛋规则本体谁定 | 决定 M1 能否开工 | **已定（2026-11-23）**：由设计者按淮安主流打法起草《规则取值表》（§5.10），用户逐条确认后冻结 | settled |
 | **U11** | 商业化起点与版号提报的触发条件（具体日期、责任人、提报批次） | 决定"何时能收款"这条对外承诺；设计者不知道你的资金安排 | 默认：**v1 上线后观察 8 周留存再决定**；提报日 D 起按 `A9` 的 6～12 个月倒排可收款日 | **open（待人定）** |
 | **U12** | 无版号、免费内测（Web/H5 非商店渠道）是否必须接实名与防沉迷 | 这是法务口径，不是技术取舍；接错的代价是下架 | 默认：**内测期不接**，公网开放前由法务/代办给书面答复；答复"要接"则设为硬 gate（`D_compliance`），排在 M3 | **open（待法务/代办）** |
@@ -1492,7 +1519,7 @@ P0 之外不做自动干预，只有两项自动动作：`canary` 指标超标�
 | D3 | 客户端单套 Web 渲染 + 桌面壳 Tauri 2 + 浏览器直跑；移动壳押后 | 1 套 UI 覆盖四端；引擎统一 wasm，省掉跨语言绑定层 | 移动端延后（U5）；桌面壳包体略大 | C4、`A12`、U5 |
 | D4 | 平台层与房间层自建，不引入 Nakama / Colyseus / Skynet / Photon | 引擎必须同进程；规则后台通用框架给不了；2 人不宜多担一种运行时 | 平台能力需自写 4～6 周；房间层 3～4 周 | §4.3、§4.4、`A15` |
 | D5 | 传输层自研 protobuf over WebSocket | 牌局消息量小；必须按座位裁剪视图，通用全量同步不安全 | 重连、心跳、增量语义要自己设计 | §3 约束 3、§4.1 |
-| D6 | 引擎形态从"每玩法一个 crate"改为"原语库 + RuleSet 解释器" | 运营要零代码上新玩法，规则必须是数据 | 解释执行开销；规则语法一旦发布难改；相对单玩法基线约 +16 周（已并入 §2.4 的 34～38 周）。**生效判据**：v1 上线后 3 个月内存在第 2 款玩法的上线计划，且至少 1 名非研发能独立写出 RuleSet；判据不成立即回落"每玩法一个 crate" | C7、C8、`A14`、`A16` |
+| D6 | 引擎形态从"每玩法一个 crate"改为"原语库 + RuleSet 解释器" | 运营要零代码上新玩法，规则必须是数据 | 解释执行开销；规则语法一旦发布难改；相对单玩法基线约 +16 周（已并入 §2.4 的 40～44 周）。**生效判据**：v1 上线后 3 个月内存在第 2 款玩法的上线计划，且至少 1 名非研发能独立写出 RuleSet；判据不成立即回落"每玩法一个 crate" | C7、C8、`A14`、`A16` |
 | D7 | 后台编辑器以积木为主，源码模式为辅，两者读写同一份 RuleSet | 非技术人员不碰语法，非法结构在 UI 层就造不出来 | 编辑器开发量 +2 周；**不承诺"两视图无损往返"**——源码视图只保证"能被解析回同一份 RuleSet 的字段级等价"，不保证注释、顺序、格式逐字还原（写源码→再读回积木时按字段重排），所以不需要第二套 TS 解析器常驻关键路径 | C9、`A17` |
 | D8 | 房间创建即锁 RuleSet 版本，发布只影响新房间 | 否则同一局中途换规则，`stateHash` 不可能稳定 | 缺陷版本要等房间打完才彻底下线 | §5.5、§9.5 |
 | D9 | 发布前跑四级校验（结构 / 引用 / 可玩性 200 局 / 黄金用例） | "配置即炸弹"的唯一有效闸门 | 发布流程变长（分钟级） | §5.4、S12 |
@@ -1506,10 +1533,10 @@ P0 之外不做自动干预，只有两项自动动作：`canary` 指标超标�
 | D17 | v1 只做回放式观战，不做实时旁观 | 实时旁观要新增只读座位、额外裁剪与流控，收益远低于成本 | 玩家不能"围观正在打的牌局" | U8（2026-11-23） |
 | D18 | 首发只做 Web/H5 + 桌面自主分发，版号暂不申报，移动壳押后 | 现金流最早；牌类版号周期与不确定性太高，不该压住首发 | 商店自然流量与内购通道暂时拿不到；移动用户只能侧载/TestFlight | U5（2026-11-23）、`A9` 修订版 |
 | D19 | 支付只留占位不收费（建 `order` / `payment_callback` / `refund` 三表与回调接口，不接渠道） | 上线时不收款就没有支付合规义务；但表结构一旦缺，后续接入要改库 | 早期无收入；占位表要随版本演进维护 | U7（2026-11-23） |
-| D20 | 工期基线 = M0–M4 五段、合计 34～38 周，按阶段承诺 | 单一总数字掩盖了阶段间的依赖；分阶段才能逐段验收 | 阶段间要重算总和，任一段延期都要对外改口径 | U9（2026-11-23）、§2.4 |
+| D20 | 工期基线 = M0–M4 五段、合计 40～44 周，按阶段承诺（round-05 修订：因保留 172 条全量测试与八层测试全量回归，由 34～38 周上调 +6 周，用户 2026-11-23 拍板） | 单一总数字掩盖了阶段间的依赖；分阶段才能逐段验收 | 阶段间要重算总和，任一段延期都要对外改口径 | U9（2026-11-23，round-05 修订）、§2.4 |
 | D21 | 掼蛋规则取值由设计者起草《规则取值表》，用户逐条确认后冻结 | 规则口径（同花顺位次、进贡触发、升级档、过 A 条件）逐条都是可争议的，模糊就写不出引擎 | 冻结前 M1 不能开工；确认过程占用用户时间 | U10（2026-11-23）、§5.10 |
 
-### 12.2 需求变更留痕（本设计在同一天内被改过八次，基线因此变了两次，工期口径变了三次）
+### 12.2 需求变更留痕（本设计在同一天内被改过九次，基线因此变了两次，工期口径变了三次）
 
 | 时点 | 变更 | 影响 |
 | --- | --- | --- |
@@ -1522,9 +1549,14 @@ P0 之外不做自动干预，只有两项自动动作：`canary` 指标超标�
 | 第六次变更 | 工期拆成 M0–M4 并对外承诺 34～38 周（U9）；只做回放式观战不做实时旁观（U8）；支付只留占位不收费（U7）；掼蛋规则取值改为《规则取值表》逐条确认（U10） | §2.4 增加五段周数表与 gate 口径；§6 观战相关工作量从 M2 移出；§5.8 增加三张支付占位表；§5.10 新增掼蛋规则取值表（七行待确认），M1 开工前必须先冻结 |
 | 第七次变更 | round-03 评审裁决修订（91 条全部 PROPOSE FIX）：L2 静态校验与运行时守恒/容量断言拆分（`RS_ZONE_CONSERVATION` / `RS_ZONE_CAPACITY`）；`lifecycle` 固定四段、`turn` 为 `play` 子阶段；deck 必填 `jokers: 2`、总张数 108；场次终止 = 过 A 或安全局数上限（默认 12 局，非胜负判据）；动作记录保留 `seatSeq`/`roomSeq` 双序号、重放水位用 `roomSeq`；私有区按 `(seat, zoneId)` 实例化；4096 候选为加载期静态上限；草稿/发布两套 schema（版本号发布时注入）；CPU 超预算仅记 P2 告警、不作回滚；`TOO_LATE` 入错误码表；`RoomSnapshot` 增 `snapshotReset`；后台清单扩为九件；段位/战绩按 `matchType` 分流 | §5.1/§5.2/§5.4/§5.6/§5.7/§5.8/§5.9/§5.10/§5.11/§5.12/§5.13/§5.14/§5.15、§6.1/§6.2/§6.3/§6.5/§6.6、§7.1/§7.2/§7.5/§7.6/§7.7、§8.1/§8.3/§8.4/§8.6、§9.2/§9.4/§9.5、§10.1/§10.2/§10.3/§10.4/§10.6、§11.1、§12.1 |
 | 第八次变更（规则取值确认） | 2026-11-23，用户逐条拍板 §5.10 七项待确认取值，随表冻结进 `guandan-classic` v3：其中 3 项与原取值不同而实改（同花顺位置改为 `above-bomb-5`——5 张炸之上、6 张炸之下；进贡配对改为对位进贡——末游→头游、三游→二游；抗贡改为贡方两家合计两张大王即可抗贡）；1 项按用户口径放宽并定稿（过 A 由"必须双下"放宽为 1+2 或 1+3 即算过 A，1+4 不算；未过 A 不再退档、继续留在 A 打，同一队连续 3 局在 A 上未过才退回起点 2，为此新增队级状态 `aFailStreak`）；3 项维持原值（还贡、升级档、接风） | §5.1（`compare.flushRank` 新增 `above-bomb-5` 取值、`tribute.pairs[]` 对位配对、`resist` 口径与示例 YAML）、§5.10（7 行状态由待确认改为 `定`、全表冻结）、§5.13（进贡配对、抗贡、比较阶梯、升级跨 A 与过 A）、§5.12/§5.14/§6.5（`aFailStreak` 进 `stateHash` 第 9 项、跨局更新与快照字段集） |
+| 第九次变更（round-04 评审修订） | round-04 评审裁决修订（95 条：Blocker 4 / Major 31 / Minor 44 / Nit 16，用户全部 PROPOSE FIX）：`aFailStreak` 统一为「每队一个 u8、取值 0–3，某一局结算时达 3 才退回 `levelTable.initial`（起点 2）并清零」，§5.12/§5.13/§5.14 同步，§5.10 过 A 行的「未过」处置子句随之对齐用户第八次拍板（1+2/1+3 判据与其余取值一字未动）；新增「局终止与名次」——一局在某队两人均已出完时结束，双下收尾按剩余手牌张数（同数按座位号）定 3、4 名，`finishOrder` 即此口径；新增 §5.2「原语参数结构」表（逐原语列字段/类型/取值/默认值）与 §5.3 ADT 变体、L1 参数键校验；`view` 定为 canonical JSON bytes（§5.12 新增「视图编码」六条）并增 `RoomSnapshot.viewSchemaVersion`，删 `view.mode`/`hide` 死分支；`stateHash` 由 9 项改 10 项（新增第 9 项 `aFailStreak`、第 10 项 `finishOrder`）；场次局数上限字段化为 `matchCap.rounds`；定级赛按「场」计 10 场、K 衰减叠加、`ai-practice` 为模式侧别名而落库记 `bot`；发布链 `publish` 只从 `validated` 推进、新增 `RS_NO_ACTIVE_VERSION` 与 `ruleset_release.first_activated_at`、在役解释器由 release 表聚合、canary 崩溃按次数判（0.1% 仅 full 期）；错误码载体三分（连接级走 WS Close code、动作级写 `ActionAck.reason`、HTTP 码仅用于 REST）；`wildcard.source` 改结构化 `{suit, rank}`、`deck.exclude` 纳入总张数公式、`teams` 每座恰属一队、字段必填性图例（✓/○/—）与条件式；`tribute`/`return` 定为引擎自动执行（`SubmitAction` 不再接受、`tribute` 仍为零动作 phase）；§6.3 新增相位转移表、`seatSeq`/`roomSeq` 均从 0 起算、本地存档 `snapshotSeq` 更名 `snapSeq`；AI 实现层改名 AI-L0/AI-L1/AI-L2；§10.2 表尾补 R14–R19 并复用 R7/R3、§11.1 补登、§10.3 全量集去重为 172 条并补齐 `fast20`/`bot_matchup` 选取规则；13 条 DECLINE（段位体系、里程碑容量、发布链简化、`levelInsert`、`flushRank` 两值、`deck.exclude`、schema 表单、`ViewMismatchReport`、补偿表、L4 两码合并、`RS_PHASE_UNIMPLEMENTED`、`timing`/`ai` 移出、`protocol_field` 登记表）不改文档，风险与复查时点记台账 | §1.2/§1.4/§1.6/§2.1/§2.2/§2.4/§4.5；§5.1–§5.16（新增 §5.2 参数结构、§5.3 ADT、§5.12 视图编码、§5.14 零动作 phase 豁免、§5.16 semver 与四平台闭集）；§6.2/§6.3/§6.5/§6.6；§7.2/§7.7；§8.4/§8.6/§8.7；§9.2/§9.4/§9.5；§10.2/§10.3；§11.1/§11.2；§12.2 |
 
 **第七次变更的收尾拍板（同日）**：round-03 修订者留下的 8 条待拍板项由用户逐条拍板——4 项维持现状（①`legalFrom` 检查与 `RS_PHASE_UNIMPLEMENTED` 留在 L2；②安全局数上限达顶时比 `levels` 档位、高者胜、同档平局；③`end_reason` 保留 `aborted`；④台账收敛记录里 round-03 的备注保留改后版本）；4 项改为：段位算法改为「定级赛按胜率分档 + 后续 Elo 式浮动」（§5.8、§5.13、§5.15、§8.7、§10.2、§10.4）；本地存档按模式分流（§2.1、§2.4、§5.9 末行）；原单列的「规则判定写错」并回 R1、不新增编号（§10.2、§11.1）；`publish` 语义写死为「只推进不新建」（§5.6）。
 
-**留痕的意义**：评审时若发现"为什么一个棋牌项目要 34 周"，答案在 12.2 而不是在某一节的数字里；若未来要缩范围，也按 12.2 的变更顺序倒着砍。
+| 时点 | 变更 | 影响 |
+| --- | --- | --- |
+| 第十次变更（round-05 裁决修订） | round-05 评审裁决修订（21 条全部落实）：新增顶层 `flow` 段（`deal`/`turn`/`score`/`rng`/`assert` 五子对象，整段缺省全取默认值）；§5.12 增 view 字段级编码表、牌 id 载入期固定编码（deck 序 + 副本号）、覆盖全部白名单字段的定值向量（canonical bytes 真算 SHA-256 指纹）并绑 `viewSchemaVersion`；`kind` 闭集收为 `play`/`pass`，`claim`/`declare` 与 `action.claim`/`action.declare` 移出 v1 标 v2 预留，**`pattern.joker-bomb`（四王炸）保留在 v1**；斗地主押后 v2，M3/M4 与 S12/G6 验收对象改为掼蛋变体配置，`seats.teams` 空阵营、`pattern.with-attachment`、`pattern.all-same-suit` 标 v2 预留（`Settle::ScoreOnly` 经用户后续追认保留 v1，见本行补记）；客户端不重算 `viewHash`、删 `ViewMismatchReport` 帧，原 P1 线索并入 P0 服务端自证，`SettleResult` 不携 view；`viewSchemaVersion` 缓存键改 `(rulesetId, viewSchemaVersion)` 二元组、版本号由 RuleSet 作者分配，`RoomSnapshot` 增 `rulesetId`/`rulesetVersion`；发布状态机重写——publish 四步事务（复制 body → 分配 `version` → 锁 `pinned_interpreter_version` → 推进 stage）、新增 `superseded` 状态、active 唯一判定式 `stage=full` 且 `activated_at` 最大、rollback 入参 `badReleaseId` 且候选集排除当前 active 与 `rolled_back` 旧行、补 `rolled_back → canary/full` 合法转移、`ruleset_release` 进 canary 才建行、主键去 `rev`、`draft`/`validated` 由 `ruleset_validation` 聚合派生；结算对账拆两本账，`settlement_event` 在进入 `settlementId` 事务之前单独插入、按 `settlementId` 唯一；段位降固定分档——删 §5.13 定级/Elo/阈值三张表与 §8.7 K 衰减，R18/R19 降 v2，评分只在服务端结算事务整数运算、不进 `stateHash`、不进双端比对；示例 YAML 点数改带引号字符串；原语重复键 `order`/`mode`/`tableRef`/`algorithm` 收归顶层，`level.upgrade` 无参，还贡三键收归 `tribute.return`，L2 增 `levelTable` 唯一引用校验；增 `JoinAck` 帧，错误码载体由三分改四分，`RS_SEAT_TAKEN` 改经 `JoinAck.reason` 并附 `availableSeats[]`；新增 `RS_DECK_COUNT_MISMATCH`/`RS_CAPACITY_INVALID`/`RS_TEAM_COVERAGE_INVALID`；4096 候选峰值闸门挪到 L3 dry-run；`stateHash` 移出版本串，版本三元组旁挂存放、先比版本再比哈希；钉 `m0-minimal` 最小夹具（路径与版本号写入 §2.4，M0 gate 与 A16 改引用它）；写死 `Validation = {ranLevels, findings: Vec<Finding>}`、`validate` 接受 `levels` 入参与 `EngineError` 变体清单；`ladder` 只列非插入型牌型，`straight-flush-*` 位次由 `flushRank` 载入期合成，增两条 L1 规则；`levelTable.upgrade[]` 元素定为 `{teamRanks: [u8;2], step: u8}`，与 `level.pass.combos` 共用编码；AI 三条胜率断言挂到 M2 之后，M0/M1 gate 不受约束；172 条全量集与每晚全量保留，总工期由 34～38 周上调为 **40～44 周**（+6 周，用户 2026-11-23 拍板；M0 第 1–6 周、M1 第 7–16 周不动，M2 第 17–26 周、M3 第 27–36 周、M4 第 37–44 周，M4 收尾落第 44 周）。**补记（2026-11-23 用户裁决，并入本行不留新变更号）**：`Settle::ScoreOnly` 恢复为 **v1 在役变体**——它不只服务斗地主，是无阵营玩法与 `m0-minimal` 夹具唯一的最小结算变体，`m0-minimal` 因此改走真实 DSL 结算路径；斗地主其余部分仍押 v2。同时追认：§5.10 冻结表的**字段列**允许实效化改名（`tribute.returnPolicy` → `tribute.return` 三键），取值与状态逐字不动、不视为违反冻结。第 4 项所列 11 条相邻 Minor/Nit 经全文 grep 实证无残渣（无旧值域、无指向已删字段的断裂引用、无同一规格两套说法），维持 `DECLINE` + 复查时点 `round-06-lite`。**round-06-lite 补记（2026-11-23，仍并入本行、不开新变更号）**：轻量轮（仅 Step9 就绪度单步）11 条 = 0 Blocker / 3 Major / 6 Minor / 2 Nit；3 条 Major 均属**补缺类**——F9-01 `§5.1` `tribute` 类型列补 `return`（同段补 `pay`/`firstRound` 承载位、并写明 `enabled=true` 时 `return` 三键必填）、F9-02 `flow.deal` 补 `zone` 承载位（`perSeat`/`reveal` 默认规则写清，`deal.draw`/`deal.reveal` 标 v1 未启用并写明理由）、F9-03 顶层补 `level` 段（`pass.combos`/`streakLimit`/`resetOnFail` 与 `current.scope`，`levelTable` 不动）；三条只把已裁决内容补到字段级承载、**不引入任何新的设计决策**。用户裁决「补缺类 Major 修完即视为通过」，故本轮 3 条 `Major` 按 `settled` 结、8 条 Minor/Nit 按 `DECLINE` 结（复查时点 M0 末第 6 周）；`clean` 仍按报告口径判 `否`，不因本补记改为 `是`。顺带收敛的两处口径：`streakLimit` 取值收敛为 1–3（上界与 `aFailStreak` 冻结值域 0–3 同源）、§5.13 过 A 判定显式声明读顶层 `level.pass`（四条口径原文不变）。同批随附落地的 8 条 Minor/Nit 修正（`flow` 键与原语字段的映射表、接风承载位统一为 `flow.turn.partnerLead`、L2 两条检查的码口径、v1 段位最小口径、`Finding`/`ErrorCode`/`Severity` 具名类型与 `EngineError` 两个变体、`stateHash` 标题改为「9 段拼接 + 1 项旁挂」、`seat.levels` 明确为下标、§5.2 与 §12.2 两处断表归位）**不改变任何裁决与取值口径**，按用户口径这 8 条仍记 `DECLINE`、不再回改；本条不新开变更号，故不设「第十一次变更」行 | §1.2/§1.4/§1.5/§2.1/§2.4/§3.3/§4.3/§4.4；§5.1/§5.2/§5.4/§5.6/§5.7/§5.8/§5.9/§5.10/§5.12/§5.13/§5.15/§5.16；§6.5/§6.6；§7.2/§7.6；§8.6/§8.7；§9.2/§9.4/§9.5；§10.2/§10.4；§11.1/§11.2；§12.1/§12.2 |
+
+**留痕的意义**：评审时若发现"为什么一个棋牌项目要 40～44 周"，答案在 12.2 而不是在某一节的数字里；若未来要缩范围，也按 12.2 的变更顺序倒着砍。
 
 
