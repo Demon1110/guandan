@@ -194,19 +194,17 @@ pub fn canonical_bytes(state: &CanonicalState) -> Vec<u8> {
     w.u64(state.rng.counter);
     w.slice(&state.rng.seed_digest);
 
-    // 第 9 段：aFailStreak 按队伍序号升序。
-    let mut streak = state.a_fail_streak.clone();
-    streak.sort_unstable();
-    w.u8(streak.len() as u8);
-    for &value in &streak {
+    // 第 9 段：aFailStreak 每队一个 u8，按队伍序号升序——顺序即队索引，
+    // 不能按值排序（§5.12 第 801 行）；传入序列即队序。
+    w.u8(state.a_fail_streak.len() as u8);
+    for &value in &state.a_fail_streak {
         w.u8(value);
     }
 
-    // 第 10 段：finishOrder 按出完先后升序。
-    let mut finish = state.finish_order.clone();
-    finish.sort_unstable();
-    w.u8(finish.len() as u8);
-    for &seat in &finish {
+    // 第 10 段：finishOrder 按出完先后排列——名次信息就在顺序里，
+    // 不能按座位号排序（§5.12 第 802 行）；传入序列即出完先后。
+    w.u8(state.finish_order.len() as u8);
+    for &seat in &state.finish_order {
         w.u8(seat);
     }
 
@@ -297,5 +295,46 @@ mod tests {
         assert_eq!(d1, d2);
         assert_eq!(d1.len(), 8);
         assert_ne!(seed_digest(1), seed_digest(2));
+    }
+
+    /// P0 回归：`aFailStreak` 按队索引保序，值互换必须得到不同哈希（§5.12 第 801 行）。
+    #[test]
+    fn fail_streak_order_is_significant() {
+        let mut a = sample_state();
+        a.a_fail_streak = vec![1, 0];
+        let mut b = sample_state();
+        b.a_fail_streak = vec![0, 1];
+        assert_ne!(state_hash(&a), state_hash(&b));
+    }
+
+    /// P0 回归：`finishOrder` 按出完先后保序，顺序互换必须得到不同哈希（§5.12 第 802 行）。
+    #[test]
+    fn finish_order_is_significant() {
+        let mut a = sample_state();
+        a.finish_order = vec![1, 3];
+        let mut b = sample_state();
+        b.finish_order = vec![3, 1];
+        assert_ne!(state_hash(&a), state_hash(&b));
+    }
+
+    /// 对照：`seats`/`zones` 文档明确要求升序，乱序输入仍应得到同一哈希。
+    #[test]
+    fn zones_and_seats_disorder_input_hash_equal() {
+        let a = sample_state();
+        let mut b = sample_state();
+        b.seats = vec![3, 1, 0, 2];
+        b.zones = vec![
+            ZoneEntry {
+                seat: 1,
+                zone_id: 0,
+                cards: vec![5],
+            },
+            ZoneEntry {
+                seat: 0,
+                zone_id: 0,
+                cards: vec![2, 0, 1],
+            },
+        ];
+        assert_eq!(state_hash(&a), state_hash(&b));
     }
 }

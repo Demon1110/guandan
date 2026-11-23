@@ -90,10 +90,9 @@ pub fn encode_canonical(fields: &[ViewField], data: &ViewData) -> Vec<u8> {
                     continue; // 无队伍级牌状态时该键不出现（§5.12 第 818 行）
                 };
                 push_pair(&mut out, "seat.levels", &mut first);
-                let mut sorted = levels.clone();
-                sorted.sort_unstable();
+                // 按队伍序号升序——顺序即队索引，不按值排序（§5.12 第 818 行）。
                 out.push(b'[');
-                for (i, &level) in sorted.iter().enumerate() {
+                for (i, &level) in levels.iter().enumerate() {
                     if i > 0 {
                         out.push(b',');
                     }
@@ -151,5 +150,24 @@ mod tests {
         let data = ViewData::default();
         let bytes = encode_canonical(&fields, &data);
         assert_eq!(bytes, br#"{"hand":{"cards":[]}}"#);
+    }
+
+    /// P0 回归：`seat.levels` 按队索引保序，值互换 canonical bytes 与 viewHash 都必须不同
+    /// （§5.12 第 818 行）。
+    #[test]
+    fn seat_levels_order_is_significant() {
+        let fields = vec![ViewField::SeatLevels];
+        let d1 = ViewData {
+            seat_levels: Some(vec![2, 12]),
+            ..Default::default()
+        };
+        let d2 = ViewData {
+            seat_levels: Some(vec![12, 2]),
+            ..Default::default()
+        };
+        let b1 = encode_canonical(&fields, &d1);
+        let b2 = encode_canonical(&fields, &d2);
+        assert_ne!(b1, b2);
+        assert_ne!(view_hash(0, 1, &b1), view_hash(0, 1, &b2));
     }
 }
