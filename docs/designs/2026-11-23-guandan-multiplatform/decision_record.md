@@ -1,10 +1,12 @@
 # 裁决台账
 
-本文件记录第 1 轮（round-01）172 条发现的裁决。裁决取值：`PROPOSE FIX`（接受并入文档）、`CONTEST`（驳回，附证据）、`ESCALATE`（需人决策）、`DECLINE`（不采纳且不入文档）。状态取值：`settled`（已落进文档或已驳回）、`open`（尚未处理）、`reopened`（改后又被重提）。
+本文件记录 round-01（172 条）、round-02（107 条）、round-03（91 条）共 370 条发现的裁决。裁决取值：`PROPOSE FIX`（接受并入文档）、`CONTEST`（驳回，附证据）、`ESCALATE`（需人决策）、`DECLINE`（不采纳且不入文档）。状态取值：`settled`（已落进文档或已驳回）、`open`（尚未处理）、`reopened`（改后又被重提）。
 
 结构校验只认 `## 裁决台账` 段内、首格为 `F{步}-NN` 的六列表格，别在本段插小标题。
 
 口径说明：`settled` 在本轮指"该条的处理动作已并入 `design_draft.md` 的对应修订"（含新增 §5.12 状态摘要、§5.13 掼蛋规则规格、§5.14 生命周期、§11.2 的 U11/U12）。**是否真的修好，由 round-02 的新金鱼复核**——被复核对回来的条目不在这里洗白，会在 round-02 台账里以新编号重提。
+
+## 裁决台账
 
 | Finding | 轮次 | 裁决 | 证据 | 处理 | 状态 |
 | --- | --- | --- | --- | --- | --- |
@@ -287,3 +289,115 @@
 | F9-12 | round-02 | PROPOSE FIX | L702 规定 lastSeq 早于 200 条缓冲起点时“不回放增量，直接下发新快照并令客户端丢弃本地状态（响应里带 snapshotReset: true）”；L1101 故障注入只写“随机断网 5s、随机杀房间进程”，判据为恢复后 stateHash 与断线前一致，未覆盖缓冲溢出的重置路径，也未断言 snapshotReset 标记与本地态丢弃行为 | 在 §10.2（或 §10.1 故障注入层）增一条用例：构造断线期间事件超过 200 条，断言服务端返回 snapshotReset:true、客户端清空本地状态后加载快照、快照 viewHash/stateHash 校验通过，列出可观测结果 | settled |
 | F9-13 | round-02 | PROPOSE FIX | L1094：“胜率矩阵：三档 vs 基线 bot，各 200 局固定种子；每档胜率落在 ±10%”。未写明胜率基准是什么（相对 50% 平局基线，还是相对基线 bot 自身胜率），也未给 easy/normal/hard 各自的目标区间；200 局样本下 ±10% 的口径直接影响用例通过/失败 | 写明各档位目标胜率区间（如 easy/normal/hard 分别对应的胜率上下限），或明确 ±10% 相对的基准值与对手强度；固定种子清单与每局判定结果可从回放包复现 | settled |
 | F9-14 | round-02 | PROPOSE FIX | L90 为 A12，L91 直接跳到 A14，全文无 A13 条目；L75 声明“正文以 A 编号引用假设时，均指向本表；表外的编号不存在” | 补一条 A13 条目并给出内容，或将 A14–A17 顺延重排为连续编号，正文引用同步更新 | settled |
+| F5-01 | round-03 | PROPOSE FIX | reviews/round-03/step5_zoom_out_report.md L13；§5.1 actions | deal/settle 建零动作 phase 并 L1 豁免、play 动作指向 play；或删每 phase 必有动作的 L1 规则 | settled |
+| F5-02 | round-03 | PROPOSE FIX | reviews/round-03/step5_zoom_out_report.md L14；§5.4 L2 | 改 §5.4 L2 为 Σ 当前牌数=deck 总数 108、当前牌数≤capacity、-1 无上限，并对齐 §5.7 触发条件 | settled |
+| F5-03 | round-03 | PROPOSE FIX | reviews/round-03/step5_zoom_out_report.md L15；§5.12 字段4 | §5.1/§5.12 补 private 区键 (zoneId,seat)、区号冻结；hand 与 zones 只留一份进哈希 | settled |
+| F5-04 | round-03 | PROPOSE FIX | reviews/round-03/step5_zoom_out_report.md L16；§6.3 计时 | §5.1 增 timing 字段（turnTimeSec 等三项）与 L1 校验；或 §6.3 改服务端常量 | settled |
+| F5-05 | round-03 | PROPOSE FIX | reviews/round-03/step5_zoom_out_report.md L17；§5.9 快照 | §5.9 RoomSnapshot 增 snapshotReset 字段（或独立消息），同步 §6.2、§10.2 用例 | settled |
+| F5-06 | round-03 | PROPOSE FIX | reviews/round-03/step5_zoom_out_report.md L18；§6.5 日志 | actions.jsonl 保留 seatSeq、roomSeq；或规定 seq=roomSeq，seatSeq 由 seat 关联列给出 | settled |
+| F5-07 | round-03 | PROPOSE FIX | reviews/round-03/step5_zoom_out_report.md L19；§10.2 映射表 | 以 §11.1 为准重排 §10.2 的 R 编号，为 R6、R12 补测试与判据；或在 §10.2 表头声明两套 R 编号非同册 | settled |
+| F5-08 | round-03 | PROPOSE FIX | reviews/round-03/step5_zoom_out_report.md L20；§2.2 | 三处收敛为"不写单测"，把"未启用分支不计入覆盖率分母"写进 §10.1 单元行，并改 §11.1 R13 缓解手段 | settled |
+| F5-09 | round-03 | PROPOSE FIX | reviews/round-03/step5_zoom_out_report.md L21；§8.6 | 4096 只留发布期静态上限或运行期每步上限之一；三指标补进 §7.2 给阈值级别，或删掉指标名 | settled |
+| F5-10 | round-03 | PROPOSE FIX | reviews/round-03/step5_zoom_out_report.md L22；§5.13 | 二选一：删 3 局封顶、打到过 A 或安全上限（如 30 局）并给结算规则；或按 3 局累计升级档判胜负、删过 A 结束句 | settled |
+| F5-11 | round-03 | PROPOSE FIX | reviews/round-03/step5_zoom_out_report.md L23；§5.8 release | §5.8 定草稿/校验态 version 为 NULL、唯一键含 draft_id；或拆回 ruleset_draft 表并同步 §5.6 | settled |
+| F5-12 | round-03 | PROPOSE FIX | reviews/round-03/step5_zoom_out_report.md L24；§5.12 清单 | tribute、rng 改为第 7、8 项（或补回缺失第 7 项），§6.5 快照字段逐项引用 §5.12 编号 | settled |
+| F5-13 | round-03 | PROPOSE FIX | reviews/round-03/step5_zoom_out_report.md L25；§7.1 P0 | §7.1 末列改为"5 个 P0 信号"；某项非 1 分钟触发则在 §7.2 单独标明时限 | settled |
+| F5-14 | round-03 | PROPOSE FIX | reviews/round-03/step5_zoom_out_report.md L26；§7.6 | §7.6 改为比对服务端每步 stateHash（漂移）与两侧 viewHash 上报记录（分歧定位），先按 §5.12 投影后相比 | settled |
+| F5-15 | round-03 | PROPOSE FIX | reviews/round-03/step5_zoom_out_report.md L27；§12.1 D14 | §12.1 D14 代价改为"超窗口投诉局需本地构建对应 tag 才能复现，不保证开箱重放"，用词对齐 §9.3 | settled |
+| F5-16 | round-03 | PROPOSE FIX | reviews/round-03/step5_zoom_out_report.md L28；§5.8 表 | §5.8 增补补偿表（match_id/reason/issued）；统一 §6.5、§9.5：流局补偿不发放，死信表仅补写 | settled |
+| F5-17 | round-03 | PROPOSE FIX | reviews/round-03/step5_zoom_out_report.md L29；§5.7 错误码 | TOO_LATE 补进 §5.7（触发=超时事件后入队，处置=丢弃动作并提示）；或 §6.3 改用已登记码并说明等价 | settled |
+| F5-18 | round-03 | PROPOSE FIX | reviews/round-03/step5_zoom_out_report.md L30；§5.10 接风 | 按 §5.13 重写 §5.10 接风行；或两处同标 ? 注明待按 §5.13 口径确认，取值表与规则本体逐行同义 | settled |
+| F5-19 | round-03 | PROPOSE FIX | reviews/round-03/step5_zoom_out_report.md L31；§10.2 首行 | §10.2 首行 DLS 改为 DSL；把"规则判定写错"从 R1 单列为独立风险编号 | settled |
+| F6-01 | round-03 | PROPOSE FIX | reviews/round-03/step6_comprehension_report.md L24；§6.5 快照 | 明确快照是否含 tribute 段、zoneDigest 是否计入对应字段；两集合不等时按 §5.12 或 §6.5 其一改写"一一对应"句 | settled |
+| F6-02 | round-03 | PROPOSE FIX | reviews/round-03/step6_comprehension_report.md L25；§6.5 日志 | 明确 seq 等于 seatSeq 还是 roomSeq；两序号都保留时规定另一序号来源，统一 §6.5、§7.7 字段表 | settled |
+| F6-03 | round-03 | PROPOSE FIX | reviews/round-03/step6_comprehension_report.md L26；§5.1 deck | §5.1 示例 deck 补 jokers: 2；或定义 jokers 缺省值与缺省总张数算法，写入 §5.1 deck 约束 | settled |
+| F6-04 | round-03 | PROPOSE FIX | reviews/round-03/step6_comprehension_report.md L27；§5.4 L2 | 明确 §5.4 L2 断言容量和还是当前牌数和；定义 capacity=-1 的区如何求和，写出示例过 L2 的算式 | settled |
+| F6-05 | round-03 | PROPOSE FIX | reviews/round-03/step6_comprehension_report.md L28；§5.1 | 明确 turn 属哪类对象；非 phase 非 zone 时，pass 的 legalFrom 改合法值，对齐 §5.1 三取值 | settled |
+| F6-06 | round-03 | PROPOSE FIX | reviews/round-03/step6_comprehension_report.md L29；§5.13 | 明确 3 局封顶约束整场还是未过 A 连续局数；说明封顶 3 局时过 A 是否可达，定清场终点取舍 | settled |
+| F6-07 | round-03 | PROPOSE FIX | reviews/round-03/step6_comprehension_report.md L30；§5.6 发布 | 明确 canary→full 由系统还是人工调 publish；写明 TOTP 校验在哪步、通过后由谁写入 full | settled |
+| F6-08 | round-03 | PROPOSE FIX | reviews/round-03/step6_comprehension_report.md L31；§5.6 回退 | 明确 CPU 超预算是否属 canary 回滚条件；回滚则改 §7.2"不参与判定"，不回滚则改 §8.6 回滚句 | settled |
+| F6-09 | round-03 | PROPOSE FIX | reviews/round-03/step6_comprehension_report.md L32；§8.6 | 明确 4096 超限在发布校验还是运行时；说明发布期规模预知方式，及拒步后房间与 RuleSet 版本状态 | settled |
+| F6-10 | round-03 | PROPOSE FIX | reviews/round-03/step6_comprehension_report.md L33；§6.3 竞态 | 明确 TOO_LATE 是否纳入 §5.7；写清触发条件、客户端处置（重拉增量或重发）及是否计入超时次数 | settled |
+| F6-11 | round-03 | PROPOSE FIX | reviews/round-03/step6_comprehension_report.md L34；§5.12 清单 | 明确第 7 项是被删字段还是笔误；删除则写出原名与理由；否则清单重排为连续编号 | settled |
+| F6-12 | round-03 | PROPOSE FIX | reviews/round-03/step6_comprehension_report.md L35；§7.1 P0 | 明确 P0 清单以 4 项还是 5 项为准；写明五项是否都要求 1 分钟内触发，同步 §7.1、§7.2 | settled |
+| F6-13 | round-03 | PROPOSE FIX | reviews/round-03/step6_comprehension_report.md L36；§6.6 对账 | 写清 round_record、dead_letter、结算事件三量等式；说明 dead_letter 是否已计入 round_record | settled |
+| F6-14 | round-03 | PROPOSE FIX | reviews/round-03/step6_comprehension_report.md L37；§1.4 判据 | 方案候选与判据改用互不重叠编号前缀；规定"见 S1"按哪套解读，核对 §12.1 依据列 S10、S5 指代 | settled |
+| F6-15 | round-03 | PROPOSE FIX | reviews/round-03/step6_comprehension_report.md L38；§1.6 术语 | 明确 S2 与第 16 周 gate 粒度是一局还是一场；建桌归到场还是局，统一 §1.6、S2、§2.4 用词 | settled |
+| F6-16 | round-03 | PROPOSE FIX | reviews/round-03/step6_comprehension_report.md L39；§5.13 | 明确句中 level 指什么；v1 是否只实现固定座位 0、前半句是否仅描述未来规则，消掉双口径 | settled |
+| F6-17 | round-03 | PROPOSE FIX | reviews/round-03/step6_comprehension_report.md L40；§6.3 托管 | 定义"连续"的分界事件与清零事件；写明跨局是否延续，作为 §6.3 托管触发口径 | settled |
+| F6-18 | round-03 | PROPOSE FIX | reviews/round-03/step6_comprehension_report.md L41；§5.10 接风 | 明确接风结果落在哪个 RuleSet 字段（必要时新增 turn 配置字段）；只由引擎决定时说明为何列入取值表 | settled |
+| F7-01 | round-03 | PROPOSE FIX | reviews/round-03/step7_critic_report.md L19；§5.1 deck | §5.1 示例 deck 补 jokers: 2（exclude 写空或去必填），使总数与 §5.13、hand 容量一致，过 L1–L4 | settled |
+| F7-02 | round-03 | PROPOSE FIX | reviews/round-03/step7_critic_report.md L20；§5.1 lifecycle | turn 进 lifecycle 作第五 phase；或 pass 的 legalFrom 改 play，deal/settle 各补动作 | settled |
+| F7-03 | round-03 | PROPOSE FIX | reviews/round-03/step7_critic_report.md L21；§5.4 L2 | L2 只做静态检查：capacity≥0 区求和、-1 不参与，删 deck×copies；当前牌数断言移到 deal 前置断言或 L3 | settled |
+| F7-04 | round-03 | PROPOSE FIX | reviews/round-03/step7_critic_report.md L22；§5.13 过A | 终止改为某队过 A、不设 3 局硬上限（上限 ≥5 局并给依据）；match_record 增胜方/结束原因字段，补结算口径 | settled |
+| F7-05 | round-03 | PROPOSE FIX | reviews/round-03/step7_critic_report.md L23；§5.1 settle | settle 拆 LevelUp、ScoreOnly 两变体；§5.1 改为 level-up 算法时 levelTableRef 必填 | settled |
+| F7-06 | round-03 | PROPOSE FIX | reviews/round-03/step7_critic_report.md L24；§5.1 version | 拆两套 schema：草稿 RuleSetBody 无 version，发布时服务端注入；§5.1 字段表加草稿态/发布态必填列 | settled |
+| F7-07 | round-03 | PROPOSE FIX | reviews/round-03/step7_critic_report.md L25；§5.1 compare | flushRank 枚举改为产生不同 ladder 的取值（below/above-bomb-N）或参数化插位，并补不同哈希判据 | settled |
+| F7-08 | round-03 | PROPOSE FIX | reviews/round-03/step7_critic_report.md L26；§5.9 payload | 择一：引擎选牌则 tribute/return payload 改空结构、牌由事件或回执回传；玩家选牌则删 §5.2、§5.13 自动选定 | settled |
+| F7-09 | round-03 | PROPOSE FIX | reviews/round-03/step7_critic_report.md L27；§5.9 RoomDelta | RoomDelta 删 seatSeq（水位仅在 Reconnect/ActionAck 按座位传）；需按座位下发则改每座位消息 | settled |
+| F7-10 | round-03 | PROPOSE FIX | reviews/round-03/step7_critic_report.md L28；§5.15 queue | §5.15 增 mode→matchType 映射表与计段位/进排行/写 player_stat 真值表，按新枚举重写 §6.6 分流句 | settled |
+| F7-11 | round-03 | PROPOSE FIX | reviews/round-03/step7_critic_report.md L29；§5.9 JoinRoom | 座位由服务端 join/JoinRoom 时分配并响应返回 seat，seat 仅用于续座；新增 RS_SEAT_TAKEN 与满座拒绝分支 | settled |
+| F7-12 | round-03 | PROPOSE FIX | reviews/round-03/step7_critic_report.md L30；§2.1 admin | §2.1 admin 项补成九件（加踢人/封号、人工改分、死信补写），§2.2 改为引用同一清单，范围只定义一处 | settled |
+| F7-13 | round-03 | PROPOSE FIX | reviews/round-03/step7_critic_report.md L31；§5.1 zones | 禁 private zone（手牌只放 seats）；或删 hand 只留 zones，§5.1 注明 zones 含手牌否 | settled |
+| F7-14 | round-03 | PROPOSE FIX | reviews/round-03/step7_critic_report.md L32；§5.1 rankOrder | rankOrder 拆 naturalOrder、levelInsert（@level 插入位），载入合成序，算法写进 §5.13 级牌行 | settled |
+| F7-15 | round-03 | PROPOSE FIX | reviews/round-03/step7_critic_report.md L33；§5.6 publish | publish 建 release 返 releaseId；另增 promote（stage/reason）推进 canary→full | settled |
+| F7-16 | round-03 | PROPOSE FIX | reviews/round-03/step7_critic_report.md L34；§5.15 接口 | §5.15 增战绩分页、回放读取两只读接口；§8.3 明确玩家读本人回放不属敏感导出 | settled |
+| F7-17 | round-03 | PROPOSE FIX | reviews/round-03/step7_critic_report.md L35；§5.12 清单 | 清单重排为连续编号并写明共 N 项、字节总长；或在原第 7 项位置补回字段并说明内容 | settled |
+| F7-18 | round-03 | PROPOSE FIX | reviews/round-03/step7_critic_report.md L36；§6.3 竞态 | §5.7 增 TOO_LATE（触发：未在超时前入队；处置：丢弃回执、不推进 seatSeq），§6.3 措辞对齐 | settled |
+| F7-19 | round-03 | PROPOSE FIX | reviews/round-03/step7_critic_report.md L37；§2.1 ai | §5.11 增"实现层策略"列（easy→L0、normal→L1、hard→L1 加搜索）；校验级别改称 V1–V4 消除重名 | settled |
+| F8-01 | round-03 | PROPOSE FIX | reviews/round-03/step8_intermediate_zoom_out_report.md L15；§5.4 | §5.4 L2 拆两条断言：Σ各区当前牌数=牌堆总数、每区≤capacity（-1 跳过），同步 §5.7 RS_ZONE_CAPACITY 条件 | settled |
+| F8-02 | round-03 | PROPOSE FIX | reviews/round-03/step8_intermediate_zoom_out_report.md L16；§7.2 | v1 仅留 §7.2 P2 告警，删 §8.6 房间限流与回滚段；若保留回滚须同步 §5.6、§7.2 并写入 §9.4 | settled |
+| F8-03 | round-03 | PROPOSE FIX | reviews/round-03/step8_intermediate_zoom_out_report.md L17；§5.9 | §5.9、§7.2 将该信号降 P1，P0 仅留服务端重算不一致；上报值带 roomSeq 按 (matchId,seat,roomSeq) 去重设上限 | settled |
+| F8-04 | round-03 | PROPOSE FIX | reviews/round-03/step8_intermediate_zoom_out_report.md L18；§5.8 | §5.8 ruleset_validation 主键改 (ruleset_id,draft_id,rev,level)；release.version 允许空用 draft_id 关联或分配预发布号 | settled |
+| F8-05 | round-03 | PROPOSE FIX | reviews/round-03/step8_intermediate_zoom_out_report.md L19；§2.2 | 死信补写、手动发码、人工改分、导出回放、账号并入 §2.1、§2.2 后台清单定入口鉴权，或删 §6.6、§6.7 人工路径 | settled |
+| F8-06 | round-03 | PROPOSE FIX | reviews/round-03/step8_intermediate_zoom_out_report.md L20；§2.4 | §2.4 gate 二选一：补本地存档契约（载体、snapshot+actions、seed 版本号、viewHash 校验），或改为可重连开局 | settled |
+| F8-07 | round-03 | PROPOSE FIX | reviews/round-03/step8_intermediate_zoom_out_report.md L21；§5.12 | 删 §5.12 zoneDigest 与 §6.5 snapshot_corrupt_total，自检改用 stateHash；保留须写明防范的真实故障类别 | settled |
+| F8-08 | round-03 | PROPOSE FIX | reviews/round-03/step8_intermediate_zoom_out_report.md L22；§5.2 | §5.2 ADT、§5.14 枚举及说明删 window.open、arbitrate；§11.1 R13 缓解改 v2 推演后加回，同步 §2.2、§10.6 | settled |
+| F8-09 | round-03 | PROPOSE FIX | reviews/round-03/step8_intermediate_zoom_out_report.md L23；§5.6 | §5.6 canary 补出口：满 2 小时样本 <200 由人工 TOTP 决定放行或回滚并落审计，状态机补待决出口 | settled |
+| F8-10 | round-03 | PROPOSE FIX | reviews/round-03/step8_intermediate_zoom_out_report.md L24；§6.6 | §6.6 对账第三项二选一：日志导出+对象存储纳入 §2.1 与 §3.4、§11.3 清单，或改 PG 结算事件表计数 | settled |
+| F8-11 | round-03 | PROPOSE FIX | reviews/round-03/step8_intermediate_zoom_out_report.md L25；§4.5 | §4.5 七态与 §6.6 settling 等子态合并为一套枚举并给转移表，§10.1 验收口径同步改写 | settled |
+| F8-12 | round-03 | PROPOSE FIX | reviews/round-03/step8_intermediate_zoom_out_report.md L26；§5.9 | §5.9 RoomSnapshot 补 snapshotReset；§5.7 补 TOO_LATE 并与 STALE_SEQ 划清触发条件 | settled |
+| F8-13 | round-03 | PROPOSE FIX | reviews/round-03/step8_intermediate_zoom_out_report.md L27；§1.4 | §1.4 S4 改为 0 次错误判定（合法被拒、非法被接受），玩家提交被拒剔出分母，与 §7.2 口径分开 | settled |
+| F8-14 | round-03 | PROPOSE FIX | reviews/round-03/step8_intermediate_zoom_out_report.md L28；§5.6 | §5.6 幂等键改调用方传入 draftKey，同 baseVersion 可并存多份草稿、以 draftId 去重；§5.8 补并存规则 | settled |
+| F8-15 | round-03 | PROPOSE FIX | reviews/round-03/step8_intermediate_zoom_out_report.md L29；§7.1 | §7.1 P0 数量由 4 改 5 与 §7.2、§7.5 对齐，或将第 5 项并入全服无法建房后全篇统一 | settled |
+| F9-01 | round-03 | PROPOSE FIX | reviews/round-03/step9_readiness_report.md L23；§5.1 | §5.1 L362 与示例二选一：deal、settle 免 legalFrom（自动执行），或补可寻址动作与示例；改完跑 L1 验收 | settled |
+| F9-02 | round-03 | PROPOSE FIX | reviews/round-03/step9_readiness_report.md L24；§5.1 | §5.1 私有区按 (seat,zoneId) 实例化；§5.12 zones 段键改 (seat,zoneId) 或只收 shared；view.fields 留一种写法 | settled |
+| F9-03 | round-03 | PROPOSE FIX | reviews/round-03/step9_readiness_report.md L25；§5.4 | §5.4 L2 改 Σ当前牌数=deck 总数、容量仅 ≤capacity 校验；§5.7 RS_ZONE_CAPACITY 拆守恒、超容量两码 | settled |
+| F9-04 | round-03 | PROPOSE FIX | reviews/round-03/step9_readiness_report.md L26；§5.7 | §5.7 补 TOO_LATE（晚于超时入队；409 或 200+accepted:false 择一）；§5.9 reason 引用 §5.7 全表 | settled |
+| F9-05 | round-03 | PROPOSE FIX | reviews/round-03/step9_readiness_report.md L27；§6.2 | §5.9 RoomSnapshot 加 snapshotReset:bool；§6.2 缓冲起点按 roomSeq 判定并补序号换算，或按 (seat,seatSeq) 索引 | settled |
+| F9-06 | round-03 | PROPOSE FIX | reviews/round-03/step9_readiness_report.md L28；§6.5 | §6.5 与 §7.7 序号统一为 seatSeq+roomSeq；留 seq 须在 §7.7 写明映射及与 hash_trace 对齐序号 | settled |
+| F9-07 | round-03 | PROPOSE FIX | reviews/round-03/step9_readiness_report.md L29；§5.12 | §5.12 为 viewHash 补字段白名单、序列化顺序字节序、哈希函数截断长度，并排除 clientPlatform | settled |
+| F9-08 | round-03 | PROPOSE FIX | reviews/round-03/step9_readiness_report.md L30；§5.1 | §5.1 payer/receiver 定闭集枚举附名次映射；combo 改结构化对象或规定 "a-b" 语法与合法集（1-2、1-3、1-4） | settled |
+| F9-09 | round-03 | PROPOSE FIX | reviews/round-03/step9_readiness_report.md L31；§5.7 | 4096 定为加载期硬校验，§5.7 RS_QUOTA_EXCEEDED 改拒绝发布且仅 dry-run；或 §8.6 明确仅运行时拒绝 | settled |
+| F9-10 | round-03 | PROPOSE FIX | reviews/round-03/step9_readiness_report.md L32；§5.8 | §5.8 补点数公式、rank_points→level 阈值表、定级期判定字段及 human/mixed 分流不写字段 | settled |
+| F9-11 | round-03 | PROPOSE FIX | reviews/round-03/step9_readiness_report.md L33；§5.6 | 回滚改写目标版本 activated_at 或新增 full release 行；POST rollback 出参返回目标版本 release_id | settled |
+| F9-12 | round-03 | PROPOSE FIX | reviews/round-03/step9_readiness_report.md L34；§5.8 | §5.8 ruleset 加 pinned_interpreter_version 锁定具体版本；§9.2 按该列选旧解释器，并存以锁定值为准 | settled |
+| F9-13 | round-03 | PROPOSE FIX | reviews/round-03/step9_readiness_report.md L35；§5.1 | §5.1 标明 deck 子字段必填/默认值，jokers:2=1 大王+1 小王；示例补齐 jokers 与 exclude | settled |
+| F9-14 | round-03 | PROPOSE FIX | reviews/round-03/step9_readiness_report.md L36；§5.9 | §5.9 补 token 绑定 seat 校验，不一致返 AUTH_INVALID 并记指标；§6.1 增伪造座位失败点 | settled |
+| F9-15 | round-03 | PROPOSE FIX | reviews/round-03/step9_readiness_report.md L37；§5.12 | §5.12 字段编号改连续 1—9；seedDigest 写明对 seed 用 BLAKE3-256 取前 8 字节及复用关系 | settled |
+| F9-16 | round-03 | PROPOSE FIX | reviews/round-03/step9_readiness_report.md L38；§5.4 | RS_PHASE_UNIMPLEMENTED 归 L2 并同步 §5.4；L4 两码二选一或写明分工，与 §10.3 用例来源对应 | settled |
+| F9-17 | round-03 | PROPOSE FIX | reviews/round-03/step9_readiness_report.md L39；§10.2 | §10.2 R8 仅留成对胜率硬断言，删实测锁定区间条款；§10.4 快速集 20 条改固定清单并在 §10.3 登记 | settled |
+| F9-18 | round-03 | PROPOSE FIX | reviews/round-03/step9_readiness_report.md L40；§5.7 | 定义用例 id 规则（case-<rulesetId>-<NN>）与目录约定，声明与 §7.7 回放包格式包含关系，供 §5.7 输出 id | settled |
+| F9-19 | round-03 | PROPOSE FIX | reviews/round-03/step9_readiness_report.md L41；§5.8 | §5.8 phone_hash 写明算法与盐（HMAC-SHA256(server_salt, 手机号)）及盐轮换过渡方式，纳入 §9.7 五步 | settled |
+| F9-20 | round-03 | PROPOSE FIX | reviews/round-03/step9_readiness_report.md L42；§5.8 | §5.8 三 jsonb 给字段清单或引用结构体/proto 名，levels_after 定键形态，供对账、战绩与 §9.7 迁移比对 | settled |
+
+## 收敛记录
+
+口径：编号按（轮次, Finding）复合键去重——多轮复用同一套 `F{步}-NN` 是常态，不算碰撞；"本轮 clean"按报告判定，不按改完之后的状态判定。
+
+| 轮次 | Blocker | Major | Minor | Nit | 本轮 clean | 备注 |
+| --- | --- | --- | --- | --- | --- | --- |
+| round-01 | 25 | 87 | 48 | 12 | 否 | 172 条全部 settled，已并入草案（含新增 §5.9–§5.16） |
+| round-02 | 9 | 59 | 34 | 5 | 否 | 107 条全部 settled，已并入草案（牌堆/容量、stateHash、级牌按队、协议分型、灰度两档等） |
+| round-03 | 6 | 50 | 33 | 2 | 否 | 91 条全部 open，待裁决后修订；本轮 B/M 集中在 L2 守恒式、pass/turn 生命周期、牌堆 jokers、过 A 与封顶互斥、双序号对不上、私有区哈希键 |
+
+收敛状态：末尾连续 clean 轮次 0，要求 ≥2；已用 3 轮，上限 5 轮，剩余 2 轮。
+
+## 未决问题（等用户拍板）
+
+| # | 问题 | 需要谁决定 | 状态 |
+| --- | --- | --- | --- |
+| 1 | §5.10 规则取值表仍有 7 行标 `?`（同花顺插位、进贡配对、还贡、抗贡、升级档、过 A、接风），需逐条确认 | 用户 | open |
+| 2 | U11 商业化起点与版号提报触发条件（具体日期 / 责任人 / 提报批次） | 用户 | open |
+| 3 | U12 无版号免费内测是否必须接实名与防沉迷 | 法务（书面答复） | open |
+| 4 | manifest.json 的 7 个来源 URL 未获人批准，§4.2 选型事实无法被评审者抓取复核 | 用户 | open |
