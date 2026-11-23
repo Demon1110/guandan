@@ -13,14 +13,15 @@
 | 设计标识 | 2026-11-23-guandan-multiplatform |
 | 设计文档 | docs/designs/2026-11-23-guandan-multiplatform/design_draft.md |
 | 对象类型 | technical |
-| 是否核对代码 | 是（可读清单内源码核对签名与路径） |
-| 允许阅读文件数 | 2 |
-| 生成时间 | 2026-11-23 16:50 |
+| 是否核对代码 | 否（只评文档自身完整性） |
+| 允许阅读文件数 | 3 |
+| 生成时间 | 2026-11-23 19:06 |
 
 ## 3. 允许阅读清单（白名单，只有这些）
 
 - `docs/designs/2026-11-23-guandan-multiplatform/design_draft.md`
 - `docs/assets/license.md`
+- `docs/designs/2026-11-23-guandan-multiplatform/manifest.json`
 
 清单外文件、父对话、项目里其他文档一律不得读取。需要清单外的文件才能判断时，
 在报告里写“需要额外文件：<路径>，理由：……”，并标记本次评审为 incomplete。
@@ -32,7 +33,7 @@
 ## 5. 输出契约
 
 - 只读：不修改任何文件。
-- 报告写到 reviews/round-03/。
+- 报告写到 reviews/round-04/。
 - 报告开头必须有元信息表：评审者 / 步骤 / 范围 / 对象类型 / 只读 / 隔离模式 / 状态。
 - 问题写在 `## Findings` 下，逐行一行一条，六列：Finding / 严重度 / 位置 / 问题 / 依据 / 建议。
 - Finding 编号格式 `F{step}-NN`（NN 从 01 递增），本轮内不得重号。

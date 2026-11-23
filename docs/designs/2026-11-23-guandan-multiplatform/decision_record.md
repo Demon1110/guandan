@@ -380,6 +380,101 @@
 | F9-18 | round-03 | PROPOSE FIX | reviews/round-03/step9_readiness_report.md L40；§5.7 | 定义用例 id 规则（case-<rulesetId>-<NN>）与目录约定，声明与 §7.7 回放包格式包含关系，供 §5.7 输出 id | settled |
 | F9-19 | round-03 | PROPOSE FIX | reviews/round-03/step9_readiness_report.md L41；§5.8 | §5.8 phone_hash 写明算法与盐（HMAC-SHA256(server_salt, 手机号)）及盐轮换过渡方式，纳入 §9.7 五步 | settled |
 | F9-20 | round-03 | PROPOSE FIX | reviews/round-03/step9_readiness_report.md L42；§5.8 | §5.8 三 jsonb 给字段清单或引用结构体/proto 名，levels_after 定键形态，供对账、战绩与 §9.7 迁移比对 | settled |
+| F5-01 | round-04 | PROPOSE FIX | reviews/round-04/step5_zoom_out_report.md；§5.1 `tribute` 字段行（design_draft.md L365）；示例 YAML（L415–417）；§5.13 tribute 表（L719） | 二选一：删除 `last`，单贡/双下统一用 `fourth`；或补一张枚举值→名次（第 1/2/3/4 名）映射表，写清 `last` 与 `fourth` 的分工或等价关系。 | open |
+| F5-02 | round-04 | PROPOSE FIX | reviews/round-04/step5_zoom_out_report.md；§6.5 房间快照行（L902）；对照 §5.12 第 1 项（L674）、§5.5 版本绑定表（L480–481）、§5.9 本地存档内容（L622）、§7.7 回放包 manifest（L1037） | 快照字段补齐 `engineVersion`/`interpreterVersion`（与 `rulesetVersion` 同列保存）；或在 §6.5 明确写出"重放时由 ruleset 行的 `pinned_interpreter_ve… | open |
+| F5-03 | round-04 | PROPOSE FIX | reviews/round-04/step5_zoom_out_report.md；§11.2 未决项 U10 行（L1359）；对照 §5.10 首段（L631）、§12.2 第八次变更（L1415） | 将 §11.2 U10 状态改为 `settled`，删除"（七行待确认）"残留备注。 | open |
+| F5-04 | round-04 | PROPOSE FIX | reviews/round-04/step5_zoom_out_report.md；§5.1 `levelTable` 行（L359）、§5.13 `levels` 存放段（L747）、§5.12 第 9 项（L682）、§5.14（L792） | 明确判定时点：是写入前比较（计数到 2 后第三次未过即触发退回、不写入 3）还是写入后比较（字段允许 3），并把四处的取值域与触发阈值改成同一口径。 | open |
+| F5-05 | round-04 | PROPOSE FIX | reviews/round-04/step5_zoom_out_report.md；§1.4 S8（L67）；对照 §5.10 过 A 行（L647）、抗贡行（L645）、§5.2 级牌原语行（L444） | S8 改用 §5.1/§5.10 的字段名（`level.pass`、`tribute.resist`），或在 S8 括注"即 `level.pass` / `tribute.resist`"的映射。 | open |
+| F5-06 | round-04 | PROPOSE FIX | reviews/round-04/step5_zoom_out_report.md；§5.13 表一 定级分档表（L759–764） | 改为半开区间（如 `[30%, 50%)`、`[50%, 70%)`）或在表注写明等号归属哪一档。 | open |
+| F5-07 | round-04 | PROPOSE FIX | reviews/round-04/step5_zoom_out_report.md；§2.2 麻将条目（L140） | 将 §2.2 的引用改为 §5.14 / R13，或在 §9.2 补一行原语加回的兼容承诺指向。 | open |
+| F5-08 | round-04 | PROPOSE FIX | reviews/round-04/step5_zoom_out_report.md；§5.8 `player_stat` 行（L562）、§5.13 表一（L757）、§8.7 防刷分行（L1129）；对照 §5.15 真值表（L823）、§5.8 `match_record` 枚举（L564） | 在 §5.15 真值表注明 `ai-practice` 是模式/入队侧别名，落库 `matchType` 为 `bot`；其余章节沿用同一叫法，不再与四值枚举并列书写。 | open |
+| F5-09 | round-04 | PROPOSE FIX | reviews/round-04/step5_zoom_out_report.md；§1.4 S6（L65）；对照 §7.2 `action_ack_p99` 行（L977） | 在 §7.2 该行或 S6 补一句口径说明：100ms 为压测目标、300ms 为线上告警线，二者用途不同。 | open |
+| F6-01 | round-04 | PROPOSE FIX | reviews/round-04/step6_comprehension_report.md；§5.1 `levelTable` 行；§5.12 第 9 项；§5.13 settle 段与「过 A」段；§5.14；§5.10 过 A 行 | 统一上界与阈值：要么字段取值改为 0–3、第三次未过置 3 后触发回退并清零；要么上界保持 0–2、触发条件改为"计数达 2（即第二次未过后）"；并写清每局 `+1`、判定退回、清零三者的先后顺序。 | open |
+| F6-02 | round-04 | PROPOSE FIX | reviews/round-04/step6_comprehension_report.md；§5.13 表一（定级分档表）、表二（Elo 参数表）；§5.8 `player_stat` 行；§5.15 末段 | 补写：定级赛每场 `rating` 如何更新（固定分或 Elo + 指定 K）；定级赛场次是否递增 `rating_games`；K 档按 `rating_games` 的具体边界（如 1–20 为 40、≥21 为 32）；第 10 场结… | open |
+| F6-03 | round-04 | PROPOSE FIX | reviews/round-04/step6_comprehension_report.md；§8.7 评分防刷分行；§5.13 表二 | 写清叠加公式（最终 K 与档位 K、衰减系数的关系），并明确 `K=0` 场是否递增 `rating_games`、是否计入定级场次。 | open |
+| F6-04 | round-04 | PROPOSE FIX | reviews/round-04/step6_comprehension_report.md；§5.13 tribute 段「抗贡」行；§5.1 `tribute.resist` 行；§5.12 第 7 项 | 明确：抗贡为进贡+还贡整段全跳还是部分跳；双下抗贡是两家合计一次性判定（不存在部分抗贡）；抗贡局 `tribute` phase 的进入/退出口径、事件是否发出；哈希第 7 项在抗贡局的初始值。 | open |
+| F6-05 | round-04 | PROPOSE FIX | reviews/round-04/step6_comprehension_report.md；§4.5 匹配行；§5.8 `player_stat` 行；§5.13 表一；§10.2 定级赛归属用例；§1.6 术语表 | 统一术语：定级赛按场（match）计，将 §4.5 的"前 10 局"改为"前 10 场"，并在 §1.6 术语表注明定级/段位一律按场结算。 | open |
+| F6-06 | round-04 | PROPOSE FIX | reviews/round-04/step6_comprehension_report.md；§5.1 `rulesetId` 行；§5.6 `GET /admin/games` 行；§5.15 `POST /api/match/queue`、`POST /api/room/create` 行；§5.8 Redis 键清单 | 补一张 game ↔ ruleset 映射口径：`gameId` 的定义、与 `rulesetId` 的基数关系、建房时按哪个键选取 active / canary RuleSet 版本。 | open |
+| F6-07 | round-04 | PROPOSE FIX | reviews/round-04/step6_comprehension_report.md；§2.4 M0 行；§2.1 `crates/protocol`、`crates/table-runtime` 行；§5.9 首行；§1.5 A1、A15、A16 | 在 M0 段补第一步清单：Cargo workspace 与 crate 骨架（含 `crates/protocol` 的 proto 文件路径/包名）、engine 最小对外接口签名、两个原型各自落位的 crate 与对应 A1/A15/… | open |
+| F6-08 | round-04 | PROPOSE FIX | reviews/round-04/step6_comprehension_report.md；§5.1 `tribute` 行；§5.1 YAML 示例 | `{enabled, trigger, pairs[], returnPolicy, resist}`"；示例 YAML："`trigger: last-round-rank`"。全文未给 `trigger` 的取值集合，`last-rou… | open |
+| F6-09 | round-04 | PROPOSE FIX | reviews/round-04/step6_comprehension_report.md；§11.2 U10 行；§5.10 首段；§12.2 第八次变更行 | 将 U10 状态改为 settled（已冻结），去掉"七行待确认"残留。 | open |
+| F6-10 | round-04 | PROPOSE FIX | reviews/round-04/step6_comprehension_report.md；§5.13 表一（定级分档表）；表二 S 行 | 写清区间开闭（如左闭右开）与胜率公式（含平局折算口径）。 | open |
+| F6-11 | round-04 | PROPOSE FIX | reviews/round-04/step6_comprehension_report.md；§5.13 settle 段；§5.14 | 补 match 开局初始化口径：新 match 首局 `levels=initial`、`aFailStreak=0` 的执行时点与位置。 | open |
+| F6-12 | round-04 | PROPOSE FIX | reviews/round-04/step6_comprehension_report.md；§5.12 第 2 项；§5.13 `levels` 存放位置段；§5.1 `levelTable` 行 | 明确 `levels` 存 ranks 数组下标（或牌面键枚举），并在 §5.12 序列化字段说明中写死。 | open |
+| F6-13 | round-04 | PROPOSE FIX | reviews/round-04/step6_comprehension_report.md；§5.8 `player_stat` 行；§5.13 表一注；§5.15 末段；§10.2 定级赛归属用例 | 明确定级期 `rank_level` 的更新规则：开局置默认值、10 场结束才落档，还是按当前胜率临时显示档位；三处口径统一。 | open |
+| F6-14 | round-04 | PROPOSE FIX | reviews/round-04/step6_comprehension_report.md；§5.13 升级跨 A 处置段；§5.13 名次组合升级表 | 补 `1+4` 到达 A 的处置，与 `1+2`/`1+3` 对齐说明停留与超额作废规则。 | open |
+| F6-15 | round-04 | PROPOSE FIX | reviews/round-04/step6_comprehension_report.md；§5.13 play 段「顺子边界」行 | 写清顺子判定的环形特例（A 可前接 2、不可后接 2），便于双端实现同一判定顺序。 | open |
+| F6-16 | round-04 | PROPOSE FIX | reviews/round-04/step6_comprehension_report.md；§5.15 `GET /api/match/queue/{ticketId}` 行 | matched | open |
+| F6-17 | round-04 | PROPOSE FIX | reviews/round-04/step6_comprehension_report.md；§5.9 `Reconnect`/`SubmitAction`/`RoomDelta` 行；§6.2 序号作用域 | 在 §6.2 补两个序号的初始值与首条动作/事件的序号。 | open |
+| F6-18 | round-04 | PROPOSE FIX | reviews/round-04/step6_comprehension_report.md；§6.6 三档可信度表；§5.15 真值表 | 在 §6.6 三档表补一列 `matchType`，与 §5.15 真值表逐项对齐。 | open |
+| F6-19 | round-04 | PROPOSE FIX | reviews/round-04/step6_comprehension_report.md；§5.6 `POST /admin/rulesets/{id}/publish` 行；`promote` 行 | 明确 publish 的 `stage` 入参仅作声明还是校验项，非法值/跨级返回的错误码。 | open |
+| F6-20 | round-04 | PROPOSE FIX | reviews/round-04/step6_comprehension_report.md；§5.7 `RS_QUOTA_EXCEEDED` 行；§8.6 CPU 炸弹行 | 统一触发阶段（加载期 / 发布期 / dry-run）与对应处置错误码。 | open |
+| F7-01 | round-04 | PROPOSE FIX | reviews/round-04/step7_critic_report.md；§10.2 风险到测试映射表，表头 L1244；无编号行 L1259–L1266 | 为这 8 条风险在 §11.1 补登 R14–R21（或明确并入既有 R 编号并在首列回填编号），使 §10.2 每行四列齐全、编号可回溯 | open |
+| F7-02 | round-04 | PROPOSE FIX | reviews/round-04/step7_critic_report.md；§1.4 S9（L68）；对照 §2.4 L169、§6.2 L858、§6.3 L870–L871 | 统一重连/恢复窗口口径：要么把 S9 的 10 分钟改为与 graceSec/offlineAllSec 一致的可恢复时限，要么在 §6.2 显式定义超过宽限后凭托管房重新入座恢复牌局的条件与上限 | open |
+| F7-03 | round-04 | PROPOSE FIX | reviews/round-04/step7_critic_report.md；§5.8 `round_record`（L563）；§7.7 回放包 manifest（L1037）；对照 §5.12 第 9 项（L682）、§6.5 快照（L902） | 明确 `aFailStreak` 的持久化边界：若对账/历史回放要求从 DB 重建，补进 `levels_after` 或单列字段；若仅靠动作日志重建，在 §5.8/§7.7 写明不持久化的理由，并在本地存档契约里补旧格式缺字段时的初始化与… | open |
+| F7-04 | round-04 | PROPOSE FIX | reviews/round-04/step7_critic_report.md；§5.13 tribute 段「抗贡」行（L721）；对照 §5.10 抗贡行（L645）、§5.1 `tribute.resist`（L365） | 在 §5.10/§5.13 抗贡条目中显式写明「抗贡成立则 `pay` 与 `return` 均不发生、`tribute` 段归零」，使两处措辞推出同一行为 | open |
+| F7-05 | round-04 | PROPOSE FIX | reviews/round-04/step7_critic_report.md；§1.4 S8（L67）；对照 §5.2 级牌原语（L444）、§5.10 过 A 行（L647）、§5.1 `tribute.resist`（L365） | 将 S8 中的标识改为契约内既有字段名（`level.pass`、`tribute.resist`），或在 §5.1 补一张「争议项别名 → RuleSet 字段」对照表 | open |
+| F7-06 | round-04 | PROPOSE FIX | reviews/round-04/step7_critic_report.md；§5.1 `tribute` 字段行（L365）；示例 YAML（L413） | 在 §5.1 `tribute` 行补 `trigger` 的闭集取值（含 `last-round-rank`）与缺省规则，并在 L1 校验清单中注明越界取值拒绝 | open |
+| F7-07 | round-04 | PROPOSE FIX | reviews/round-04/step7_critic_report.md；§5.8 `match_record.match_type` 枚举（L564）；对照 L562、L757、L823、L825、L1129、L1265 | 明确 `ai-practice` 的定位：若它只是离线本地模式标签，在 L564/L816 注明其不落 `match_record`、与 `bot` 的映射关系；若需入库则补进 `match_type` 枚举 | open |
+| F7-08 | round-04 | PROPOSE FIX | reviews/round-04/step7_critic_report.md；§1.2 前提表（L20–L41）；对照 §11.2 U5 行（L1354） | 在 §1.2 表内补登 U5 行（结论与来源指向 §11.2 L1354），或把表头改为实际收录的 U 编号集合 | open |
+| F7-09 | round-04 | PROPOSE FIX | reviews/round-04/step7_critic_report.md；§11.2 U10 行状态列（L1359）；对照 §5.10 表头（L631）与收尾说明（L651） | 将 L1359 状态改为纯 `settled`，删除「七行待确认」残留备注 | open |
+| F7-10 | round-04 | PROPOSE FIX | reviews/round-04/step7_critic_report.md；§8.6 CPU 炸弹行（L1115）；对照 §5.7 `RS_QUOTA_EXCEEDED`（L533）、§7.2 指标行（L975） | 拆分加载期与发布期两类超限的处置与错误码：若加载期超限另立错误码则补入 §5.7，若复用 `RS_QUOTA_EXCEEDED` 则把 L533 触发条件扩到加载期并删去「只用于 dry-run」的限定 | open |
+| F7-11 | round-04 | PROPOSE FIX | reviews/round-04/step7_critic_report.md；§5.6 `POST /admin/rulesets/{id}/publish` 行（L494）；对照发布状态机表（L511–L513）、§9.4 步骤表（L1186–L1187） | 明确 publish 接口的前置状态只能是 `validated`，把 L494 的起点改为 `validated`；`draft → validated` 的推进主体（校验任务完成回调或独立接口）在 §5.6 写清 | open |
+| F7-12 | round-04 | PROPOSE FIX | reviews/round-04/step7_critic_report.md；§5.5 版本绑定表 `engineVersion` 行（L480）；对照 §6.5 房间快照字段枚举（L902）、§5.9 本地存档内容（L622） | 在 §6.5 快照字段集中补齐 `engineVersion`、`interpreterVersion`（或注明房间创建时锁定、可从 `rulesetVersion` 派生并给出派生路径），使快照字段集与 §5.5 一一对应 | open |
+| F7-13 | round-04 | PROPOSE FIX | reviews/round-04/step7_critic_report.md；§5.1 `tribute.pairs` 枚举（L365）；示例 YAML（L415–L417） | 合并同义字面量（单一名次枚举值），或在 §5.1 写明 `last` 与 `fourth` 的映射关系与兼容规则 | open |
+| F7-14 | round-04 | PROPOSE FIX | reviews/round-04/step7_critic_report.md；§5.7 `RS_VERSION_LOCKED_BY_ROOMS` 行（L527）；对照 §5.6 后台接口表（L488–L499） | 若 v1 不提供版本删除能力，将该码标注为预留并注明触发端点待补；若保留，则在后台接口表补对应删除/覆盖端点 | open |
+| F7-15 | round-04 | PROPOSE FIX | reviews/round-04/step7_critic_report.md；§5.13 `aFailStreak` 更新段（L747、L751）；§5.14（L792）；场次终止段（L753） | 在 §5.13/§5.14 补一句：新 match 初始化时 `levels` 与 `aFailStreak` 均置初值；安全局数达顶时胜负只比 `levels`，明确 `aFailStreak` 不参与该判定 | open |
+| F7-16 | round-04 | PROPOSE FIX | reviews/round-04/step7_critic_report.md；§5.6 `POST /admin/rulesets` 入参（L490）；对照 `ruleset_draft` 表字段（L550） | 补登草稿/玩法名称的落表字段，或说明 `name` 仅作展示缓存、随 `body` 存储；把 `baseVersion` 的持久化列或派生规则写明 | open |
+| F7-17 | round-04 | PROPOSE FIX | reviews/round-04/step7_critic_report.md；§5.15 `POST /api/auth/login` 行（L801）；对照 §5.7 错误码表（L537） | 在 §5.7 补登录验证码失败的错误码（或显式归入 `AUTH_INVALID` 并扩写触发条件），与 §5.15 登录接口闭合 | open |
+| F8-01 | round-04 | PROPOSE FIX | reviews/round-04/step8_intermediate_zoom_out_report.md；§5.13 段位算法三表 L755–L788；§8.7 评分防刷分行 L1129；§4.5 匹配行 L288；§10.2 定级赛归属与 K 衰减两行 L1265–L1266 | 降级为：单一整数评分（固定 K，不做 24 小时衰减）+ 3 档（新手/进阶/大师，阈值给出初值，M3 实测后微调）+ 单池匹配。删表一定级分档表、表二 K 双档行、表三五行占位、§8.7 的 24 小时衰减行，以及 §10.2 对应两条集… | open |
+| F8-02 | round-04 | PROPOSE FIX | reviews/round-04/step8_intermediate_zoom_out_report.md；§2.4 阶段边界表 L155–L164；§4.4 代价段 L275–L279；§2.1 `apps/admin` 行 L121 | 在 §2.4 每段增一行"交付项人周合计"并删到能装下：把后台 ⑦房间与账号巡检、⑨手动发码、回放式观战（U8 只定了形态，未定里程碑）移出 M3；M3 仅保留玩法注册、规则配置、L1–L4 校验、灰度发布与回滚、审计五件 + 斗地主接入；… | open |
+| F8-03 | round-04 | PROPOSE FIX | reviews/round-04/step8_intermediate_zoom_out_report.md；§5.6 后台 API 契约 L490–L496、L503–L517；§5.8 规则发布链四表 L550–L553；§3.3 第 5 条 L211；§8.1 L1075 | 每 `ruleset_id` 只保留一个草稿位（PUT 直接覆盖），把 `ruleset_draft` 与 `ruleset_release` 合并为一张按 rev 递增的表（body 与 stage 同键同存）；删 `draft_key`… | open |
+| F8-04 | round-04 | PROPOSE FIX | reviews/round-04/step8_intermediate_zoom_out_report.md；§5.1 `view` 行 L369；§5.2 视图原语行 L446 | 删 `mode` 字段与 `hide` 分支，`view` 只剩 `fields[]` 并固定按白名单投影；§5.4 L1 同步去掉 mode 取值校验 | open |
+| F8-05 | round-04 | PROPOSE FIX | reviews/round-04/step8_intermediate_zoom_out_report.md；§5.1 `levelInsert` 行 L361；§5.10 级牌行 L636；§5.13 play 级牌行 L731 | 删 `levelInsert` 字段与 `below-2` 取值，把"级牌插在 A 之后、小王之前"写进载入期常量；v2 出现别的插入位时按 §9.2 engine 次版本加回 | open |
+| F8-06 | round-04 | PROPOSE FIX | reviews/round-04/step8_intermediate_zoom_out_report.md；§5.1 `compare.flushRank` 说明 L364；§5.10 同花顺位置行 L640 | 只保留 `above-bomb-5` 与 `below-bomb-5`（后者作为 S8 的对照口径），删 `above-bomb-6` 与 `above-bomb-8`，真出现地区口径时按 §9.2 加 | open |
+| F8-07 | round-04 | PROPOSE FIX | reviews/round-04/step8_intermediate_zoom_out_report.md；§5.1 `deck` 行 L357；§5.4 L2 静态牌堆校验 L468 | 删 `deck.exclude`，需要裁牌时由 RuleSet 直接给出 `ranks` | open |
+| F8-08 | round-04 | PROPOSE FIX | reviews/round-04/step8_intermediate_zoom_out_report.md；§2.1 `apps/admin` 行第 ② 项 L121；§4.10 后台表单来源行 L339；§12.1 D7 L1387 | M3 只交付积木 + 源码两视图；表单降级为积木视图内嵌的字段面板（不单独成一套读写通道），或只在 dry-run 结果页做只读渲染 | open |
+| F8-09 | round-04 | PROPOSE FIX | reviews/round-04/step8_intermediate_zoom_out_report.md；§5.9 `ViewMismatchReport` 行 L600；§7.2 `viewhash_mismatch_total` 行 L972；§5.12 `viewHash` 定义 L670 | 保留客户端在收到 `RoomSnapshot`/`SettleResult` 后自算 `viewHash`（S3 需要），删 `ViewMismatchReport` 消息、去重表、单房间上限与 `viewhash_mismatch_tot… | open |
+| F8-10 | round-04 | PROPOSE FIX | reviews/round-04/step8_intermediate_zoom_out_report.md；§5.8 `settlement_compensation` 表 L566；§6.5 恢复失败处置 L905；§9.5 已开局房间行 L1204 | v1 删该表与 `issued`，流局只写 `match_record.end_reason=aborted` + 审计日志 + 回放留痕；接渠道时按 §9.7 五步加回 | open |
+| F8-11 | round-04 | PROPOSE FIX | reviews/round-04/step8_intermediate_zoom_out_report.md；§5.7 `RS_L4_MISMATCH` 行 L529 与 `RS_GOLDEN_REGRESSION_FAILED` 行 L534；§10.3 用例来源表 L1270–L1275 | 合并为 `RS_L4_REGRESSION_FAILED`，用 `findings[].caseSource`（`golden` / `seed`）区分来源；§5.7 与 §10.3 同步 | open |
+| F8-12 | round-04 | PROPOSE FIX | reviews/round-04/step8_intermediate_zoom_out_report.md；§5.7 `RS_PHASE_UNIMPLEMENTED` 行 L532；§5.7 `RS_REF_MISSING` 行 L523；§5.4 L2 行 L468 | 删 `RS_PHASE_UNIMPLEMENTED`，该情形由 `RS_REF_MISSING` 报出并在 findings 中标 phase 名；§5.7、§5.4 与引用处同步 | open |
+| F8-13 | round-04 | PROPOSE FIX | reviews/round-04/step8_intermediate_zoom_out_report.md；§5.6 发布语义 L501；§7.2 `action_cpu_overrun_total` 行 L974；§8.6 CPU 炸弹行 L1115 与恶意 RuleSet 行 L1117；§9.4 canary 行 L1188 | 只在 §8.6 的 CPU 炸弹行定义该口径，其余四处删句改为"CPU 超预算按 §8.6 处置" | open |
+| F8-14 | round-04 | PROPOSE FIX | reviews/round-04/step8_intermediate_zoom_out_report.md；§6.5 快照字段 `snapSeq` L903；§5.8 Redis 快照键 L579；§5.9 本地存档内容 L622；§1.6 术语表 L101–L106 | 在 §1.6 增两行：`roomSeq`（房间广播水位，快照内记 `snapRoomSeq`）、`seatSeq` / `seqWatermark[seat]`（每座位动作水位）；全文只留这三个名字，`snapshotSeq` 改为 `sn… | open |
+| F8-15 | round-04 | PROPOSE FIX | reviews/round-04/step8_intermediate_zoom_out_report.md；§5.8 `player_profile` 行 L561；§8.4 手机号行 L1098 | v1 只写"盐存环境变量、单盐、泄露时按 §9.7 五步轮换"，删"双盐列/双次查找"的结构要求；真要轮换时再按五步加列 | open |
+| F8-16 | round-04 | PROPOSE FIX | reviews/round-04/step8_intermediate_zoom_out_report.md；§5.1 `timing` 行 L370 与 `ai` 行 L371；§5.4 L1 行 L467；§5.11 L661；§9.4 canary 行 L1188 | 把 `timing` 与 `ai` 移出 RuleSet，作为 `game_id` 维度的房间参数（后台可改、落审计、不进 `stateHash`、不参与 L3/L4）；RuleSet 只保留决定合法性与结算的字段 | open |
+| F8-17 | round-04 | PROPOSE FIX | reviews/round-04/step8_intermediate_zoom_out_report.md；§11.2 U10 行 L1359；§5.10 表头说明 L631；§12.2 第八次变更 L1415 | U10 状态改为 `settled`，删掉括号内"七行待确认"（决策内容已由 §5.10、§12.2 承载） | open |
+| F8-18 | round-04 | PROPOSE FIX | reviews/round-04/step8_intermediate_zoom_out_report.md；§5.11 档位表与表下说明 L655–L661；§5.4 校验四级 L465–L470；§2.1 `crates/ai` 行 L119 | AI 层改名为 `AI-L0` / `AI-L1` / `AI-L2`，删 L661 的消歧句；§5.11 与 §2.1 的 `crates/ai` 行同步 | open |
+| F9-01 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§5.13「settle（结算与升级）」L737–L753；§5.8 `round_record` L563；§5.4 L3 L469 | 在 §5.13 增「局终止与名次」判定式：谁先出完记头游、同队两人出完即该局结束、剩余两人名次的判定规则（手牌数还是牌力），并写明名次序列落到哪一项状态（与 F9-04 一并改） | open |
+| F9-02 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§5.1 `patterns[].params` L363、`actions[]` L367、YAML L393–L406；§5.2 L436–L448；§5.3 L459–L461 | 给每个 primitiveId 一份参数结构（字段名、类型、值域、默认值），把 `params` 定义为按 primitiveId 分型的枚举，并给 `actions[]` 补 params 字段 | open |
+| F9-03 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§5.9 `RoomSnapshot` L594、`SubmitAction.payload` L602–L609；§5.1 `view` L369；§3.3 约束 2 L207；§5.12 L686 | 补统一的视图编码（如 `repeated FieldView{fieldId(uint16), encoding, bytes}`，字段序=白名单序），并规定 `fieldId` 与 zone id 的分配规则，使客户端可解码且可复算 `v… | open |
+| F9-04 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§5.12 第 1–9 项 L672–L682；§6.5 快照字段集 L902；§5.8 `round_record` L563 | 在 §5.12 增第 10 项 `finishOrder`（按出完序的 seat 序列），并同步 §6.5 快照字段集与「9 项」表述 | open |
+| F9-05 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§5.14 L792；§6.3 L863–L883 | 在 §6.3 或 §5.14 补齐四段进／退条件（含抗贡跳过、局终止的任何分支），并写明每个转移是否触发一次 `stateHash` 重算 | open |
+| F9-06 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§5.8 `ruleset_release` L552、Redis `game:{id}:active_ruleset` L577；§5.6 L503；§9.5 L1203 | 写死「release 表是唯一真相，Redis 只是缓存并在启动与每次发布后从 release 重建」，并给出回滚的两步顺序与失败回退（先改表还是先改指针、失败如何判定） | open |
+| F9-07 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§5.6 `rollback` L496；§9.5 L1205；§5.8 L552 | 增不可改写的 `first_activated_at`，定义候选集为「stage 曾到过 full 且未 retired」，并给出候选为空时的失败码 | open |
+| F9-08 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§9.4 canary 行 L1188；§9.5 触发条件 L1201；§7.2 `process_crash_total` L982 | 统一成一处判据（建议 canary 内「崩溃次数 >0 即回滚」，0.1% 只用于全量期的 P1），或在 L1201 注明 canary 期按次数计 | open |
+| F9-09 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§9.4 full 行 L1189；§7.2 L969–L985；§10.5 L1292–L1296、L1299 | 写明指标名与窗口，并给「无基线」时的替代判据（首版 full 只用绝对值上限，自第二个版本起才比 7 日均值） | open |
+| F9-10 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§9.2 interpreter 主版本 L1166、L1171 | 增「在役解释器版本登记」（版本、进入与计划退场时间、引用计数），并写明到期三步：停发布→停新建→只保留回放只读 | open |
+| F9-11 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§9.2 协议 sunset L1168；§7.2 指标清单 L967–L986；§5.8 表清单 L546–L571 | 增 `client_version{version}` 计数指标，并在 §5.8 增 `protocol_field`（字段名、上线版本、上线时间、sunset 条件、决策） | open |
+| F9-12 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§5.16 L833–L836；§5.9 `JoinRoom` L590、`ViewMismatchReport` L600；§5.7 `CLIENT_TOO_OLD` L538；§5.15 `login` L801 | 两处都定为 semver 字符串并指定比较库与预发布版本处理，`platform` 定为 web/windows/macos/linux 四值枚举并与 `clientPlatform` 共用 | open |
+| F9-13 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§5.13 场次终止 L753；§5.1 字段表 L351–L371；§5.8 `match_record` L564 | 在 §5.1 增 `matchCap.rounds: u16 = 12`（取值 1–99），并纳入发布态必填校验与 `ruleset.body` | open |
+| F9-14 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§5.13 表一 L757–L766、表三 L778–L786、L788；§5.8 `player_stat` L562；§10.2 定级赛归属 L1265 | 写明优先级（定级结束那一场以胜率表落位并写入，其后每场才走表三），并在 M1 冻结前把 5 档阈值填实（现在是「待实测锁定」空表） | open |
+| F9-15 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§6.6 对账 L916–L918；§5.8 表清单 L546–L571 | 增 `settlement_event(match_id, round_no, created_at)` 并在同一结算事务内插入，或明确复用哪张既有表并写出字段 | open |
+| F9-16 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§5.6 `validate` L492–L493、状态机 `validated` 行 L512；§5.4 L465–L470；§5.7 L520–L542 | 定义 `Finding{level, code(取 §5.7 全表), severity(Blocker/Major/Minor), location, message}` 并给出 severity 判定表（哪些码算 Blocker） | open |
+| F9-17 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§2.4 M0 行 L158；§2.1 `crates/table-runtime` 行 L117；§1.5 A15 L93 | 明确原型的落点（如一次性 `crates/runtime-spike`，或 table-runtime 的 M0 骨架），并给一条「原型转正判据」（哪些文件与测试必须保留） | open |
+| F9-18 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§2.4 M0 行 L158；§1.5 A1 L79、A14 L92、A15 L93、A16 L94、A17 L95；§10.5 L1299 | 增 M0 gate 表：验收项 / 判据 / 产出物路径 / 对应假设编号，与 A1、A14–A17 一一对齐，并写未达标时的处置 | open |
+| F9-19 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§5.9 payload L602–L609；§5.13 贡牌选择 L720；§5.1 `actions` L424–L425；§5.14 L792 | 二选一写死：若零动作，则从 `actions[]` 删两条并把 §5.14 的豁免清单扩为 `deal/tribute/settle`；若需提交，则给出提交时机与拒绝码 | open |
+| F9-20 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§5.12 `viewHash` L684–L688；§5.9 `SettleResult` L598；§7.2 `viewhash_mismatch_total` L972 | 给 `SettleResult` 增 `roomSeq`，或在 L686 写明该哈希在结算场景用哪个 `roomSeq`，使「客户端算出等于服务端下发」可断言 | open |
+| F9-21 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§5.13 首出 L713；§5.1 `tribute` L365；§5.12 第 7 项 L680 | 补一句：场次第一局 `tribute` 整段跳过（`levels` 取 `levelTable.initial`、`tribute` 段全零、首出座位 0），并令 L2 对「首局无上局名次」不报错 | open |
+| F9-22 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§5.1 `deck` L357、YAML L379；§5.4 L2 静态牌堆校验 L468 | 把静态校验改写为「`ranks×suits×copies + jokers×copies − exclude 张数 = 总张数`」，并明确该总张数与 `zones.hand` 容量上限的关系 | open |
+| F9-23 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§5.1 `deck` L357；YAML L379；§5.10 用牌 L635 | 钉死为 `ranks: [RankKey]`（必须是 `naturalOrder` 子集）、`suits: [Suit]`（四值枚举）、`exclude` 粒度二选一并写明语义 | open |
+| F9-24 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§5.1 `seats` L356、YAML L378；§5.4 L2 L468；§5.12 第 2/9 项 L675、L682 | 定义 `teams: [[SeatId]]` 并加 L2 校验（覆盖全部座位且不重叠、`count` 2–8），写明 teams 为空时两数组为空且 `level.*` 原语不可用 | open |
+| F9-25 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§5.1 表头 L351–L352；表体 L356–L371 | 表头改「必填性」并给图例（✓=必填、○=可选、—=该态不存在），把条件必填写成 L2 可判定的条件式 | open |
+| F9-26 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§5.7 L520–L542；§5.9 `ActionAck` L596；§6.4 L890 | 在 §5.7 增「WS 载体」列：连接级错误用 Close code、动作级错误只走 `ActionAck.reason`，并注明哪些码会断连 | open |
+| F9-27 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§5.1 `wildcard` L362；YAML L392；§5.13 逢人配 L732；§5.4 L1 L467 | 改为结构化字段 `{suit: Suit, rank: RankKey 或 "@level"}`（枚举 + 受控占位符），使 L1 可判 | open |
+| F9-28 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§6.5 快照与重建 L902–L903；§5.9 快照键 L579 | 写明 `snapSeq` 即快照覆盖的最大 `roomSeq`（同一 u64 序列），或改名区分并给换算表 | open |
+| F9-29 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§10.2 L1242、L1259–L1266；§11.1 L1330–L1344 | 给这八行编 R14–R21 并同文进 §11.1，或并入对应风险（R1/R7/R13 等）的子测试 | open |
+| F9-30 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§10.3 用例总量 L1275、L1279；§10.4 L1287；§10.2 R8 L1253 | 列出 fast20 的 20 个用例 id 与未覆盖时的补齐规则，把全量集写成「40+20+12+100=172」，并给 bot 胜率另设名单文件 | open |
+| F9-31 | round-04 | PROPOSE FIX | reviews/round-04/step9_readiness_report.md；§6.5 快照字段集 L902 | 删掉「版本串除外」，改为「对应 §5.12 第 1–9 项全部字段，另加 `seed` 与 `snapSeq`」 | open |
 
 ## 收敛记录
 
@@ -390,14 +485,16 @@
 | round-01 | 25 | 87 | 48 | 12 | 否 | 172 条全部 settled，已并入草案（含新增 §5.9–§5.16） |
 | round-02 | 9 | 59 | 34 | 5 | 否 | 107 条全部 settled，已并入草案（牌堆/容量、stateHash、级牌按队、协议分型、灰度两档等） |
 | round-03 | 6 | 50 | 33 | 2 | 否 | 91 条全部 settled，已并入草案（L2 守恒/容量拆分、lifecycle 四段、jokers=2/108、场终止过 A 或安全上限、双序号、私有区 `(seat, zoneId)`、4096 加载期上限、草稿/发布两套 schema、CPU 仅告警、`TOO_LATE` 入码表、`snapshotReset`、后台九件、段位分流） |
+| round-04 | 4 | 31 | 44 | 16 | 否 | 95 条全部 open（台账 round-04 段）；4 条 Blocker：`aFailStreak` 0–2 与「满 3」自相矛盾（F6-01）、一局何时结束与 1–4 名如何产生未定义（F9-01）、`patterns[].params` 无类型 schema（F9-02）、`RoomSnapshot.view` 动态视图无 proto 编码方案（F9-03） |
+收敛状态：末尾连续 clean 轮次 0，要求 ≥2；已用 4 轮，上限 5 轮，剩余 1 轮。
 
-收敛状态：末尾连续 clean 轮次 0，要求 ≥2；已用 3 轮，上限 5 轮，剩余 2 轮。
+**收敛口径调整（2026-11-23 用户裁决）**：因为「连续两轮 clean」与「总轮次 ≤5」在 round-04 结束后已互斥（round-04 `clean=否`，只剩 round-05 一轮，连续 clean 最多只能到 1），用户裁决改为：**末轮（round-05）零 Blocker 且零 Major（`clean=是`），且此前各轮（round-01…04）的全部 Blocker/Major 台账状态均为 `settled`，即视为收敛**。放宽依据与残余风险须在 `handoff_boundary.md` 写明并由用户签字，不得默认为已批准。
 
 ## 未决问题（等用户拍板）
 
 | # | 问题 | 需要谁决定 | 状态 |
 | --- | --- | --- | --- |
-| 1 | §5.10 规则取值表仍有 7 行标 `?`（同花顺插位、进贡配对、还贡、抗贡、升级档、过 A、接风），需逐条确认 | 用户 | 已确认（2026-11-23，7 项取值见 §5.10） |
+| 1 | §5.10 规则取值表仍有 7 行标 `?`（同花顺插位、进贡配对、还贡、抗贡、升级档、过 A、接风），需逐条确认 | 用户 | 已确认（2026-11-23，7 项取值见 §5.10）；过 A 终稿：连续 3 局未过回起点 2 |
 | 2 | U11 商业化起点与版号提报触发条件（具体日期 / 责任人 / 提报批次） | 用户 | open |
 | 3 | U12 无版号免费内测是否必须接实名与防沉迷 | 法务（书面答复） | open |
 | 4 | manifest.json 的 7 个来源 URL 未获人批准，§4.2 选型事实无法被评审者抓取复核 | 用户 | open |
