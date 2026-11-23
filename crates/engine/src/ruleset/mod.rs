@@ -7,3 +7,4 @@ pub mod validate;
 
 pub use model::RuleSetBody;
 pub use parse::{from_yaml, SchemaError};
+pub use validate::validate;

@@ -1,0 +1,28 @@
+# M0 最小夹具：发牌 + 单张出牌 + score-only 结算（§2.4 第 4 项，版本号 m0-minimal@1.0.0）。
+# 草稿态 body 不含 version 键（version 由发布时服务端注入，§5.1 第 378 行）。
+rulesetId: m0-minimal
+interpreter: ">=1.2,<2"
+seats: { count: 4, teams: [[0,2],[1,3]] }
+deck: { copies: 2, ranks: ["2","3","4","5","6","7","8","9","10","J","Q","K","A"], suits: [S,H,D,C], jokers: 2, exclude: [] }
+zones:
+  - { id: hand,    scope: private, capacity: 27 }
+  - { id: discard, scope: shared,  capacity: -1 }
+naturalOrder: ["2","3","4","5","6","7","8","9","10","J","Q","K","A",little-joker,big-joker]
+levelInsert: above-A
+patterns:
+  - { id: single, primitiveId: pattern.same-rank, params: { count: 1 } }
+compare:
+  ladder: [single]
+  bombOrder: count-then-rank
+  flushRank: above-bomb-5
+actions:
+  - { kind: play, primitive: action.require-legal, legalFrom: patterns, params: { force: true, consume: hand } }
+lifecycle: [deal, tribute, play, settle]
+flow:
+  deal:   { zone: hand, perSeat: 27, reveal: false }
+  turn:   { direction: clockwise, skipFinished: true, partnerLead: true, afterAllPass: last-player }
+  score:  { dimension: team }
+  rng:    { stream: 0 }
+  assert: { minPlayers: 4, cardCount: 108 }
+settle: { algorithm: score-only }
+view: { schemaVersion: 1, fields: [hand, lastPlay] }

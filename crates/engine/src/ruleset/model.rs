@@ -58,22 +58,30 @@ pub enum FlushRank {
 /// 生命周期四段（§5.1 `lifecycle`、§5.14）；`turn` 不是 phase。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub enum Phase {
+    #[serde(rename = "deal")]
     Deal,
+    #[serde(rename = "tribute")]
     Tribute,
+    #[serde(rename = "play")]
     Play,
+    #[serde(rename = "settle")]
     Settle,
 }
 
 /// 动作 kind 闭集：v1 仅 `play`/`pass`（§5.1 `actions.kind`）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub enum ActionKind {
+    #[serde(rename = "play")]
     Play,
+    #[serde(rename = "pass")]
     Pass,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub enum TurnDirection {
+    #[serde(rename = "clockwise")]
     Clockwise,
+    #[serde(rename = "counterclockwise")]
     Counterclockwise,
 }
 
@@ -87,7 +95,9 @@ pub enum AfterAllPass {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub enum ScoreDimension {
+    #[serde(rename = "team")]
     Team,
+    #[serde(rename = "player")]
     Player,
 }
 
@@ -95,6 +105,7 @@ pub enum ScoreDimension {
 pub enum LevelScope {
     #[serde(rename = "by-team")]
     ByTeam,
+    #[serde(rename = "global")]
     Global,
 }
 
@@ -107,9 +118,13 @@ pub enum TributeTrigger {
 /// 名次枚举：first/second/third/fourth，无 `last` 别名（§5.1 `tribute.pairs`）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub enum SeatRank {
+    #[serde(rename = "first")]
     First,
+    #[serde(rename = "second")]
     Second,
+    #[serde(rename = "third")]
     Third,
+    #[serde(rename = "fourth")]
     Fourth,
 }
 
@@ -125,12 +140,15 @@ pub enum TributeWhen {
 pub enum ReturnCeiling {
     #[serde(rename = "under-ten")]
     UnderTen,
+    #[serde(rename = "none")]
     None,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub enum ReturnFallback {
+    #[serde(rename = "smallest")]
     Smallest,
+    #[serde(rename = "largest")]
     Largest,
 }
 
@@ -138,6 +156,7 @@ pub enum ReturnFallback {
 pub enum TributeResist {
     #[serde(rename = "two-big-jokers")]
     TwoBigJokers,
+    #[serde(rename = "none")]
     None,
 }
 
@@ -149,13 +168,17 @@ pub enum PaySelection {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub enum FirstRound {
+    #[serde(rename = "skip")]
     Skip,
+    #[serde(rename = "play")]
     Play,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub enum OrderDirection {
+    #[serde(rename = "asc")]
     Asc,
+    #[serde(rename = "desc")]
     Desc,
 }
 
@@ -300,7 +323,9 @@ pub struct ZoneDef {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub enum ZoneScope {
+    #[serde(rename = "private")]
     Private,
+    #[serde(rename = "shared")]
     Shared,
 }
 
