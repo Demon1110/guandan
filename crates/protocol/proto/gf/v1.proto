@@ -1,11 +1,205 @@
-// 掼蛋多端框架牌桌协议（M0 骨架占位）。
-// 依据 design_draft.md §5.9：服务端与 wasm 客户端共用同一份生成代码。
-// 本轮不生成代码；消息体在后续迭代按 §5.9 消息表补齐。
+// 掼蛋多端框架牌桌协议 v1（design_draft.md §5.9，行 705–734）。
+// proto 固定路径 crates/protocol/proto/gf/v1.proto，package gf.protocol.v1；
+// 服务端与 wasm 客户端共用同一份生成代码（§2.4 第 184 行）。
+//
+// 整型宽度约定：proto3 无 u8/u16，seat/team/level 等窄域整数一律落 uint32，
+// 取值域在注释里标清；seatSeq/roomSeq/deadlineMs 等序号与时长落 uint64。
+// 字段名 snake_case，prost 生成的 Rust 字段自然为 snake_case。
+
 syntax = "proto3";
 
 package gf.protocol.v1;
 
-// TODO(M0-GAP-proto): 按 §5.9 消息表补 JoinRoom / JoinAck / Reconnect /
-// SubmitAction / Heartbeat / RoomSnapshot / RoomDelta / ActionAck /
-// PhaseChange / SettleResult / TrusteeState 及 SubmitAction.payload oneof、
-// RoomDelta.events[] oneof。
+// 动作分型（§5.9 行 723–730）：kind 闭集只有 play/pass；
+// tribute/return 不由玩家提交（§5.9 行 730），不在本枚举内。
+enum ActionKind {
+  ACTION_KIND_PLAY = 0;
+  ACTION_KIND_PASS = 1;
+}
+
+// 相位（§5.14 行 908：lifecycle = deal/tribute/play/settle 四段，turn 是 play 内子阶段，不入枚举）。
+enum Phase {
+  PHASE_DEAL = 0;
+  PHASE_TRIBUTE = 1;
+  PHASE_PLAY = 2;
+  PHASE_SETTLE = 3;
+}
+
+// 托管模式（§5.9 行 721：ai|human）。
+enum TrusteeMode {
+  TRUSTEE_MODE_AI = 0;
+  TRUSTEE_MODE_HUMAN = 1;
+}
+
+// C→S 入座或续座（§5.9 行 711）。seat 只用于续座；入座结果一律经 JoinAck 返回。
+message JoinRoom {
+  string match_id = 1;
+  // 续座时带回原座位；首次入座缺省。取值域 seat: u8（0..=255）。
+  optional uint32 seat = 2;
+  // 客户端构建版本，semver 字符串 MAJOR.MINOR.PATCH（§5.16 行 950）。
+  string client_version = 3;
+}
+
+// S→C 入座响应（§5.9 行 712）。成功与 RS_SEAT_TAKEN 都走本帧。
+message JoinAck {
+  string match_id = 1;
+  // accept=true 时为服务端分配座位；accept=false 时无意义。取值域 seat: u8。
+  uint32 seat = 2;
+  bool accept = 3;
+  // 当前可分配座位号（§5.7 行 653：RS_SEAT_TAKEN 经本帧返回并附 availableSeats[]；
+  // 房间已满时为空表）。元素取值域 u8（0..=255）。
+  repeated uint32 available_seats = 4;
+  // 拒绝原因，取 §5.7 错误码字面值（如 "RS_SEAT_TAKEN"）；accept=true 时缺省。
+  // TODO(M0-GAP-proto-02): reason 是否收为枚举待协议评审，v1 暂用字符串载体。
+  optional string reason = 5;
+}
+
+// C→S 断线重连（§5.9 行 713）。lastSeatSeq 之后的增量由服务端补齐；
+// 该水位早于缓冲起点时只发 RoomSnapshot 并以快照 roomSeq 为新起点（§6.2）。
+message Reconnect {
+  string match_id = 1;
+  uint32 seat = 2; // 取值域 u8（0..=255）。
+  uint64 last_seat_seq = 3; // 每座位单调递增序号，u64（§5.9 行 714）。
+}
+
+// play 分支：只传牌 id；patternId 由服务端判定（§5.9 行 727）。
+message PlayPayload {
+  repeated uint32 cards = 1; // 牌 id：u16（§5.12 行 813），proto3 落 uint32，域 0..=65535。
+  // 对不合法动作的提示理由，不参与判定；可空。
+  optional string pattern_hint = 2;
+}
+
+// pass 分支：空结构体，禁止带字段（§5.9 行 728）。
+message PassPayload {}
+
+// C→S 提交动作（§5.9 行 714）。
+message SubmitAction {
+  string match_id = 1;
+  uint32 seat = 2; // 取值域 u8；服务端以 token 绑定座位为准，不一致返回 AUTH_INVALID。
+  string request_id = 3; // 幂等键（§6.4）。
+  uint64 seat_seq = 4; // 每座位单调递增，u64。
+  ActionKind kind = 5;
+  // 真 oneof：play/pass 互斥。kind 与 payload 分支必须一致，服务端双向校验。
+  oneof payload {
+    PlayPayload play = 6;
+    PassPayload pass = 7;
+  }
+}
+
+// C→S 心跳（§5.9 行 715）。客户端每 15 秒一次；30 秒内无该座位任何消息即判掉线。
+message Heartbeat {
+  string match_id = 1;
+  uint32 seat = 2; // 取值域 u8。
+  uint64 client_seq = 3; // 客户端单调序号，u64。
+}
+
+// S→C 全量快照（§5.9 行 716）。
+message RoomSnapshot {
+  string match_id = 1;
+  uint32 seat = 2; // 取值域 u8。
+  string ruleset_id = 3;
+  // TODO(M0-GAP-proto-03): RuleSet version 载体（字符串/整数）口径待冻结，v1 暂用字符串。
+  string ruleset_version = 4;
+  uint64 room_seq = 5; // 房间广播序，u64。
+  uint64 last_seat_seq = 6; // 本座位水位，u64。
+  // 视图哈希：BLAKE3-256 截断前 8 字节的 16 字符十六进制串（§5.12 行 841）；
+  // 服务端自算自证，客户端不重算、不上报（§5.9 行 734）。
+  string view_hash = 7;
+  // 白名单版本，文档 u16（§5.9 行 716）；proto3 无 u16，落 uint32，取值域 0..=65535，线上按 u16 截断。
+  uint32 view_schema_version = 8;
+  // canonical JSON bytes（§5.12 行 811「视图编码」六条）；动态字段集不做静态 schema，
+  // 绝不在此声明结构化 message——客户端按 viewSchemaVersion 白名单解码。
+  bytes view = 9;
+  // true 表示客户端必须丢弃本地状态并接受本快照（§6.2）。
+  bool snapshot_reset = 10;
+  // 注意：stateHash 永不下发（§5.12 行 790），本消息不得出现 state_hash 字段。
+}
+
+// 以下六种为 RoomDelta.events[] 的合法分支（§5.9 行 732）；
+// 新增事件类型只允许加 oneof 分支（§9.2）。
+
+message PlayedEvent {
+  uint32 seat = 1; // 取值域 u8。
+  repeated uint32 cards = 2; // 牌 id，u16 域。
+  string pattern_id = 3;
+}
+
+message PassedEvent {
+  uint32 seat = 1; // 取值域 u8。
+}
+
+message TributeEvent {
+  uint32 from = 1; // 贡方座位，u8 域。
+  uint32 to = 2; // 受贡方座位，u8 域。
+  uint32 card = 3; // 牌 id，u16 域。
+}
+
+message LevelChangedEvent {
+  uint32 team = 1; // 队序号，u8 域。
+  uint32 from = 2; // 级牌下标，u8 域。
+  uint32 to = 3; // 级牌下标，u8 域。
+}
+
+message TurnChangedEvent {
+  uint32 seat = 1; // 取值域 u8。
+  uint64 deadline_ms = 2; // 毫秒截止时刻，u64。
+}
+
+message RoundSettledEvent {
+  uint32 round_no = 1;
+}
+
+// 增量事件包装：真 oneof 覆盖上述六种，不退化为宽泛 message + 可选字段。
+message DeltaEvent {
+  oneof event {
+    PlayedEvent played = 1;
+    PassedEvent passed = 2;
+    TributeEvent tribute = 3;
+    LevelChangedEvent level_changed = 4;
+    TurnChangedEvent turn_changed = 5;
+    RoundSettledEvent round_settled = 6;
+  }
+}
+
+// S→C 增量广播（§5.9 行 717）。本消息是房间广播，不带 seatSeq；
+// 座位水位只在 Reconnect/ActionAck 按座位传递。
+message RoomDelta {
+  string match_id = 1;
+  uint64 room_seq = 2;
+  repeated DeltaEvent events = 3;
+}
+
+// S→C 动作回执（§5.9 行 718）。reason 取 §5.7 错误码全表。
+message ActionAck {
+  string request_id = 1;
+  uint64 seat_seq = 2;
+  uint64 room_seq = 3;
+  bool accepted = 4;
+  // TODO(M0-GAP-proto-02): 同 JoinAck.reason，v1 暂用错误码名字符串载体。
+  optional string reason = 5;
+}
+
+// S→C 阶段切换（§5.9 行 719）：发牌/进贡/出牌/结算。
+message PhaseChange {
+  Phase phase = 1;
+  uint64 deadline_ms = 2;
+}
+
+// S→C 结算广播（§5.9 行 720）。本帧不携 viewHash，客户端不重算视图哈希（§5.12/§7.2）。
+message SettleResult {
+  uint32 round_no = 1;
+  uint64 room_seq = 2;
+  // 结算结果；内部形状在协议层未写死（§5.8 round_record.result =
+  // {winner_team, ranks:[seat...], points}），v1 保守落 canonical JSON bytes。
+  // TODO(M0-GAP-proto-01): 结算口径冻结后拆为结构化 message。
+  bytes result = 3;
+  repeated uint32 levels_after = 4; // 每队级牌下标，u8 域，按队伍序号升序（§5.13 行 884）。
+  uint64 next_deal_in_ms = 5;
+}
+
+// S→C 托管状态变化（§5.9 行 721）。
+message TrusteeState {
+  uint32 seat = 1; // 取值域 u8。
+  TrusteeMode mode = 2;
+  string reason = 3;
+}
