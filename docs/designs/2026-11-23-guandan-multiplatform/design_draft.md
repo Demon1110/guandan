@@ -380,14 +380,14 @@
 | `seats` | `{count, teams}` | ✓ | ✓ | `count` 为座位数，取值 2–8；`teams: [[SeatId]]`，每个座位恰好属于一个队，不重叠、不漏座；覆盖不全或重叠在 L2 报 `RS_TEAM_COVERAGE_INVALID`（§5.7）。无阵营玩法（队伍数为空）属 v2 预留，v1 不开放。匹配、补偿、脱敏别名一律按 `count` 参数化，不得写死 4 |
 | `deck` | `{copies, ranks, suits, jokers, exclude[]}` | ✓ | ✓ | `jokers` **必填**，固定 `2`（= 1 大王 + 1 小王）；`ranks: [RankKey]`（`naturalOrder` 子集，字面值 `2..A`）；`suits: [Suit]`（闭集 `S/H/D/C`）；`exclude: [RankKey]`，按点数排除、不含王，缺省空数组（不排除）。总张数 = `(ranks − exclude) × suits × copies + jokers × copies`；掼蛋基线 = 13×4×2 + 2×2 = **108**，与 `zones.hand` 容量 27×4 对齐；其它玩法的总张数必须 ≤ 各 `hand` 区容量之和（`capacity` 是上限，不是当前牌数） |
 | `zones` | `[{id, scope, capacity}]` | ✓ | ✓ | `capacity` 必填且是**上限**（`-1` 表无上限），不是当前牌数。`scope` 只有 `private`（座位私有）与 `shared`（公共）；private 区按 `(seat, zoneId)` 实例化。静态校验、运行时断言与错误码见 §5.4 L2、§5.7 |
-| `levelTable` | `{id, initial, ranks[], upgrade[]}` | ○（`Settle::LevelUp` 引用时 L2 必填） | ○ | 级牌表本体，全 RuleSet 内唯一引用（L2 校验：`level.upgrade`/`settle.levelTableRef` 只能指向本表，不允许出现第二张级牌表，§5.4 L2）。`levels` 是房间状态字段（**每队一个**，见 §5.13），不是常量；与 `levels` **同按队伍序号索引**的另一个房间状态字段是 `aFailStreak`（`[u8; teams]`，每队一个 u8，取值 **0–3**，记录该队"在 A 上连续未过 A"的局数，某局结算时若该值达到 3，则本队 `levels` 退回 `levelTable.initial`（起点 2）并把该值清零；过 A 即该场结束、计数无意义，见 §5.13）；`@level` 按当前行动方的队求值；`upgrade[]` 元素为 `{teamRanks: [u8;2], step: u8}`，`teamRanks` 与 §5.2 `level.pass.combos` 共用同一名次编码（双下 `[1,2]`，其余 `[1,3]`/`[1,4]`），`step` 取值 1–3；同一 `teamRanks` 不得重复（L1 拒绝） |
-| `level` | `{pass: {combos[], streakLimit, resetOnFail}, current: {scope}}` | ○（取默认值即为掼蛋基线） | ○ | 过 A 与级牌取值的**可配置入口**，S8 的"过 A 条件"由此切换：`pass.combos: [[u8;2]]`（非空，元素为两名次组合、取值 1–4 且两值不同，默认 `[[1,2],[1,3]]`）、`pass.streakLimit: u8`（1–3，默认 3，即 `aFailStreak` 阈值；上界 3 与 `aFailStreak` 的冻结值域 0–3 同源，要突破 3 须另走 EGM 裁决）、`pass.resetOnFail: bool`（默认 `true`，达阈值退回 `levelTable.initial` 并清零）；`current.scope: by-team\|global`（默认 `by-team`）。三键语义与 §5.2 `level.pass` 同名参数一致，顶层声明即覆盖原语默认值；`settle.algorithm=score-only` 的 RuleSet 可整段省略。 |
+| `levelTable` | `{id, initial, ranks[], upgradeBasis, upgrade[], rankScores[], upgradeByDiff[]}` | ○（`Settle::LevelUp` 引用时 L2 必填） | ○ | 级牌表本体，全 RuleSet 内唯一引用（L2 校验：`level.upgrade`/`settle.levelTableRef` 只能指向本表，不允许出现第二张级牌表，§5.4 L2）。`levels` 是房间状态字段（**每队一个**，见 §5.13），不是常量；与 `levels` **同按队伍序号索引**的另一个房间状态字段是 `aFailStreak`（`[u8; teams]`，每队一个 u8，取值 **0–3**，记录该队"在 A 上连续未过 A"的局数，某局结算时若该值达到 3，则本队 `levels` 退回 `levelTable.initial`（起点 2）并把该值清零；过 A 即该场结束、计数无意义，见 §5.13）；`@level` 按当前行动方的队求值；**升级判定有两个 basis**，由 `upgradeBasis: rank-combo \| score-diff` 选（默认 `rank-combo`，即 §5.10 冻结口径）。`rank-combo` 下 `upgrade[]` 元素为 `{teamRanks: [u8; teamSize], step: u8}`，`teamRanks` 是**该队的规模个名次**——长度必须等于 `seats.teams[i]` 的队员数（四人两队即 2、六人两队三人即 3），元素取 `1..=seats.count`、互不相同且按升序规范书写（`[2,1]` 非规范、视同与 `[1,2]` 重复），与 §5.2 `level.pass.combos` 共用同一套名次编码；掼蛋基线的 `[1,2]`/`[1,3]`/`[1,4]` 取值逐字未动，只是编码不再写死长度 2；`step` 取值 **0–3**，`0` 表示"该名次组合不升档"（允许作者把全部组合枚举满），同一 `teamRanks` 不得重复、长度不符/元素越界/未升序即 L1 `RS_SCHEMA_INVALID`。`score-diff` 下先按名次给分、再按两队**分值差**升级（供"按积分总和之差升级"这类玩法，如六人两队三人）：`rankScores: [u16]` 长度必须等于 `seats.count`（下标 `i` 是第 `i+1` 名的分值），`upgradeByDiff: [{minDiff: u16, step: u8}]` 按 `minDiff` **降序**排列、必须含一条 `minDiff: 0` 兜底，`diff` = 胜方队各名次分值之和 − 负方队之和，命中首个 `diff ≥ minDiff` 的条目取 `step`（0–3，`0` 同义不升档），全不命中取 0；该 basis 要求 `flow.score.dimension = team` 且 `upgrade[]` 必须缺席，两个 basis 的键集**互斥**、同时出现即 L1 `RS_SCHEMA_INVALID`。`guandan-classic` v3 取 `rank-combo`，`rankScores`/`upgradeByDiff` 不出现（§5.10 升级档取值与状态逐字未动，2026-11-24 第十二次变更）。 |
+| `level` | `{pass: {combos[], streakLimit, resetOnFail}, current: {scope}}` | ○（取默认值即为掼蛋基线） | ○ | 过 A 与级牌取值的**可配置入口**，S8 的"过 A 条件"由此切换：`pass.combos: [[u8; teamSize]]`（非空，每个元素是该队规模个名次、取值 `1..=seats.count`、互不相同且升序，长度 ≠ `teamSize` 或元素越界/重复即 L1 `RS_SCHEMA_INVALID`；默认值只在 `teamSize = 2` 时有定义 `[[1,2],[1,3]]`，`teamSize ≠ 2` 时必须显式声明——与 `flow.deal.perSeat` 同一类「默认值只对某一种规模有意义」的处理）、`pass.streakLimit: u8`（1–3，默认 3，即 `aFailStreak` 阈值；上界 3 与 `aFailStreak` 的冻结值域 0–3 同源，要突破 3 须另走 EGM 裁决）、`pass.resetOnFail: bool`（默认 `true`，达阈值退回 `levelTable.initial` 并清零）；`current.scope: by-team\|global`（默认 `by-team`）。三键语义与 §5.2 `level.pass` 同名参数一致，顶层声明即覆盖原语默认值；`settle.algorithm=score-only` 的 RuleSet 可整段省略。 |
 | `naturalOrder` | `[rankKey]` | ✓ | ✓ | 自然点数有序表（不含级牌位），允许 `little-joker`/`big-joker`；`levelInsert` 给出级牌插入位，引擎载入时合成最终牌力序，合成算法见 §5.13 级牌行 |
 | `levelInsert` | 枚举 | ✓ | ✓ | `@level` 的插入位：`above-A`（插在 A 之后、小王之前，掼蛋基线）或 `below-2`；最终序由 `naturalOrder` + `levelInsert` 在载入期唯一合成 |
 | `wildcard` | `{source, substitute[], inStraightFlush}` | ○ | ○ | 掼蛋的逢人配；`source` 为结构化 `{suit: Suit, rank: RankKey 或占位符 "@level"}`：`suit` 取 `S/H/D/C` 闭集，`rank` 取具体 RankKey 或受控占位符 `@level`，L1 按枚举与占位符校验、不接受自由字符串；§5.10 冻结行里的旧写法 `heart-@level` 即 `{suit: H, rank: "@level"}`，两者等价、以后者为准；`substitute` 用枚举列出可替代范围；`inStraightFlush` 决定能否参与同花顺（C2 争议项之一） |
 | `patterns` | `[{id, primitiveId, params}]` | ✓ | ✓ | 每个牌型必须自带 `id`，供 `compare.ladder` 与 `actions.legalFrom` 引用；引用不存在即 `RS_REF_MISSING`。**`params` 不是自由对象**：它是按 `primitiveId` 分型的固定参数结构体，字段名/类型/取值/默认值见 §5.2 参数表；未知键、缺失必填键一律在 L1 拒绝（`RS_SCHEMA_INVALID`） |
 | `compare` | `{ladder[], bombOrder, flushRank}` | ✓ | ✓ | `ladder` 只列**不参与 `flushRank` 插入**的牌型（元素必须是 `patterns[].id`）；`straight-flush-*` 不得出现在 `ladder` 中（L1 报 `RS_SCHEMA_INVALID`），其位次唯一由 `flushRank` 在载入期合成，做法与级牌 `naturalOrder + levelInsert` 同一套。`bombOrder` 决定炸弹之间谁大，两个取值都是**两级比较**：`count-then-rank` = 先比张数（多者大），张数相同再比点数（大者大）；`rank-then-count` = 先比点数，点数相同再比张数。**点数一律按载入期合成的牌力序（`naturalOrder` + `levelInsert`）比较，不是牌面自然序**：故某队级牌（如 2 当级）在本局处于 A 之上，「4 张级牌」大于「4 张 A」、但小于「5 张任意牌」；王只出现在 `pattern.joker-bomb`，不参与 `pattern.bomb` 的点数比较。`guandan-classic` v3 取 `count-then-rank`（§5.10 炸弹序行冻结值，用户 2026-11-24 复述确认，§12.2 第十一次变更同批补充定稿）；**`flushRank` 是"同花顺与炸弹的序"这个争议项的唯一开关**：取 `below-bomb-5`（插在 5 张炸之前）、`above-bomb-5`（插在 5 张炸之后、6 张炸之前）、`above-bomb-6`（插在 6 张炸之后、7 张炸之前）或 `above-bomb-8`（高于 8 张炸），四值各自在载入期合成不同阶梯；**`guandan-classic` v3 取 `above-bomb-5`**（即 4 张炸 < 5 张炸 < 同花顺 < 6 张 < 7 张 < 8 张 < 四王炸），其余三值是留给其他 RuleSet 的可选值；**`flushRank` 的插入位由「锚点」定位，锚点按语义认、不按 id 名字认**：`flushRank` 值里的张数（`below-bomb-5`/`above-bomb-5` → 5，`above-bomb-6` → 6，`above-bomb-8` → 8）即锚点牌型的张数，载入期在 `ladder` 中查找 `primitiveId = pattern.bomb` 且 `params.count` 等于该张数的那一项作锚点，把 `straight-flush-*` 插到它之前（仅 `below-bomb-5`）或之后（其余三值）；**识别只看 `primitiveId` 与 `params`、不看 `id` 字符串**，作者可自由给牌型起名（依据：炸弹大小由张数决定，锚点随之按张数认，用户 2026-11-24 裁决）。三条判定与码：① RuleSet 未声明任何插入型牌型（无 `straight-flush-*`）时不做校验（惰性跳过，`m0-minimal` 即此情形）；② 声明了插入型牌型但 `ladder` 中找不到该张数的炸弹锚点 → 拒绝加载，报 **`RS_FLUSH_ANCHOR_MISSING`**（**不降级、不插到「最近位置」**，静默偏差比报错更难查）；③ 锚点存在但位次冲突（同一插入位被多个插入型牌型争夺，或插入后与 `ladder` 相邻项的相对序矛盾）→ 拒绝加载，报 **`RS_LADDER_CONFLICT`**；②与③**分开报码**，后台据此分辨「该补炸弹」还是「该改顺序」（§5.7）；不同取值分别得到不同 `stateHash` 作为生效判据（§10.3），**不需要改 ladder 本身** |
-| `tribute` | `{enabled, trigger, pairs[], resist, pay, return, firstRound}` | ○（掼蛋必填） | ○ | `enabled=false` 时整段 `tribute` 不运行，且本段其余子键**可整段省略**（`enabled` 之外无必填项，只写 `enabled: false` 即合法；§12.2 第十一次变更第 ⑥ 条）。`trigger` 为闭集枚举，当前唯一取值 `last-round-rank`（按上局名次选贡方，参数结构见 §5.2 `tribute.determine`）；`pairs` 是"谁向谁"的**一对一映射数组**（`{payer, receiver, when}`），不是两个独立列表；`payer`/`receiver` 为闭集枚举 `first`/`second`/`third`/`fourth`，依次对应 §5.13 第 1/2/3/4 名，无 `last` 别名；`when` 取值 `single-loss`（单贡：末游→头游）或 `double-loss`（双下：对位进贡，末游→头游、三游→二游），`trigger` 只定进贡依据来源，分支由 `when` 选定；还贡参数统一收归 `tribute.return` 三键 `ceiling`/`count`/`fallback`（§5.2）并由本段承载，`return` 在 `enabled=true` 时必填、缺任一键即 L1 `RS_SCHEMA_INVALID`，不再设 `returnPolicy` 重复键；`pay` 形如 `{count: u8（1–2，默认 1）, selection: max-rank-except-wildcard（当前唯一取值，默认该值）}`、`firstRound` 取 `skip`/`play`（默认 `skip`，场次首局是否跳过 `tribute`，§5.13）同样由本段承载；`resist` 为 `two-big-jokers` 或 `none`，其中 `two-big-jokers` 按贡方两家合计持两张大王判定，不要求在同一人手里，单贡时即贡方自己持两张；抗贡成立则进贡与还贡均不发生（判定口径见 §5.13 抗贡行） |
+| `tribute` | `{enabled, trigger, pairs[], resist, pay, return, firstRound}` | ○（掼蛋必填） | ○ | `enabled=false` 时整段 `tribute` 不运行，且本段其余子键**可整段省略**（`enabled` 之外无必填项，只写 `enabled: false` 即合法；§12.2 第十一次变更第 ⑥ 条）。`trigger` 为闭集枚举，当前唯一取值 `last-round-rank`（按上局名次选贡方，参数结构见 §5.2 `tribute.determine`）；`pairs` 是"谁向谁"的**一对一映射数组**（`{payer, receiver, when}`），不是两个独立列表；`payer`/`receiver` 为**名次数值** `1..=seats.count`（`1` 即头游，与 §5.13 的名次空间一致），不再用 `first`/`second`/`third`/`fourth` 枚举——枚举把四人局写死，六人局的第五、六名无法表达；取值语义不变（单贡末游→头游、双下对位）；`when` 取值 `single-loss`（单贡：末游→头游）或 `double-loss`（双下：对位进贡，末游→头游、三游→二游），`trigger` 只定进贡依据来源，分支由 `when` 选定；还贡参数统一收归 `tribute.return` 三键 `ceiling`/`count`/`fallback`（§5.2）并由本段承载，`return` 在 `enabled=true` 时必填、缺任一键即 L1 `RS_SCHEMA_INVALID`，不再设 `returnPolicy` 重复键；`pay` 形如 `{count: u8（1–2，默认 1）, selection: max-rank-except-wildcard（当前唯一取值，默认该值）}`、`firstRound` 取 `skip`/`play`（默认 `skip`，场次首局是否跳过 `tribute`，§5.13）同样由本段承载；`resist` 为 `two-big-jokers` 或 `none`，其中 `two-big-jokers` 按贡方两家合计持两张大王判定，不要求在同一人手里，单贡时即贡方自己持两张；抗贡成立则进贡与还贡均不发生（判定口径见 §5.13 抗贡行） |
 | `lifecycle` | `[phase]` | ✓ | ✓ | 固定四段 `[deal, tribute, play, settle]`；**有动作的 phase 必须至少一条 `legalFrom` 指向它，零动作 phase（`deal`/`tribute`/`settle`）豁免**（`deal` 由 `deal.shuffle` 自动执行、`tribute` 由 `tribute.*` 原语自动执行、`settle` 由结算纯函数自动执行，玩家均不提交动作）。`turn` 是 `play` 内的轮次子阶段，**不是 phase** |
 | `actions` | `[{kind, primitive, legalFrom, params}]` | ✓ | ✓ | `kind` 是 v1 闭集枚举，仅 `play`/`pass`；`claim`/`declare` 及其对应原语 `action.claim`/`action.declare` 移出 v1、标 v2 预留，RuleSet 中出现即 L1 拒绝（`RS_SCHEMA_INVALID`）。`tribute`/`return` 不由玩家提交，属引擎自动执行（§5.13/§5.9）。`primitive` 指向实际执行的原语，`legalFrom` 只允许三种取值：`patterns`（受牌型约束）、某个 zone 的 id、某个 phase 名（如 `play`）；`turn` 不是合法取值。`params` 与 `patterns[].params` 同一套分型规则（§5.2）：无参原语必须写空对象 `{}`，有默认值的键可省略，必填键不得省。**`kind` 不能当幂等键**（一局内会重复出现），幂等键见 §6.4 的 `requestId` |
 | `settle` | `{algorithm, levelTableRef?}` | ✓ | ✓ | v1 含两个 ADT 变体并列：`Settle::LevelUp{levelTableRef}`（`algorithm: level-up`，`levelTableRef` 必填且引用 `levelTable.id`）与 `Settle::ScoreOnly{}`（`algorithm: score-only`，无等级表引用，只记名次、不升级）；两种变体都不隐式引用外部表名。`score-only` 在 v1 有两个用途：`m0-minimal` 夹具的最小结算路径（§2.4）与 v2 的无阵营玩法；**v1 不开放无阵营玩法本身**（`seats.teams` 仍须覆盖全座，见本节 `seats` 行） |
@@ -462,9 +462,9 @@ tribute:
   enabled: true
   trigger: last-round-rank
   pairs:
-    - { payer: fourth,       receiver: first,  when: single-loss }
-    - { payer: fourth,       receiver: first,  when: double-loss }
-    - { payer: third,        receiver: second, when: double-loss }
+    - { payer: 4, receiver: 1, when: single-loss }
+    - { payer: 4, receiver: 1, when: double-loss }
+    - { payer: 3, receiver: 2, when: double-loss }
   return: { ceiling: under-ten, count: 1, fallback: smallest }
   resist: two-big-jokers
 lifecycle: [deal, tribute, play, settle]
@@ -534,7 +534,7 @@ view: { schemaVersion: 1, fields: [hand, seat.levels, discard, lastPlay] }
 | `tribute.resist` | 无参：读顶层 `tribute.resist` |
 | `level.current` | `scope: by-team\|global`｜默认 `by-team`（掼蛋每队一个 `levels`）。v1 承载位为顶层 `level.current`（§5.1） |
 | `level.upgrade` | 无参：引用顶层唯一 `levelTable`（L2 校验全 RuleSet 内不出现第二张级牌表） |
-| `level.pass` | `combos: [[u8;2]]`｜默认 `[[1,2],[1,3]]`（名次组合，`1+2`/`1+3` 即过 A；编码与 `levelTable.upgrade[].teamRanks` 共用同一套）；`streakLimit: u8`｜1–3，默认 3（`aFailStreak` 阈值；上界与冻结值域 0–3 同源，>3 须另走 EGM 裁决）；`resetOnFail: bool`｜默认 `true`（达阈值退回 `levelTable.initial` 并清零）。v1 的实际承载位是顶层 `level.pass`（§5.1），本节是同一结构的原语侧定义 |
+| `level.pass` | `combos: [[u8; teamSize]]`｜每个元素是该队规模个名次（长度必须 = `teamSize`、元素 `1..=seats.count`、互不相同且升序）；默认 `[[1,2],[1,3]]` 仅在 `teamSize = 2` 时成立，其余规模必须显式声明（`1+2`/`1+3` 即过 A；编码与 `levelTable.upgrade[].teamRanks` 共用同一套名次编码）；`streakLimit: u8`｜1–3，默认 3（`aFailStreak` 阈值；上界与冻结值域 0–3 同源，>3 须另走 EGM 裁决）；`resetOnFail: bool`｜默认 `true`（达阈值退回 `levelTable.initial` 并清零）。v1 的实际承载位是顶层 `level.pass`（§5.1），本节是同一结构的原语侧定义 |
 | `score.accumulate` | `dimension: team\|player`｜默认 `team` |
 | `score.level-up` | 无参：结算变体由顶层 `settle.algorithm` 决定 |
 | `view.project` | 无参：读顶层 `view.fields`（白名单），不接受额外键 |
@@ -547,6 +547,20 @@ view: { schemaVersion: 1, fields: [hand, seat.levels, discard, lastPlay] }
 **v2 预留原语**（v1 ADT 不收录，RuleSet 引用即 L1 拒绝 `RS_SCHEMA_INVALID`）：`pattern.with-attachment`、`pattern.all-same-suit`、`action.claim`、`action.declare`、`score.table`。这五个原语在 §5.2 分类表里同样按 v2 标注，v1 的解释器不实现它们。
 
 **v1 未启用原语**（口径同上：v1 的 Primitive ADT 不收录，RuleSet 引用即 L1 `RS_SCHEMA_INVALID`）：`deal.draw`、`deal.reveal`、`rng.range`。三者参数定义保留在参数表，v2 启用时再补各自的顶层承载位；v1 基线的发牌只走 `deal.shuffle`、随机只走 `rng.pick`，因此 §5.1 不需要为它们新增承载键。不启用的理由：v1 是一次性发牌到 `flow.deal.zone` 指定的区（发完即进入 `play`），观战走回放式重放（§6 观战章 / U8），既没有中场抽牌也没有翻牌需求；`rng.range` 仅在 v2 的随机玩法参数里才需要。
+
+**发牌随机源的确定性定义（N7–N9 固化，2026-11-24 第十二次变更）**：此前 §5.12 只规定「RNG 唯一来源、`rng.counter` 递增」，PRNG、洗牌与发牌顺序三项**没有定义**，实现端只能自选；而这三项一旦被 §10.3 的黄金向量锁死，换算法会让全部 `stateHash` 锚点一起漂移。故在此按用户裁决固化，**实现端不得自选算法**：
+
+| 项 | 固化内容 |
+| --- | --- |
+| PRNG | 随机字 = `BLAKE3-256(seed_le64 ‖ stream_le32 ‖ counter_le64)` 输出的**前 8 字节**按 little-endian 解释为 u64；输入是 20 字节定长拼接，不含其它字段 |
+| 计数 | 每消耗一个随机字（**含被拒绝的那一次**）`counter += 1`；`counter` 即 §5.12 第 8 项进哈希的 `rng.counter`，单调、不跳号；禁止批量预取、禁止并行预取（否则双端消耗序不同） |
+| 有界取值 | `bounded(n)`（`n ≥ 1`）：`limit = ⌊2^64 / n⌋ * n`，随机字 `< limit` 则返回 `word % n`，否则 `counter += 1` 取下一个随机字重试（**拒绝采样**，循环到取到为止）；禁止直接用 `word % n` 回避模偏 |
+| 洗牌 | `deal.shuffle` 对载入期冻结的牌 id 序 `[0, 总张数)` 做 **Fisher-Yates 降序**：`for i in (1..n).rev() { j = bounded(i + 1); swap(a[i], a[j]); }`（`j` 的取值范围始终是 `0..=i`） |
+| 发牌顺序 | 洗牌结果按**座位序号升序**、按 `flow.deal.perSeat` 逐座位**连续切分**（座位 0 取前 `perSeat` 张，座位 1 取紧随的 `perSeat` 张，依次递推），v1 发完必须剩 0 张；掼蛋 108 ÷ 4 = 27 |
+| `stream` | `flow.rng.stream`（0–3）参与 PRNG 输入，用于隔离不同用途，默认 0；同一局内 `deal.shuffle` 与 `rng.pick` **共用同一条 `(seed, stream, counter)` 序列**，各自不从 0 重来 |
+| 禁止项 | 不取系统熵、不取时间戳、不用浮点（§3.3）；`seed` 由房间创建时生成并写入快照与回放头，重放与崩溃恢复一律用同一 `seed` |
+
+判据：全链路只含整数运算与 BLAKE3-256，同一 `(seed, stream, 牌堆序)` 下双端必须逐字节同序；门禁看 §5.12 第 8 项（`counter` 与 `seedDigest`）加上 §10.3 黄金向量的 `stateHash` 全量比对。改动本节任一行即视为 `stateHash` 口径变更，须重算全部锚点。
 
 **红线（必须在类型系统里保证，不靠文档约定）**：
 
@@ -566,7 +580,7 @@ view: { schemaVersion: 1, fields: [hand, seat.levels, discard, lastPlay] }
 
 | 级别 | 检查什么 | 失败表现 | 耗时预算 |
 | --- | --- | --- | --- |
-| L1 结构 | JSON Schema + ADT 反序列化；`seats.count` 不在 2–8 内、`timing` 各字段与 `matchCap.rounds` 取值范围校验；`patterns[].params`/`actions[].params` 按 `primitiveId` 分型校验（§5.2 参数表），未知键、缺失必填键、类型不符一律拒绝；`ladder` 出现 `straight-flush-*` 元素拒绝；`levelTable.upgrade[]` 同一 `teamRanks` 重复或 `step` 不在 1–3 拒绝；`level.pass.combos` 为空表、元素不在 1–4 或两值相同、`level.pass.streakLimit` 不在 1–3 拒绝（值域与 §5.1/§5.2 一致，原写 1–9 属笔误，2026-11-24 已对齐）；`flushRank` 插入位校验（**仅在 RuleSet 声明了插入型牌型时做**，无 `straight-flush-*` 时惰性跳过）：锚点按 `primitiveId = pattern.bomb` + `params.count` 语义识别，锚点缺失报 `RS_FLUSH_ANCHOR_MISSING`、位次冲突报 `RS_LADDER_CONFLICT`，两者均拒绝且不降级 | 字段缺失、类型不符、未知原语、计时参数越界、参数键越界、`ladder` 混入插入型牌型、升级档重复/越界；分别落 `RS_SCHEMA_INVALID`（结构/枚举/取值）、`RS_FLUSH_ANCHOR_MISSING`（锚点缺失）或 `RS_LADDER_CONFLICT`（位次冲突） | <10ms |
+| L1 结构 | JSON Schema + ADT 反序列化；`seats.count` 不在 2–8 内、`timing` 各字段与 `matchCap.rounds` 取值范围校验；`patterns[].params`/`actions[].params` 按 `primitiveId` 分型校验（§5.2 参数表），未知键、缺失必填键、类型不符一律拒绝；`ladder` 出现 `straight-flush-*` 元素拒绝；`levelTable.upgradeBasis` 不在闭集、两个 basis 的键集同时出现或错位拒绝（`rank-combo` 要求 `upgrade[]` 齐备且无 `rankScores`/`upgradeByDiff`，`score-diff` 反之）；`rank-combo` 下 `levelTable.upgrade[]` 的 `teamRanks` 长度 ≠ 该队 `teamSize`、元素不在 `1..=seats.count`、未升序或与另一条重复，`step` 不在 0–3，一律拒绝；`score-diff` 下 `rankScores` 长度 ≠ `seats.count`、`upgradeByDiff` 未按 `minDiff` 降序或缺 `minDiff: 0` 兜底、`flow.score.dimension ≠ team` 拒绝；`level.pass.combos` 为空表、元素长度 ≠ `teamSize`、元素不在 `1..=seats.count`、未升序或重复、`level.pass.streakLimit` 不在 1–3 拒绝（值域与 §5.1/§5.2 一致，原写 1–9 属笔误，2026-11-24 已对齐；名次编码于同日第十二次变更参数化）；`flushRank` 插入位校验（**仅在 RuleSet 声明了插入型牌型时做**，无 `straight-flush-*` 时惰性跳过）：锚点按 `primitiveId = pattern.bomb` + `params.count` 语义识别，锚点缺失报 `RS_FLUSH_ANCHOR_MISSING`、位次冲突报 `RS_LADDER_CONFLICT`，两者均拒绝且不降级 | 字段缺失、类型不符、未知原语、计时参数越界、参数键越界、`ladder` 混入插入型牌型、升级档重复/越界；分别落 `RS_SCHEMA_INVALID`（结构/枚举/取值）、`RS_FLUSH_ANCHOR_MISSING`（锚点缺失）或 `RS_LADDER_CONFLICT`（位次冲突） | <10ms |
 | L2 引用 | 所有 ID 能在索引里找到；`lifecycle` 每个有动作的 phase 都有可执行原语；`seats.teams` 覆盖全部座位且不重叠（`count` 的 2–8 范围已在 L1 判，本级别不重复）；**静态牌堆校验**：`(ranks − exclude) × suits × copies + jokers × copies` = 总张数（掼蛋基线 13×4×2 + 2×2 = 108，与 §5.1 同式），且总张数 ≤ 各 `hand` 区容量之和（容量是上限，不是当前牌数）；每区 `capacity` ≥ 0 或 −1（−1 表无上限，不参与静态求和）；`levelTable` 全 RuleSet 唯一引用，`level.upgrade`/`settle.levelTableRef` 不得指向第二张级牌表 | 指向不存在的牌型/区域（`RS_REF_MISSING`）；phase 无可执行原语（`RS_PHASE_UNIMPLEMENTED`）；队伍覆盖不全或重叠（`RS_TEAM_COVERAGE_INVALID`）；牌堆静态张数不符或总张数超出 `hand` 区容量之和（`RS_DECK_COUNT_MISMATCH`）；容量取值非法（`RS_CAPACITY_INVALID`）；级牌表引用不唯一（`RS_REF_MISSING`） | <50ms |
 | L3 可玩性 | 随机发牌 + 随机合法动作跑 200 局：必须全部终局（终局条件即 §5.13「局终止与名次」）、无死锁、非法动作率 0；dry-run 期单次 `legal_actions` 实测候选枚举峰值超 4096 条即判本级别失败。必须记录每局 seed 与失败局的最小动作序列，失败可复现 | 死循环、无终局、非法动作（`RS_NO_TERMINATION`/`RS_ILLEGAL_ACTION_RATE`）；候选枚举峰值超 4096（`RS_QUOTA_EXCEEDED`，归 L3，不在载入期 L2 设闸门） | **预算 ≤ 90 秒（4 并发）**：单局 300 步 × 0.8ms ≈ 0.24s，200 局串行约 48s，4 并发约 12s；90s 预留 7 倍余量给"慢机器 + 失败局留档" |
 | L4 回归 | 黄金用例（真实对局录制或手工构造的 action log）逐条重放，`stateHash` 必须一致 | 规则改动破坏了旧局 | 按用例数线性，单条 ≤ 1s |
@@ -799,7 +813,7 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 5. `lastPlay`：`seat(u8)`、`patternId(UTF-8)`、`patternKey`（`(countKey, rankKey)` 两个 u32）、`cards`（牌 id 升序）
 6. `seqWatermark`（每座位 u64，按座位号升序）
 7. `tribute`（`fromSeat`、`toSeat`、`card`，进贡阶段结束后归零；抗贡局与场次首局整段跳过，取占位值 `fromSeat=0`、`toSeat=0`、`card` 为空）
-8. `rng`：`counter(u64)`、`seedDigest(前 8 字节)`；`seedDigest` = 对 `seed`（u64 定长小端编码）用 BLAKE3-256 取前 8 字节，快照内同时保存 `seed` 原值，摘要由它派生
+8. `rng`：`counter(u64)`、`seedDigest(前 8 字节)`；`seedDigest` = 对 `seed`（u64 定长小端编码）用 BLAKE3-256 取前 8 字节，快照内同时保存 `seed` 原值，摘要由它派生；`counter` 的递增点与随机字生成算法见 §5.2「发牌随机源的确定性定义」（拒绝采样时被丢弃的那次也计数，双端必须同值）
 9. `aFailStreak`（**每队一个 u8**，按队伍序号升序，取值 **0–3**；某局结算时若该值达到 3，则本队 `levels` 退回 `levelTable.initial`（起点 2）并把该值清零；过 A 即该场结束、计数无意义；两端必须同值；§5.13）
 10. `finishOrder`（按出完先后升序的 `seat(u8)` 序列；结束时未出完的座位不列入；无出完记录时为空序列；与 §5.13「局终止与名次」同一口径，重放与崩溃恢复据此重建 `rank`）
 
@@ -854,7 +868,7 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 | 规则 | 判定写法 |
 | --- | --- |
 | 牌堆 | 2 副 108 张：`2×4` 花色 × `2..A` 各 2 张 + 4 张王（每副 `jokers: 2` = 1 大王 + 1 小王，两副合计大王 2、小王 2） |
-| 发牌 | 每人 27 张，RNG 唯一来源（`rng.counter` 递增），发完剩余 0 张 |
+| 发牌 | 每人 27 张，RNG 唯一来源（`rng.counter` 递增），发完剩余 0 张；随机序按 §5.2「发牌随机源的确定性定义」定死——`BLAKE3-256(seed‖stream‖counter)` 取前 8 字节经 `bounded` 拒绝采样，做 **Fisher-Yates 降序**洗 `[0,108)` 牌 id 序，再按座位序号升序、按 `perSeat` 连续切分（座位 0 拿前 27 张） |
 | 决定首出 | v1 固定座位 0 先出；"按 level 最低座位先出"为未来规则描述，v1 不启用；之后由上局头游先出 |
 
 **tribute（进贡/还贡/抗贡）**
@@ -883,7 +897,9 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 
 掼蛋按**队**升级，所以级牌是"每队一个"（`levels: [u8; teams]`），不是全场单值。
 
-**局终止与名次**：一局在**某一队两人均已出完牌**时结束；三种收尾都由这一条覆盖——该队两人占据 1、2 名（双下）、两人之间夹进对家一人（该队 1+3）、对家两人先出完而本队头游在前（该队 1+4）。名次按**实际出完先后**排：先出完者为头游（第 1 名），其后依次为第 2、3 名；结束时仍未出完的座位为末游（第 4 名）；若结束时还剩两人（双下收尾），这两人按**剩余手牌张数升序**排 3、4 名（少者三游），张数相同时按座位号小者在前。头游所在队即本局胜方队，`round_record.players[].rank` 与 `result.ranks` 的 4 个名次一律按此规则填写（`result.ranks` 按名次 1→4 列 seat）。L3 的"必须全部终局"（§5.4）即指此终止条件。
+**局终止与名次**：一局在**某一队全部队员均已出完牌**时结束（按 `seats.teams[]` 的该队队员数判定，"两人"是四人两队的基线形态、不是写死的常数）。掼蛋基线的三种收尾都由这一条覆盖——该队两人占据 1、2 名（双下）、两人之间夹进对家一人（该队 1+3）、对家两人先出完而本队头游在前（该队 1+4）。名次按**实际出完先后**排：先出完者为头游（第 1 名），其后依次顺排；**名次空间是 `1..=seats.count`**（四人局即 1–4，六人局即 1–6，编码见 §5.1）。结束时仍**未出完**的座位按**剩余手牌张数升序**依次填入剩余名次（张数相同时按座位号小者在前）——四人局双下收尾时这两人即取 3、4 名（少者三游）。头游所在队即本局胜方队，`round_record.players[].rank` 与 `result.ranks` 的 `seats.count` 个名次一律按此规则填写（`result.ranks` 按名次 `1 → seats.count` 列 seat）。L3 的"必须全部终局"（§5.4）即指此终止条件。
+
+升级档的**基线取值**如下（`upgradeBasis: rank-combo`；`teamRanks` 长度随 `teamSize` 参数化，四人两队下即恰为原 `[1,2]`/`[1,3]`/`[1,4]`，取值逐字未动）：
 
 | 名次组合 | 升级数 | 下局 `levels` |
 | --- | --- | --- |
@@ -891,9 +907,11 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 | 1+3 | +2 | 胜方队 +2 |
 | 1+4 | +1 | 胜方队 +1 |
 
+换 `upgradeBasis: score-diff` 时本表不适用：升级档改由 `rankScores` + `upgradeByDiff` 按两队分值差决定（§5.1 `levelTable` 行），`guandan-classic` 不用该 basis。
+
 `levels` 的存放位置：房间状态字段 `levels`（每队一个 u8，存 `levelTable.ranks` 的数组下标：0 对应 `initial`=2、12 对应 A；序列化、`stateHash` 拼接与双端比较一律按下标，不存牌面键），**不在手牌区、不在 `player_stat`**（后者的 `rank_level` 是段位，字段名不叫 `level`，见 §5.8）；一场（match）内逐局累积，写进 `round_record.levels_after`。队级计数器 `aFailStreak`（`[u8; teams]`，每队一个 u8，取值 **0–3**）与 `levels` 同位置同索引：只有该队 `levels=A` 的局才更新它——过 A 则该队本场随即结束（计数不再使用、不参与任何判定），未过 A 则结算时 `+1` 并写入；某局结算时若该值达到 3，则本队 `levels` 退回 `levelTable.initial`（起点 2）并把该值清零；过 A 即该场结束、计数无意义。该队不在 A 上打的局不改动它（此时它恒为 0）。
 
-**结算的执行顺序**（`settle` 纯函数，四步固定，不得调换）：① 按本节「局终止与名次」定出 1–4 名 → ② 判过 A：该队 `levels=A` 且本方组合为 `1+2`/`1+3` 即过 A，本场结束 → ③ 未过 A 且该队 `levels=A`：`aFailStreak[team] += 1` 并写入，写入后达到 3（阈值读顶层 `level.pass.streakLimit`，基线 3）则 `levels` 退回 `levelTable.initial`（起点 2）、`aFailStreak[team]` 清零 → ④ 该队 `levels≠A`：按升级档推进 `levels`（跨 A 停在 A，超额作废）。
+**结算的执行顺序**（`settle` 纯函数，四步固定，不得调换）：① 按本节「局终止与名次」定出 1–4 名 → ② 判过 A：该队 `levels=A` 且本方组合为 `1+2`/`1+3` 即过 A，本场结束 → ③ 未过 A 且该队 `levels=A`：`aFailStreak[team] += 1` 并写入，写入后达到 3（阈值读顶层 `level.pass.streakLimit`，基线 3）则 `levels` 退回 `levelTable.initial`（起点 2）、`aFailStreak[team]` 清零 → ④ 该队 `levels≠A`：按 `levelTable.upgradeBasis` 分派取 `step`——`rank-combo` 查 `upgrade[]` 命中胜方队的名次组合（`step: 0` 视为不升档）；`score-diff` 按 `diff = 胜方队各名次分值之和 − 负方队之和` 查 `upgradeByDiff` 中首个 `diff ≥ minDiff` 的 `step`（全不命中取 0）；再按 `step` 推进 `levels`（跨 A 停在 A，超额作废）。
 
 **升级跨 A 的处置**：从 K 打 `1+2`/`1+3`/`1+4` 升级时，先在 A 停留一局（不越级），下一局在 A 上打 `1+2` 或 `1+3` 即算"过 A"；即 `level` 到达 A 后所有超额升级数作废，不累积（`1+4` 到达 A 同此处置）。这样"过 A"永远只由"在 A 的那一局名次组合是否为 `1+2` 或 `1+3`"决定。到达 A 之后，若该局未过 A，该队 `levels` 保持 A（**不退档**），继续在 A 上打下一局；只有连续 3 局在 A 上都未过，才按下面「过 A」段退回起点 2。
 
@@ -1423,14 +1441,18 @@ P0 之外不做自动干预，只有两项自动动作：`canary` 指标超标�
 
 ### 10.5 性能基准
 
-| 基准 | 指标 | 基线（M0 测得后锁定） | 门禁 |
+| 基准 | 指标 | 实测基线（2026-11-24，`m0-minimal` 夹具） | 门禁 |
 | --- | --- | --- | --- |
-| `legal_actions` | P99 | 初见 <0.3ms，待实测 | 退化 >10% 阻断 |
-| `apply` | P99 | 初见 <0.5ms，待实测 | 退化 >10% 阻断 |
-| 1000 房间空转 | 常驻内存、CPU | 待实测 | **改为"按 A4 峰值 × 3 倍余量"的房间数空转**（1000 只是占位数字，不作为容量承诺）；内存 24 小时增长 >5% 视为泄漏 |
-| wasm 包体 | gzip 后的 wasm 单文件 | **阻断门禁 2MB**；目标 1.5MB | 1.5～2MB 之间不阻断，但发布记录必须写明体积变化与原因；>2MB 阻断合并 |
+| `legal_actions`（领出态，27 候选） | P50 / P99 | native 2.700 / 3.100 µs；wasm 2.097 / 2.364 µs | 相对本行基线退化 >10% 阻断 |
+| `legal_actions`（跟牌态，1 候选） | P50 / P99 | native P50 0.400 µs；wasm 0.464 / 0.721 µs | 同上 |
+| `apply` | P50 / P99 | native 0.800 / 3.500 µs；wasm 2.149 / 2.495 µs | 同上 |
+| 单核容量推算 | 可承载房间数 | native ≈**26,900**、wasm ≈**23,300**（按 tick 10Hz、每房间每秒 1 次 `legal_actions` + 1 次 `apply` 共 20 动作/秒、门槛 ≤33.33 µs/动作折算） | ≥1500 房间（§3.2 的 3 倍余量）；当前余量 15–18 倍 |
+| 1000 房间空转 | 常驻内存、CPU | **待实测**（M0 末第 6 周补） | **改为"按 A4 峰值 × 3 倍余量"的房间数空转**（1000 只是占位数字，不作为容量承诺）；内存 24 小时增长 >5% 视为泄漏 |
+| wasm 包体 | gzip 后的 wasm 单文件 | **待实测**（M0 末第 6 周补） | **阻断门禁 2MB**；目标 1.5MB；1.5～2MB 之间不阻断，但发布记录必须写明体积变化与原因；>2MB 阻断合并 |
 
-基线数字在 M0 实测后写回本节，不预先编造。
+测量条件（复核时必须照此复现）：release 构建，native 与 wasm 各跑 **10 万次**；机器 i7-13700KF（16 物理核 / 24 逻辑核 / 3.4GHz / 31.8GB），**非独占**（采样期间系统负载 8–17%，native 侧 max 离群 67–164 µs 由此产生，故本表用 P50/P99 而非 max 作判据）；Windows 上 `Instant::now()` 自身开销约 0.1 µs，已含在 P50 内。
+
+**这组数是地板，不是上限**：`m0-minimal` 只声明了 `single` 一个牌型，候选枚举极轻；`guandan-classic` 有 13 个牌型（含 5/6/7/8 张炸、同花顺、四王炸、钢板、连对），`legal_actions` 明显更重。**M1 签核前必须在 `guandan-classic` 上重跑同一基准并把新数字写回本表**，否则上面的容量推算会被误当成"已验证的成品能力"。空转内存与 wasm 包体两项仍待实测，未用推算值充数。
 
 ### 10.6 覆盖率与门槛
 
@@ -1540,7 +1562,7 @@ P0 之外不做自动干预，只有两项自动动作：`canary` 指标超标�
 | D20 | 工期基线 = M0–M4 五段、合计 40～44 周，按阶段承诺（round-05 修订：因保留 172 条全量测试与八层测试全量回归，由 34～38 周上调 +6 周，用户 2026-11-23 拍板） | 单一总数字掩盖了阶段间的依赖；分阶段才能逐段验收 | 阶段间要重算总和，任一段延期都要对外改口径 | U9（2026-11-23，round-05 修订）、§2.4 |
 | D21 | 掼蛋规则取值由设计者起草《规则取值表》，用户逐条确认后冻结 | 规则口径（同花顺位次、进贡触发、升级档、过 A 条件）逐条都是可争议的，模糊就写不出引擎 | 冻结前 M1 不能开工；确认过程占用用户时间 | U10（2026-11-23）、§5.10 |
 
-### 12.2 需求变更留痕（本设计在设计期与实现期共被改过十一次，基线因此变了两次，工期口径变了三次）
+### 12.2 需求变更留痕（本设计在设计期与实现期共被改过十二次，基线因此变了两次，工期口径变了三次）
 
 | 时点 | 变更 | 影响 |
 | --- | --- | --- |
@@ -1561,6 +1583,7 @@ P0 之外不做自动干预，只有两项自动动作：`canary` 指标超标�
 | --- | --- | --- |
 | 第十次变更（round-05 裁决修订） | round-05 评审裁决修订（21 条全部落实）：新增顶层 `flow` 段（`deal`/`turn`/`score`/`rng`/`assert` 五子对象，整段缺省全取默认值）；§5.12 增 view 字段级编码表、牌 id 载入期固定编码（deck 序 + 副本号）、覆盖全部白名单字段的定值向量（canonical bytes 真算 SHA-256 指纹）并绑 `viewSchemaVersion`；`kind` 闭集收为 `play`/`pass`，`claim`/`declare` 与 `action.claim`/`action.declare` 移出 v1 标 v2 预留，**`pattern.joker-bomb`（四王炸）保留在 v1**；斗地主押后 v2，M3/M4 与 S12/G6 验收对象改为掼蛋变体配置，`seats.teams` 空阵营、`pattern.with-attachment`、`pattern.all-same-suit` 标 v2 预留（`Settle::ScoreOnly` 经用户后续追认保留 v1，见本行补记）；客户端不重算 `viewHash`、删 `ViewMismatchReport` 帧，原 P1 线索并入 P0 服务端自证，`SettleResult` 不携 view；`viewSchemaVersion` 缓存键改 `(rulesetId, viewSchemaVersion)` 二元组、版本号由 RuleSet 作者分配，`RoomSnapshot` 增 `rulesetId`/`rulesetVersion`；发布状态机重写——publish 四步事务（复制 body → 分配 `version` → 锁 `pinned_interpreter_version` → 推进 stage）、新增 `superseded` 状态、active 唯一判定式 `stage=full` 且 `activated_at` 最大、rollback 入参 `badReleaseId` 且候选集排除当前 active 与 `rolled_back` 旧行、补 `rolled_back → canary/full` 合法转移、`ruleset_release` 进 canary 才建行、主键去 `rev`、`draft`/`validated` 由 `ruleset_validation` 聚合派生；结算对账拆两本账，`settlement_event` 在进入 `settlementId` 事务之前单独插入、按 `settlementId` 唯一；段位降固定分档——删 §5.13 定级/Elo/阈值三张表与 §8.7 K 衰减，R18/R19 降 v2，评分只在服务端结算事务整数运算、不进 `stateHash`、不进双端比对；示例 YAML 点数改带引号字符串；原语重复键 `order`/`mode`/`tableRef`/`algorithm` 收归顶层，`level.upgrade` 无参，还贡三键收归 `tribute.return`，L2 增 `levelTable` 唯一引用校验；增 `JoinAck` 帧，错误码载体由三分改四分，`RS_SEAT_TAKEN` 改经 `JoinAck.reason` 并附 `availableSeats[]`；新增 `RS_DECK_COUNT_MISMATCH`/`RS_CAPACITY_INVALID`/`RS_TEAM_COVERAGE_INVALID`；4096 候选峰值闸门挪到 L3 dry-run；`stateHash` 移出版本串，版本三元组旁挂存放、先比版本再比哈希；钉 `m0-minimal` 最小夹具（路径与版本号写入 §2.4，M0 gate 与 A16 改引用它）；写死 `Validation = {ranLevels, findings: Vec<Finding>}`、`validate` 接受 `levels` 入参与 `EngineError` 变体清单；`ladder` 只列非插入型牌型，`straight-flush-*` 位次由 `flushRank` 载入期合成，增两条 L1 规则；`levelTable.upgrade[]` 元素定为 `{teamRanks: [u8;2], step: u8}`，与 `level.pass.combos` 共用编码；AI 三条胜率断言挂到 M2 之后，M0/M1 gate 不受约束；172 条全量集与每晚全量保留，总工期由 34～38 周上调为 **40～44 周**（+6 周，用户 2026-11-23 拍板；M0 第 1–6 周、M1 第 7–16 周不动，M2 第 17–26 周、M3 第 27–36 周、M4 第 37–44 周，M4 收尾落第 44 周）。**补记（2026-11-23 用户裁决，并入本行不留新变更号）**：`Settle::ScoreOnly` 恢复为 **v1 在役变体**——它不只服务斗地主，是无阵营玩法与 `m0-minimal` 夹具唯一的最小结算变体，`m0-minimal` 因此改走真实 DSL 结算路径；斗地主其余部分仍押 v2。同时追认：§5.10 冻结表的**字段列**允许实效化改名（`tribute.returnPolicy` → `tribute.return` 三键），取值与状态逐字不动、不视为违反冻结。第 4 项所列 11 条相邻 Minor/Nit 经全文 grep 实证无残渣（无旧值域、无指向已删字段的断裂引用、无同一规格两套说法），维持 `DECLINE` + 复查时点 `round-06-lite`。**round-06-lite 补记（2026-11-23，仍并入本行、不开新变更号）**：轻量轮（仅 Step9 就绪度单步）11 条 = 0 Blocker / 3 Major / 6 Minor / 2 Nit；3 条 Major 均属**补缺类**——F9-01 `§5.1` `tribute` 类型列补 `return`（同段补 `pay`/`firstRound` 承载位、并写明 `enabled=true` 时 `return` 三键必填）、F9-02 `flow.deal` 补 `zone` 承载位（`perSeat`/`reveal` 默认规则写清，`deal.draw`/`deal.reveal` 标 v1 未启用并写明理由）、F9-03 顶层补 `level` 段（`pass.combos`/`streakLimit`/`resetOnFail` 与 `current.scope`，`levelTable` 不动）；三条只把已裁决内容补到字段级承载、**不引入任何新的设计决策**。用户裁决「补缺类 Major 修完即视为通过」，故本轮 3 条 `Major` 按 `settled` 结、8 条 Minor/Nit 按 `DECLINE` 结（复查时点 M0 末第 6 周）；`clean` 仍按报告口径判 `否`，不因本补记改为 `是`。顺带收敛的两处口径：`streakLimit` 取值收敛为 1–3（上界与 `aFailStreak` 冻结值域 0–3 同源）、§5.13 过 A 判定显式声明读顶层 `level.pass`（四条口径原文不变）。同批随附落地的 8 条 Minor/Nit 修正（`flow` 键与原语字段的映射表、接风承载位统一为 `flow.turn.partnerLead`、L2 两条检查的码口径、v1 段位最小口径、`Finding`/`ErrorCode`/`Severity` 具名类型与 `EngineError` 两个变体、`stateHash` 标题改为「9 段拼接 + 1 项旁挂」、`seat.levels` 明确为下标、§5.2 与 §12.2 两处断表归位）**不改变任何裁决与取值口径**，按用户口径这 8 条仍记 `DECLINE`、不再回改；本条不新开变更号，故**当时**不设「第十一次变更」行（该号后由 2026-11-24 的 M0 实现期口径对齐占用，见本表末行） | §1.2/§1.4/§1.5/§2.1/§2.4/§3.3/§4.3/§4.4；§5.1/§5.2/§5.4/§5.6/§5.7/§5.8/§5.9/§5.10/§5.12/§5.13/§5.15/§5.16；§6.5/§6.6；§7.2/§7.6；§8.6/§8.7；§9.2/§9.4/§9.5；§10.2/§10.4；§11.1/§11.2；§12.1/§12.2 |
 | 第十一次变更（M0 实现期口径对齐） | 2026-11-24，M0 第一批（契约骨架 + L1 校验 + `m0-minimal` 夹具 + `stateHash` 定值向量）落码后，实现端暴露 8 处文档内部矛盾或缺口。用户回复「继续」、**未逐条明示表态**，故先按主会话逐条建议暂定为执行口径，本行如实记录，不含任何未发生的表态；**追认（2026-11-24）：用户随后就该 8 条逐条表态，8 条全部「确认」（8/8），故口径由「暂定」转为「已追认、生效」**；若日后任一条被推翻，按本行倒序回退。① `legal_actions` 返回 `Result<Vec<Action>, EngineError>`（§2.4 原写裸 `Vec`，与 §5.4 把 `QuotaExceeded` 列为它的错误出口直接冲突）；② `level.pass.streakLimit` 值域统一 **1–3**（§5.4 原写 1–9 属笔误，§5.1/§5.2 与 `aFailStreak` 冻结值域 0–3 均为 1–3）；③ `flushRank` 插入位改**惰性校验**（RuleSet 无插入型牌型时不校验）；**锚点口径已于 2026-11-24 由用户定稿**：炸弹大小由张数决定（同点数张数越多越大），同花顺位次为「大于 5 张炸、小于 6 张炸」（即 `count-then-rank` + `above-bomb-5`，均为 §5.10 冻结现值，取值未动），故锚点按 `primitiveId = pattern.bomb` + `params.count` **语义识别**、不看 `id` 名字；锚点缺失 → 拒绝加载并报新码 `RS_FLUSH_ANCHOR_MISSING`，位次冲突 → 拒绝加载并报新码 `RS_LADDER_CONFLICT`，**两码分开报、均拒绝、不降级**（用户 2026-11-24 选择）；原 §5.1/§5.4 无条件要求冲突即拒、且与 `m0-minimal` 无锚点自相矛盾的问题随之关闭；**同批补充定稿（2026-11-24 用户裁决）**：`bombOrder` 的两级比较写成可判定口径——先比张数（多者大）、张数相同比点数，且**点数按载入期合成牌力序**（`naturalOrder` + `levelInsert`，级牌高于 A）比较，`rank-then-count` 为对照取值；§5.10 炸弹序行的取值与状态逐字未动；④ `score-only` 局的 `seat.levels` 取空序列且该键不出现（§5.12 字段级编码表原已如此，此处追认为**双端同解**口径，禁止一侧填占位值）；⑤ `ai.hint` 定为 `bool`（默认 `false`），是提示开关而非难度档位（原 §5.1 只给字段名、未给类型）；⑥ `tribute.enabled=false` 时其余子键可整段省略（原仅写「整段不运行」，未定键集）；⑦ §5.12 固化**变长序列长度前缀宽度**——元素个数 `u8`、牌数组与字符串 `u16`（原未规定，两端各写一套必然对不上）；⑧ `State` 直接承载 §5.12 九段字段，`CanonicalState` 为 `From<&State>` 单向只读投影（原只定义 `CanonicalState`、`State` 为占位，M1 的 gate 无法接上）。**这 8 条全部是实现期暴露的文档内部矛盾或缺口，不引入任何新的设计方向与取值**；`§5.10` 冻结表的取值与状态逐字未动 | §2.4（四接口签名）；§5.1（`compare`/`tribute`/`ai` 三行）；§5.4（L1 行）；§5.12（九段拼接、规范化与序列化） |
+| 第十二次变更（M0 实现期：纸面推演缺口补齐与随机源固化） | 2026-11-24，M0 gate 第 2 项纸面推演（`docs/assets/m0-paper-walkthrough.md`，444 行，已入仓）列出 **14 条 schema 缺口 + 4 条校验/执行层欠债**，其中 2 条判定**阻断 M1**；另有 PRNG／洗牌／发牌顺序三项设计**从未规定**（N7/N8/N9），而它们会被 §10.3 黄金向量锁死。主会话就三件事逐条提选项、用户当日逐条选定，本行按原话记录：①随机源 →「**BLAKE3(seed‖counter) 派生**」；②两条阻断 M1 的缺口 →「**两条都现在补**」；③交互草图形态 →「**文本 + ASCII 线框**」（草图产物见 `docs/assets/m0-editor-interaction-sketch.md`，属 §2.4 gate 5 后半）。据此落三组改动，**§5.10 冻结表的取值与状态逐字未动**：**(a) 名次类型参数化**——`teamRanks` 由 `[u8;2]` 定长、名次闭集 1–4，改为 `[u8; teamSize]`、名次空间 `1..=seats.count`（长度必须等于该队队员数、元素互不相同且升序），`level.pass.combos` 与 `result.ranks`/`finishOrder`/`round_record.players[].rank` 同一口径；`tribute.pairs[].payer`/`receiver` 由 `first`~`fourth` 枚举改数值 `1..=seats.count`；§5.13 局终止由"某一队两人均出完"改为"该队**全员**出完"，剩余名次按剩余手牌张数升序依次填入。**(b) 升级判定扩展**——新增 `levelTable.upgradeBasis: rank-combo \| score-diff`；`rank-combo` 保持现值（`upgrade[]` 的 `teamRanks` 参数化，`step` 值域恢复为 **0–3**，`0` 表该组合不升档，允许枚举满全部组合）；`score-diff` 新增 `rankScores: [u16]`（长度 = `seats.count`）与 `upgradeByDiff: [{minDiff: u16, step: u8}]`（按 `minDiff` 降序、必须含 `minDiff: 0` 兜底、要求 `flow.score.dimension = team`），两 basis 的键集互斥、同时出现即 L1 拒绝；分值表作为 `levelTable` 的静态子键恢复，**不是把已移出 v1 的 `score.table` 原语拉回**。**(c) 随机源固化**——§5.2 新增「发牌随机源的确定性定义」：随机字 = `BLAKE3-256(seed_le64 ‖ stream_le32 ‖ counter_le64)` 的前 8 字节，`bounded(n)` 用 `⌊2^64/n⌋*n` 拒绝采样，洗牌为 Fisher-Yates 降序，按座位序号连续切分；`counter` 含被拒绝的那一次、禁止批量/并行预取；`deal.shuffle` 与 `rng.pick` 共用同一 `(seed, stream, counter)` 序列。**(d) 顺带把 M0 gate 4 实测数字写回 §10.5**（附"`m0-minimal` 是地板、`guandan-classic` 须在 M1 签核前重跑"的限制说明）。**未补的两条**（推演另列的 `flow.turn.firstLead` 与 `settle.termination` 键）按此前处置**押后、M0 不加键**；局终止判据仍按 §5.13 正文 | §5.1（`levelTable`/`level`/`tribute` 三行与示例 YAML）；§5.2（`level.pass` 参数行、新增随机源定义节）；§5.4（L1 行）；§5.12（第 8 项 `counter`/`seedDigest` 与新定义对接）；§5.13（发牌、局终止与名次、升级档表、结算执行顺序 ④）；§10.5（基准表回填）；§12.2 |
 
 **留痕的意义**：评审时若发现"为什么一个棋牌项目要 40～44 周"，答案在 12.2 而不是在某一节的数字里；若未来要缩范围，也按 12.2 的变更顺序倒着砍。
 
