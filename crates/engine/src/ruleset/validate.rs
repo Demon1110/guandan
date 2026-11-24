@@ -68,11 +68,11 @@ fn gate_primitive_params(
         PrimitiveParams::Shuffle {
             per_seat: Some(ps), ..
         } => {
-            if !(1..=27).contains(ps) {
+            if !(1..=108).contains(ps) {
                 push(
                     ErrorCode::RsSchemaInvalid,
                     &format!("{loc_prefix}.perSeat"),
-                    format!("deal.shuffle perSeat 必须在 1–27 之间，实际 {ps}"),
+                    format!("deal.shuffle perSeat 必须在 1–108 之间，实际 {ps}"),
                 );
             }
         }

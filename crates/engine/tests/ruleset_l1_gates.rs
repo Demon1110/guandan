@@ -121,6 +121,17 @@ fn assert_clean(src: &str) {
     );
 }
 
+/// 断言指定 location 下没有任何 finding（比整表为空更细：只盯该字段路径）。
+fn assert_no_location(src: &str, location: &str) {
+    let findings = l1_findings(src);
+    let bad = findings.iter().find(|f| f.location.contains(location));
+    assert!(
+        bad.is_none(),
+        "`{location}` 不应有 finding，实际 findings: {:?}",
+        findings
+    );
+}
+
 // ---------- rank-combo：teamRanks 值域 / 序 / 长度 / step ----------
 
 #[test]
@@ -542,7 +553,7 @@ fn tribute_return_count_boundaries_accepted() {
 #[test]
 fn deal_shuffle_per_seat_out_of_range_rejected() {
     let mut o = Opts::four_seat();
-    o.actions = "  - { kind: pass, primitive: deal.shuffle, legalFrom: play, params: { zone: hand, perSeat: 28 } }";
+    o.actions = "  - { kind: pass, primitive: deal.shuffle, legalFrom: play, params: { zone: hand, perSeat: 109 } }";
     assert_gate(
         &base(&o),
         ErrorCode::RsSchemaInvalid,
@@ -552,11 +563,15 @@ fn deal_shuffle_per_seat_out_of_range_rejected() {
 
 #[test]
 fn deal_shuffle_per_seat_boundaries_accepted() {
-    for per_seat in [1u16, 27] {
+    // 1 / 108 为上下界；27 是四手牌掼蛋真值（108÷4）。模板 flow.deal.perSeat
+    // 显式给出 27（可整除），不会撞顶层「不可整除须显式声明」那条 reason。
+    for per_seat in [1u16, 27, 108] {
         let mut o = Opts::four_seat();
         let actions = format!("  - {{ kind: pass, primitive: deal.shuffle, legalFrom: play, params: {{ zone: hand, perSeat: {per_seat} }} }}");
         o.actions = &actions;
-        assert_clean(&base(&o));
+        let src = base(&o);
+        assert_no_location(&src, "actions[0].params.perSeat");
+        assert_clean(&src);
     }
 }
 
