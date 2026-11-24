@@ -643,3 +643,29 @@ fn level_pass_primitive_combos_accepted() {
     o.actions = "  - { kind: pass, primitive: level.pass, legalFrom: play, params: { combos: [[1,2]], streakLimit: 3, resetOnFail: true } }";
     assert_clean(&base(&o));
 }
+
+// ---------- flow.deal.perSeat 值域（§5.1 第 404 行，1–108） ----------
+
+#[test]
+fn flow_deal_per_seat_zero_rejected() {
+    let mut o = Opts::four_seat();
+    o.per_seat = 0;
+    assert_gate(&base(&o), ErrorCode::RsSchemaInvalid, "flow.deal.perSeat");
+}
+
+#[test]
+fn flow_deal_per_seat_above_max_rejected() {
+    let mut o = Opts::four_seat();
+    o.per_seat = 109;
+    assert_gate(&base(&o), ErrorCode::RsSchemaInvalid, "flow.deal.perSeat");
+}
+
+#[test]
+fn flow_deal_per_seat_boundaries_accepted() {
+    // 1 / 108 为上下界；27 是四手牌的掼蛋真值（108÷4），须确认不被误拒。
+    for per_seat in [1u16, 27, 108] {
+        let mut o = Opts::four_seat();
+        o.per_seat = per_seat;
+        assert_clean(&base(&o));
+    }
+}

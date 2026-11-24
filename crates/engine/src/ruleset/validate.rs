@@ -438,6 +438,15 @@ pub fn validate(ruleset: &RuleSetBody, levels: &[Level]) -> Validation {
         .filter(|z| z.scope == crate::ruleset::model::ZoneScope::Private)
         .count();
     if let Some(deal) = ruleset.flow.as_ref().and_then(|f| f.deal.as_ref()) {
+        if let Some(ps) = deal.per_seat {
+            if !(1..=108).contains(&ps) {
+                push(
+                    ErrorCode::RsSchemaInvalid,
+                    "flow.deal.perSeat",
+                    format!("flow.deal.perSeat 必须在 1–108 之间，实际 {ps}"),
+                );
+            }
+        }
         let rank_count = (ruleset
             .deck
             .ranks
