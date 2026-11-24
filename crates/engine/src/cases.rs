@@ -429,59 +429,84 @@ pub extern "C" fn gf_bench_apply(batch: u32) -> u64 {
     checksum
 }
 
-/// classic 基准批处理：中局跟牌态连续枚举 `batch` 次，返回累计候选条数 checksum。
+/// classic 基准 wasm 单步出口：引擎 / 状态首次调用时懒构造并常驻静态变量，
+/// 构造不进计时样本（与 native `classic_bench.rs` 同一状态预置口径）；wasm32 单线程，
+/// `Mutex` 仅作可变性隔离，无实际竞争。
+#[cfg(target_arch = "wasm32")]
+use std::sync::Mutex;
+#[cfg(target_arch = "wasm32")]
+static BENCH_MID: Mutex<Option<(M0Engine, State)>> = Mutex::new(None);
+#[cfg(target_arch = "wasm32")]
+static BENCH_LEAD: Mutex<Option<(M0Engine, State)>> = Mutex::new(None);
+/// apply 基准：`pending` 为 prepare 阶段选定、commit 阶段待落子的动作。
+#[cfg(target_arch = "wasm32")]
+static BENCH_APPLY: Mutex<Option<(M0Engine, State, Option<Action>)>> = Mutex::new(None);
+
+/// 中局跟牌态：单次枚举，返回候选条数 checksum。
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
-pub extern "C" fn gf_bench_classic_legal_actions(batch: u32) -> u64 {
-    let (engine, state) = classic_mid_state();
-    let mut checksum: u64 = 0;
-    for _ in 0..batch {
-        let legal = engine
-            .legal_actions(&state)
-            .expect("classic 基准枚举合法动作失败");
-        checksum = checksum.wrapping_add(legal.len() as u64);
+pub extern "C" fn gf_bench_classic_legal_mid_once() -> u64 {
+    let mut guard = BENCH_MID.lock().expect("mid 基准锁不应中毒");
+    if guard.is_none() {
+        *guard = Some(classic_mid_state());
     }
-    checksum
+    let (engine, state) = guard.as_ref().expect("mid 基准状态应已初始化");
+    engine
+        .legal_actions(state)
+        .expect("classic 基准枚举合法动作失败")
+        .len() as u64
 }
 
-/// classic 基准批处理：领出态（`last_play = None`，候选峰值）连续枚举 `batch` 次。
+/// 领出态（`last_play = None`，候选峰值）：单次枚举，返回候选条数 checksum。
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
-pub extern "C" fn gf_bench_classic_legal_actions_lead(batch: u32) -> u64 {
-    let (engine, state) = classic_lead_state();
-    let mut checksum: u64 = 0;
-    for _ in 0..batch {
-        let legal = engine
-            .legal_actions(&state)
-            .expect("classic 基准枚举合法动作失败");
-        checksum = checksum.wrapping_add(legal.len() as u64);
+pub extern "C" fn gf_bench_classic_legal_lead_once() -> u64 {
+    let mut guard = BENCH_LEAD.lock().expect("lead 基准锁不应中毒");
+    if guard.is_none() {
+        *guard = Some(classic_lead_state());
     }
-    checksum
+    let (engine, state) = guard.as_ref().expect("lead 基准状态应已初始化");
+    engine
+        .legal_actions(state)
+        .expect("classic 基准枚举合法动作失败")
+        .len() as u64
 }
 
-/// classic 基准批处理：固定策略连续落子 `batch` 次；settle 后重新 deal（不计时）。
+/// apply prepare：legal 枚举与选动作在 commit 计时窗之外完成（对齐 native
+/// `bench_apply`：`legal_actions` 在 `Instant::now()` 之前）；settle 后在此重新 deal。
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
-pub extern "C" fn gf_bench_classic_apply(batch: u32) -> u64 {
-    let engine = classic_engine().expect("classic 构造失败");
-    let mut state = engine.deal(M0_SEED).expect("classic 发牌失败");
-    let mut checksum: u64 = 0;
-    let mut applied: u32 = 0;
-    while applied < batch {
-        if state.phase == PHASE_SETTLE {
-            state = engine.deal(M0_SEED).expect("classic 重发牌失败");
-            continue;
-        }
-        let legal = engine
-            .legal_actions(&state)
-            .expect("classic 基准枚举合法动作失败");
-        let action = legal
-            .into_iter()
-            .next()
-            .expect("classic 非终局候选不应为空");
-        state = engine.apply(state, action).expect("classic 落子失败");
-        checksum = checksum.wrapping_add(state.turn_seat as u64);
-        applied += 1;
+pub extern "C" fn gf_bench_classic_apply_prepare_once() -> u64 {
+    let mut guard = BENCH_APPLY.lock().expect("apply 基准锁不应中毒");
+    if guard.is_none() {
+        let engine = classic_engine().expect("classic 构造失败");
+        let state = engine.deal(M0_SEED).expect("classic 发牌失败");
+        *guard = Some((engine, state, None));
     }
-    checksum
+    let (engine, state, pending) = guard.as_mut().expect("apply 基准状态应已初始化");
+    if state.phase == PHASE_SETTLE {
+        *state = engine.deal(M0_SEED).expect("classic 重发牌失败");
+    }
+    let legal = engine
+        .legal_actions(state)
+        .expect("classic 基准枚举合法动作失败");
+    let action = legal
+        .into_iter()
+        .next()
+        .expect("classic 非终局候选不应为空");
+    *pending = Some(action);
+    0
+}
+
+/// apply commit：只计 `apply` 本体，返回 `turn_seat` checksum。
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn gf_bench_classic_apply_commit_once() -> u64 {
+    let mut guard = BENCH_APPLY.lock().expect("apply 基准锁不应中毒");
+    let (engine, state, pending) = guard.take().expect("apply 基准状态应已初始化");
+    let action = pending.expect("prepare 阶段应已选定动作");
+    let next = engine.apply(state, action).expect("classic 落子失败");
+    let seat = next.turn_seat as u64;
+    *guard = Some((engine, next, None));
+    seat
 }

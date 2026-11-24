@@ -1,9 +1,9 @@
-// classic 满牌型基准宿主（§10.5 第 1505 行）：Node `process.hrtime.bigint()` 计时，
-// 批处理口径与 native `classic_bench.rs` 对照。每批 1000 次 × 100 批 = 10 万次；
-// 单次 µs = 批耗时 ns / 1000(ns→µs) / 批内次数；分位数在「批均值」上取（最近秩法）。
+// classic 满牌型基准宿主（§10.5 第 1505 行）：Node `process.hrtime.bigint()` 逐次计时，
+// 与 native `classic_bench.rs` 同一口径——每个动作一次样本，分位数在逐次样本上取
+// （最近秩法）。100,000 次/侧。
 //
-// 口径差异：native bench 是逐次样本取分位数，wasm 侧只有批均值，两端不可按
-// 分位数绝对值严格对齐，回报中写明。本宿主只做计时，不改 ABI、不动 golden 宿主。
+// apply 对齐 native `bench_apply`：`legal_actions` 枚举与选动作在 prepare 出口完成、
+// 不进 commit 计时窗；commit 只计 `apply` 本体。
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -30,25 +30,39 @@ if (imports.length > 0) {
 }
 const instance = new WebAssembly.Instance(module, {});
 const {
-  gf_bench_classic_legal_actions,
-  gf_bench_classic_legal_actions_lead,
-  gf_bench_classic_apply,
+  gf_bench_classic_legal_mid_once,
+  gf_bench_classic_legal_lead_once,
+  gf_bench_classic_apply_prepare_once,
+  gf_bench_classic_apply_commit_once,
 } = instance.exports;
 
-const BATCH = 1000;
-const BATCHES = 100;
+const ITERATIONS = 100_000;
 
-function runBatches(fn) {
-  const means = [];
+function runLegal(fn) {
+  const samples = [];
   let checksum = 0;
-  for (let i = 0; i < BATCHES; i++) {
+  for (let i = 0; i < ITERATIONS; i++) {
     const t0 = process.hrtime.bigint();
-    const c = fn(BATCH);
+    const c = fn();
     const t1 = process.hrtime.bigint();
     checksum += Number(c);
-    means.push(Number(t1 - t0) / 1000 / BATCH);
+    samples.push(Number(t1 - t0) / 1000);
   }
-  return { means, checksum };
+  return { samples, checksum };
+}
+
+function runApply(prepare, commit) {
+  const samples = [];
+  let checksum = 0;
+  for (let i = 0; i < ITERATIONS; i++) {
+    prepare();
+    const t0 = process.hrtime.bigint();
+    const c = commit();
+    const t1 = process.hrtime.bigint();
+    checksum += Number(c);
+    samples.push(Number(t1 - t0) / 1000);
+  }
+  return { samples, checksum };
 }
 
 function percentile(arr, p) {
@@ -59,35 +73,37 @@ function percentile(arr, p) {
 }
 
 function summarize(name, result, { candidates = false } = {}) {
-  const avg = result.means.reduce((a, b) => a + b, 0) / result.means.length;
+  const avg = result.samples.reduce((a, b) => a + b, 0) / result.samples.length;
   const out = {
     name,
-    iterations: BATCH * BATCHES,
-    batches: BATCHES,
+    iterations: ITERATIONS,
     avg,
-    p50: percentile(result.means, 50),
-    p90: percentile(result.means, 90),
-    p99: percentile(result.means, 99),
-    max: Math.max(...result.means),
+    p50: percentile(result.samples, 50),
+    p90: percentile(result.samples, 90),
+    p99: percentile(result.samples, 99),
+    max: Math.max(...result.samples),
     checksum: result.checksum,
   };
   if (candidates) {
-    out.candidatesPerCall = result.checksum / (BATCH * BATCHES);
+    out.candidatesPerCall = result.checksum / ITERATIONS;
   }
   return out;
 }
 
-const legalMid = runBatches(gf_bench_classic_legal_actions);
-const legalLead = runBatches(gf_bench_classic_legal_actions_lead);
-const apply = runBatches(gf_bench_classic_apply);
+const legalMid = runLegal(gf_bench_classic_legal_mid_once);
+const legalLead = runLegal(gf_bench_classic_legal_lead_once);
+const apply = runApply(
+  gf_bench_classic_apply_prepare_once,
+  gf_bench_classic_apply_commit_once,
+);
 
 const memoryBytes = instance.exports.memory
   ? instance.exports.memory.buffer.byteLength
   : 0;
 
 // 容量推算同 native 口径：10Hz、20 动作/秒/房间，lead legal + apply 均值。
-const leadAvg = legalLead.means.reduce((a, b) => a + b, 0) / legalLead.means.length;
-const applyAvg = apply.means.reduce((a, b) => a + b, 0) / apply.means.length;
+const leadAvg = legalLead.samples.reduce((a, b) => a + b, 0) / legalLead.samples.length;
+const applyAvg = apply.samples.reduce((a, b) => a + b, 0) / apply.samples.length;
 const avgAction = (leadAvg + applyAvg) / 2;
 const capacityRooms = Math.round(1_000_000 / (20 * avgAction));
 
@@ -99,7 +115,7 @@ console.log(
     capacity: {
       avgAction,
       leadLegalAvg: leadAvg,
-      applyAvg,
+      applyAvg: applyAvg,
       rooms: capacityRooms,
     },
     wasmMemoryBytes: memoryBytes,
