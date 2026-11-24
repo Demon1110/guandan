@@ -779,6 +779,18 @@
 - **落稿**：`count` 非 0 一律 L1 `RS_SCHEMA_INVALID`；`count > 0` 的「固定消耗 N 张」整段语义标 v2 预留，届时连「哪几张」与 `legal_actions` 候选形态一起定，现在不猜。
 - **未动**：`zone` 必填性、`require-legal` 的 `force`/`consume` 默认值、`action.pass`、`stateHash` 段集。
 
+## 第二十八次变更：`recommend` 权重刻度放大到 10（2026-11-24）
+
+- **触发**：用户问「同花顺大于 5 炸小于 6 炸怎么设定」。原默认表 1 分一档，`bomb5=5` 与 `bomb6=6` 之间没有整数位，同花顺只能与 `bomb6` 同分。
+- **用户裁定**：A —— 全表 ×10。
+- **落稿**：
+  - 权重刻度 = 10；表内数字是「基准分 × 10」，引擎按原值比较，`i16` 整数、禁浮点。
+  - 默认表：`bomb4..8 = 40/50/60/70/80`、`jokerBomb = 90`、`straightFlush = 55`、`straightBase = 40`、`straightRankBonus = 20`、`triplePairBase = 30`、`triplePairRankBonus = 20`、`plate3Base = 30`、`plate3RankBonus = 10`、`steel2Base = 40`、`steel2RankBonus = 10`、`pair = 0`、`single = −10`。
+  - 同花顺严格落在 5 炸与 6 炸之间（50 < 55 < 60），与真实牌力序一致。
+  - L1：自定义权重必须显式给全所有键；不校验权重与牌力序的强弱关系。
+- **代价**：`Layout.score` 量级 ×10，实现侧默认表与测试期望同步改；不进 `stateHash`。
+- **未动**：`Layout` 形状、tie-break、束宽、预算、纯函数定位。
+
 ## 未决问题（等用户拍板）
 
 | # | 问题 | 需要谁决定 | 状态 |
