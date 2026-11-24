@@ -3,7 +3,7 @@
 //! §3.2 推导：A4 峰值 500 房间 × 3 倍余量 = 1500 房间，tick 10Hz。本基准实测两组数字：
 //!
 //! 1. **常驻堆内存**：统计型 `#[global_allocator]` 记录 alloc/dealloc/realloc 差值，
-//!    1500 个互相独立的 `State`  deal 完成后的 live 增量（不读 RSS、不用 `size_of` 推算）；
+//!    1500 个互相独立的 `State` deal 完成后的 live 增量（不读 RSS、不用 `size_of` 推算）；
 //! 2. **空转 tick 的 CPU 成本**：`Instant` 实测整段总耗时 / (1500 × TICKS)，
 //!    不写常量、不照抄单动作微秒推算。
 //!
