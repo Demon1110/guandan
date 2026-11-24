@@ -669,3 +669,49 @@ fn flow_deal_per_seat_boundaries_accepted() {
         assert_clean(&base(&o));
     }
 }
+
+// ---------- level.pass.streakLimit 边界 / 越界（§5.2 第 537 行，1–3；§10.6 三例） ----------
+
+#[test]
+fn streak_limit_lower_boundary_accepted() {
+    let mut o = Opts::four_seat();
+    o.level_block = r#"level:
+  pass: { combos: [[1,2]], streakLimit: 1, resetOnFail: true }
+  current: { scope: by-team }"#;
+    assert_clean(&base(&o));
+}
+
+#[test]
+fn streak_limit_upper_boundary_accepted() {
+    let mut o = Opts::four_seat();
+    o.level_block = r#"level:
+  pass: { combos: [[1,2]], streakLimit: 3, resetOnFail: true }
+  current: { scope: by-team }"#;
+    assert_clean(&base(&o));
+}
+
+#[test]
+fn streak_limit_zero_rejected() {
+    let mut o = Opts::four_seat();
+    o.level_block = r#"level:
+  pass: { combos: [[1,2]], streakLimit: 0, resetOnFail: true }
+  current: { scope: by-team }"#;
+    assert_gate(
+        &base(&o),
+        ErrorCode::RsSchemaInvalid,
+        "level.pass.streakLimit",
+    );
+}
+
+#[test]
+fn streak_limit_above_max_rejected() {
+    let mut o = Opts::four_seat();
+    o.level_block = r#"level:
+  pass: { combos: [[1,2]], streakLimit: 4, resetOnFail: true }
+  current: { scope: by-team }"#;
+    assert_gate(
+        &base(&o),
+        ErrorCode::RsSchemaInvalid,
+        "level.pass.streakLimit",
+    );
+}
