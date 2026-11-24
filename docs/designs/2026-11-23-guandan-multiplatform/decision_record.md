@@ -793,6 +793,17 @@
 - **代价**：`Layout.score` 量级 ×10，实现侧默认表与测试期望同步改；不进 `stateHash`。
 - **未动**：`Layout` 形状、tie-break、束宽、预算、纯函数定位。
 
+## 第二十九次变更：提示功能复用 `recommend`（2026-11-24）
+
+- **触发**：`ai.hint` 只有类型（bool、默认 false、开关），提示输出什么从未定义；而 `recommend` 是整手拆分、提示是"这一手出哪张"，粒度不同。
+- **用户裁定**：A —— 提示直接复用 `recommend`，不新增接口。
+- **落稿**：
+  - `ai.hint = true` 只表示规则集允许开提示；客户端自行调用 `recommend(state, seat)`，服务端不主动下发、不加帧。
+  - 提示只给整手拆分，不理解领出/跟牌上下文，不保证压得过 `lastPlay`；跟牌时客户端在 `legal_actions` 内自行比对。
+  - 跟牌态"给一手能压的牌"归到托管 / `crates/ai`；若做 `suggest_action` 另立接口，不与 `recommend` 合并，v1 不做。
+- **代价**：无新协议成本；产品上接受"提示可能压不过"的体验缺口，客户端必须用 `legal_actions` 过滤。
+- **未动**：`recommend` 签名与 `Layout`、权重刻度、tie-break、束宽预算、`ai.features`、托管策略、`stateHash`。
+
 ## 未决问题（等用户拍板）
 
 | # | 问题 | 需要谁决定 | 状态 |
