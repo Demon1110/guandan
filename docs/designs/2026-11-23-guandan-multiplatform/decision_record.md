@@ -622,7 +622,16 @@
 - **实测摘要**：①1500 房间（A4 峰值 ×3 倍余量）常驻状态堆内存 1,065,000 B，710 B/房间；空转 tick CPU 0.803 ns/(房间·tick)，1500 房间 10Hz ≈12.0 µs/s。口径是统计型 `GlobalAlloc` 差值（非 RSS、不含共享 RuleSet 与进程运行时），tick 只做房间级记账、不调 `legal_actions`/`apply`、不含网络 IO 与计时器内核开销 → 记为**地板值**。②wasm（HEAD `061ae60`、默认 release profile、未改 strip/lto）原始 678,604 B、gzip 189,972 B（27.99%），两口径均 ≤1.5MB 目标线；零 import 由"无 import 段"与 Node 空 import 实例化双重确认。
 - **实现侧落地的闸门**（不属设计变更，只是把文档已有值域接上）：`pattern.bomb` 4–8（`count: 12` 由静默通过改为拒绝）、六类牌型参数值域、六条原语参数值域、`tribute.pairs` 名次数值域与 `tribute` 必填性。
 - **未变**：`§5.10` 冻结表取值与状态逐字未动；`m0-minimal` 锚点 `e09079f1…bedd` / steps 150 / finishOrder `[1,3,2,0]` 逐字未变。
-- **仍未收口（照实记）**：L2–L4 未实装（M1 交付）；顶层 `flow.deal.perSeat` 的 1–108 范围未接 L1；`level.pass.streakLimit` 闸门有实现但缺边界/越界用例；`guandan-classic` 基准只能在 M1 签核前重跑（engine 目前只有 `single` 一个牌型）；`SettleResult.result` 仍用 canonical JSON bytes、`reason` 用错误码字符串待评审、跨局 `roomSeq`/`seatSeq` 连续性文档未写死（实现取"都不归零"）。
+- **仍未收口（照实记）**：L2–L4 未实装（M1 交付）；顶层 `flow.deal.perSeat` 的 1–108 范围未接 L1；`level.pass.streakLimit` 闸门有实现但缺边界/越界用例；`guandan-classic` 基准只能在 M1 签核前重跑（engine 目前只有 `single` 一个牌型）；`SettleResult.result` 仍用 canonical JSON bytes、`reason` 用错误码字符串待评审、跨局 `roomSeq`/`seatSeq` 连续性文档未写死（实现取"都不归零"）。上述前两项已由本表下一块（第十四次变更）与实现批次补完。
+
+## 第十四次变更：`perSeat` 两侧值域对齐（2026-11-24）
+
+- **触发**：M0 收尾补顶层 `flow.deal.perSeat` 的 1–108 值域闸门时（提交 `0d9f308`），实现侧发现同一个量在文档里有两套上界：§5.1 顶层 1–108、§5.2 `deal.shuffle.perSeat` 1–27；另 §5.1 的键名映射表漏了 `flow.deal.perSeat`↔`deal.shuffle.perSeat` 一行。实现侧未自行裁决，按纪律交回主会话。
+- **用户裁定（原话）**：「选a」——即主会话列出的**方案 A：把 §5.2 原语侧放宽到 108**（27 作为四座真值仍在域内，对将来 3/5 座扩展更稳）。方案 B（顶层收紧到 27）与方案 C（两边都留、只补映射说明）未被采用。
+- **改动**：①§5.2 `deal.shuffle.perSeat` 值域 **1–27 → 1–108**，并写明它与顶层是同一个量（"每座位分得张数"，不是"每轮每人张数"）、四座真值 27 仍落域内、上界放宽理由；②§5.1 键名映射表补 `flow.deal.perSeat`↔`deal.shuffle.perSeat`；③§5.1 顶层值域行补「两侧同量同域 1–108、守恒属 L2」一句。§5.1 与 §5.2 两处断链由此接通。
+- **未变**：默认值公式（`deck` 总张数 ÷ `seats.count` 的整除值）、不整除必须显式声明、两份夹具取值、`§5.10` 冻结表取值与状态、「总张数 = 座位数 × `perSeat`」的守恒校验仍归 L2。
+- **落码待办（转实现批次）**：原语侧闸门由 1–27 改为 1–108，并把原有用例（若以 28 作越界反证）改成 109；顶层 1–108 闸门与用例（0／109 反证、1／27／108 正例）无需回改。
+- **同批收口**：第十三次块列的「顶层 `perSeat` 未接 L1」与「`streakLimit` 缺边界用例」两项已由实现侧补完（`0d9f308`、`5547081`，`cargo test --workspace` 96 通过 / 0 失败，`fmt`/`clippy` 干净，锚点 `e09079f1…bedd` 逐字未变）。
 
 ## 未决问题（等用户拍板）
 

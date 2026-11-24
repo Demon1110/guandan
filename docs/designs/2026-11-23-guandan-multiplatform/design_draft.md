@@ -401,7 +401,7 @@
 
 | 子对象 | 键 | 类型 | 取值 | 默认值 |
 | --- | --- | --- | --- | --- |
-| `flow.deal` | `perSeat` | u16 | 1–108 | `deck` 总张数 ÷ `seats.count` 的整除值；不整除时该默认值无定义，必须显式声明 `perSeat`，否则 L1 `RS_SCHEMA_INVALID`（v1 不定义余量发牌） |
+| `flow.deal` | `perSeat` | u16 | 1–108 | `deck` 总张数 ÷ `seats.count` 的整除值；不整除时该默认值无定义，必须显式声明 `perSeat`，否则 L1 `RS_SCHEMA_INVALID`（v1 不定义余量发牌）。与 §5.2 `deal.shuffle.perSeat` 是同一个量、同一值域 1–108（第十四次变更把原语侧由 1–27 放宽到与本行一致，映射见下行）；「总张数 = 座位数 × `perSeat`」的守恒校验属 L2，不在 L1 值域闸门内 |
 | `flow.deal` | `zone` | `ZoneId` | `zones` 里的 private 区 id | `hand`（缺省时取唯一 private 区；存在多个 private 区且未显式声明则 L1 `RS_SCHEMA_INVALID`） |
 | `flow.deal` | `reveal` | bool | `true` / `false` | `false`（`false` = 发牌结果只对各自座位可见，私有区按 `(seat, zoneId)` 实例化；`true` = 整手发牌结果对全桌公开，仅调试与 M0 骨架使用） |
 | `flow.turn` | `direction` | 枚举 | `clockwise` / `counterclockwise` | `clockwise` |
@@ -414,7 +414,7 @@
 | `flow.assert` | `cardCount` | u32? | ≥0 | 缺省（不做牌数断言） |
 | `flow.assert` | `zoneCapacity` | `[ZoneId]?` | 区号闭集 | 缺省空表 |
 
-键名映射（顶层 `flow` 键与原语字段同义不同名，L1 按本映射对齐，不接受两套写法混用）：`flow.deal.zone`↔`deal.shuffle.zone`、`flow.turn.skipFinished`↔`turn.skip-finished.skip`、`flow.turn.afterAllPass`↔`turn.after-all-pass.to`、`flow.assert.cardCount`↔`assert.card-count.expected`、`flow.assert.zoneCapacity`↔`assert.zone-capacity.zone`（顶层是区号集合，逐项对各区断言）、`flow.rng.stream`↔`rng.pick.stream`。
+键名映射（顶层 `flow` 键与原语字段同义不同名，L1 按本映射对齐，不接受两套写法混用）：`flow.deal.zone`↔`deal.shuffle.zone`、`flow.deal.perSeat`↔`deal.shuffle.perSeat`、`flow.turn.skipFinished`↔`turn.skip-finished.skip`、`flow.turn.afterAllPass`↔`turn.after-all-pass.to`、`flow.assert.cardCount`↔`assert.card-count.expected`、`flow.assert.zoneCapacity`↔`assert.zone-capacity.zone`（顶层是区号集合，逐项对各区断言）、`flow.rng.stream`↔`rng.pick.stream`。
 
 `flow.score` 取舍说明：v1 不建独立计分表本体；`score.table` 原语与其 `tableRef` 键移出 v1 清单、标 v2 预留（§5.2）。v1 计分只按 `flow.score.dimension` 归集名次与队级升级，不挂外部分值表；未来需要按外部分值表查表时，再在 v2 恢复 `score.table`。
 
@@ -507,7 +507,7 @@ view: { schemaVersion: 1, fields: [hand, seat.levels, discard, lastPlay] }
 
 | 原语 | 参数字段（类型｜取值｜默认值） |
 | --- | --- |
-| `deal.shuffle` | `zone: ZoneId`｜必填，发牌落点区（v1 由顶层 `flow.deal.zone` 承载，§5.1）；`perSeat: u16`｜1–27，默认 = `deck` 总张数 ÷ `seats.count` 的整除值；`reveal: bool`｜默认 `false` |
+| `deal.shuffle` | `zone: ZoneId`｜必填，发牌落点区（v1 由顶层 `flow.deal.zone` 承载，§5.1）；`perSeat: u16`｜**1–108**（与顶层 `flow.deal.perSeat` 是同一个量、同一值域，键名映射见 §5.1；「每座位分得张数」，不是"每轮每人张数"；四座掼蛋的真值 27 仍在本域内，上界放宽到整副牌是为了三座／五座变体不必再改语法，见第十四次变更），默认 = `deck` 总张数 ÷ `seats.count` 的整除值；`reveal: bool`｜默认 `false` |
 | `deal.draw` | `zone: ZoneId`｜必填；`count: u16`｜1–108，默认 1；`reveal: bool`｜默认 `false` |
 | `deal.reveal` | `zone: ZoneId`｜必填；`toSeats: [u8]`｜默认 `[]`（空表 = 全桌可见） |
 | `pattern.same-rank` | `count: u8`｜1–8，必填 |
@@ -1590,6 +1590,7 @@ P0 之外不做自动干预，只有两项自动动作：`canary` 指标超标�
 | 时点 | 变更 | 影响 |
 | --- | --- | --- |
 | 第十三次变更（M0 收尾：实测数字补录 + 必填性口径对齐） | 2026-11-24，M0 gate 第 3、4 项收尾。**本条不含任何新的设计决策，只有①实测数字回填与②已裁决口径的对齐**：①§10.5 第 5、6 行由「待实测（M0 末第 6 周补）」改为实测值——1500 房间（按 A4 峰值 ×3 倍余量，行标题由「1000 房间空转」改为「1500 房间空转」）常驻状态堆内存 1,065,000 B / 710 B 每房间、空转 tick CPU 0.803 ns/(房间·tick)（1500 房间 10Hz ≈12.0 µs/s）；wasm（HEAD `061ae60`、默认 release profile、未改 strip/lto）原始 678,604 B、gzip 后 189,972 B（27.99%），两口径均 ≤1.5MB 目标线；两行均补写测量口径并以"地板值"标注（空转 CPU 不含 `legal_actions`/`apply` 与网络 IO，内存是分配器差值而非 RSS）；②§5.13 「tribute」段补一段必填性声明，把此前本节未重申必填性、实现侧按"整段可省"落地的双口径统一到 §5.1 的写法（`enabled: true` 时 `return` 必填、整段缺省即 L1 拒绝；`enabled: false` 时只写一个键即合法），与第十一次变更⑥同源、未新增契约。同批实现侧据此落 L1 值域闸门（`pattern.bomb` 4–8〔`count: 12` 由静默通过改为拒绝〕、六类牌型参数值域、六条原语参数值域、`tribute.pairs` 名次数值域与 `tribute` 必填性），`m0-minimal` 锚点 `e09079f1…bedd` / steps 150 / finishOrder `[1,3,2,0]` 逐字未变。**§5.10 冻结表的取值与状态逐字未动** | §5.13（`tribute` 段必填性声明）；§10.5（第 5、6 行实测值与测量口径、表后"地板"说明）；§12.2 |
+| 第十四次变更（M0 收尾：`perSeat` 两侧值域对齐） | 2026-11-24，M0 收尾补 `flow.deal.perSeat` 顶层 1–108 值域闸门时，实现侧报出同一量的两侧上界不一致：§5.1 顶层写 1–108，§5.2 `deal.shuffle.perSeat` 写 1–27，且 §5.1 的键名映射表漏了 `flow.deal.perSeat`↔`deal.shuffle.perSeat` 这一行；实现侧未自行裁决、交回主会话。用户当日选定**方案 A**：「把 §5.2 原语侧放宽到 108（27 作为四座真值仍在域内，对将来 3/5 座扩展更稳）」。据此落两处改动：①§5.2 `deal.shuffle.perSeat` 值域 1–27 → **1–108**，并写明它与顶层是同一个量（"每座位分得张数"，不是"每轮每人张数"）、四座真值 27 仍落域内、上界放宽是为三座／五座变体免改语法；②§5.1 键名映射表补 `flow.deal.perSeat`↔`deal.shuffle.perSeat`，顶层值域行补一句「两侧同域、守恒属 L2」。**未动**：默认值公式（`deck` 总张数 ÷ `seats.count` 的整除值）、不整除必须显式声明的规则、`m0-minimal` 与 `guandan-classic` 两份夹具的取值、§5.10 冻结表的取值与状态。实现侧已落的顶层 1–108 闸门（含 0／109 反证、1／27／108 正例）与本变更方向一致，无需回改；原语侧闸门由 1–27 改为 1–108 属本次的落码动作 | §5.1（`flow.deal.perSeat` 行、键名映射）；§5.2（`deal.shuffle` 参数行）；§12.2 |
 
 **留痕的意义**：评审时若发现"为什么一个棋牌项目要 40～44 周"，答案在 12.2 而不是在某一节的数字里；若未来要缩范围，也按 12.2 的变更顺序倒着砍。
 
