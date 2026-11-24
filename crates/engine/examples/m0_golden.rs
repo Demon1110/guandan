@@ -34,6 +34,7 @@ fn main() {
     println!("winnerTeam: {winner_team}");
     println!("discardCount: {}", outcome.discard_count);
     println!("handsTotal: {}", outcome.hands_total);
+    println!("rngCounter: {}", outcome.state.rng.counter);
     for (i, action) in outcome.actions.iter().enumerate() {
         println!(
             "{:03} seat={} kind={} cards={:?}",

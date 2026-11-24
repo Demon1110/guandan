@@ -242,7 +242,7 @@ pub struct State {
     /// 诊断字段，**不进 stateHash**。
     pub ranks: Vec<u8>,
     /// 本局升级档 `step`：按 `rankCombo` 查 `levelTable.upgrade[]`；score-only 局为 `None`。
-    /// 诊断字段，**不进 stateHash**；本批只计算不落 `levels`（跨 A / 过 A 属第二批）。
+    /// 诊断字段，**不进 stateHash**。
     pub settle_step: Option<u8>,
 }
 

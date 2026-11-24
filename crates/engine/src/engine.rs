@@ -331,8 +331,10 @@ impl M0Engine {
             });
         }
 
-        // §5.13 第 897 行：两队级牌都从 `levelTable.initial` 起，`levels` 存
-        // `levelTable.ranks` 的下标；G4 score-only 局无 `levelTable`，保持空序列不崩。
+        // §5.13 行 996：两队级牌都从 `levelTable.initial` 起，`levels` 存
+        // `levelTable.ranks` 的下标。N18（第三十六次变更）：score-only 局无 `levelTable`
+        // 时 `levels` 每队取 initial 常量占位（无级牌表即起点 2 的下标 0），不省略段、
+        // 不用 0xFF，照常进 stateHash 第 2 段。
         let team_count = self.ruleset.seats.teams.len();
         let levels = match &self.ruleset.level_table {
             Some(table) => {
@@ -344,7 +346,7 @@ impl M0Engine {
                     .unwrap_or(0);
                 vec![idx; team_count]
             }
-            None => Vec::new(),
+            None => vec![0; team_count],
         };
 
         let mut state = State {
@@ -362,9 +364,8 @@ impl M0Engine {
                 card: None,
             },
             rng,
-            // TODO(M0-GAP-N18)：score-only 局 `levels` 为空序列（G4），而 `aFailStreak` 仍按队位数
-            // 保留 2 个队位；§5.13 第 892、894 行的 aFailStreak 推进依附于 level 过 A 判定，
-            // score-only 局该字段是清零、占位还是省略未定义。现按队位数填 0，待裁决，本批不改行为。
+            // N18（第三十六次变更）：score-only 局 `aFailStreak` 全队恒 0，按队位数保留
+            // 队位，照常进 stateHash 第 9 段，不省略、不用 0xFF。
             a_fail_streak: vec![0; self.ruleset.seats.teams.len()],
             finish_order: Vec::new(),
             seed,
@@ -852,8 +853,9 @@ impl M0Engine {
         ranks
     }
 
-    /// score-only 结算：只定名次；level-up 本批只查 `step`，不落 `levels`（跨 A / 过 A /
-    /// aFailStreak 属第二批，见 §5.13 结算四步 ②③）。
+    /// 结算四步（§5.13 行 998，顺序固定）：① 定名次；② 判过 A；③ 未过 A 在 A 上累计
+    /// `aFailStreak`、达限退回 initial；④ 非 A 按 step 推进 levels、跨 A 封顶。score-only
+    /// 只跑 ①，levels/streak 保持 N18 常量占位。
     fn settle(&self, state: &mut State) -> Result<(), EngineError> {
         // §6.3：`play → settle`，经相位机校验，表外跳转报错不静默接受。
         self.transition(state, PHASE_SETTLE)?;
@@ -936,7 +938,10 @@ impl M0Engine {
         state.completed_team = Some(completed_team);
         state.settle_step = step;
 
-        // ②③④ 队级牌推进（§5.13 结算四步，顺序固定不得调换）；score-only 只跑 ①（N18，下一笔）。
+        // ②③④ 队级牌推进（§5.13 结算四步，顺序固定不得调换）。score-only（N18）只跑
+        // 第 ① 步定名次：levels 保持 initial 常量占位、aFailStreak 全队恒 0（deal 已初始化），
+        // 二者照常进快照与 stateHash 第 2/9 段，不省略段、不用 0xFF；段集固定 10 段、
+        // 与 RuleSet 无关。
         if let Some(table) = table {
             let a_index = table.ranks.len().saturating_sub(1) as u8;
             let initial_index = table
@@ -1005,9 +1010,10 @@ impl M0Engine {
             data.zones
                 .insert(self.hand_zone().0.clone(), hand.cards.clone());
         }
-        // 队级状态：score-only 局 `levels` 为空，`seat.levels` 与两个 `round.*` 键
-        // 一并不出现（§5.12 字段级编码表缺值行）；无级牌状态不写 null、不留占位。
-        if !state.levels.is_empty() {
+        // 队级状态：score-only 局 `seat.levels` 与两个 `round.*` 键一并不出现
+        // （§5.12 字段级编码表缺值行；N18 只把 levels/streak 留在快照与哈希，不进视图白名单）。
+        let level_up = matches!(&self.ruleset.settle, Settle::LevelUp { .. });
+        if level_up && !state.levels.is_empty() {
             data.seat_levels = Some(state.levels.clone());
             data.round_level = state.levels.get(state.attacking_team as usize).copied();
             data.round_attacking_team = Some(state.attacking_team);
@@ -1047,6 +1053,7 @@ mod tests {
     use super::*;
     use crate::cases::M0_SEED;
     use crate::contract::{Engine, ErrorCode, Level};
+    use crate::hash::{canonical_bytes, CanonicalState};
     use crate::ruleset::{from_yaml, validate};
     use std::fs;
     use std::path::PathBuf;
@@ -1138,11 +1145,13 @@ mod tests {
     }
 
     #[test]
-    fn m0_deal_keeps_empty_levels_and_sets_attacking_team() {
+    fn m0_deal_keeps_initial_levels_placeholder_and_zero_streak() {
         let engine = engine();
         let state = engine.deal(M0_SEED).expect("发牌失败");
-        // G4 score-only 局无 levelTable：levels 保持空序列，不许崩。
-        assert!(state.levels.is_empty());
+        // N18：score-only 局 levels 每队取 initial 常量占位（无级牌表即下标 0），
+        // aFailStreak 全队恒 0；不省略段、不用 0xFF。
+        assert_eq!(state.levels, vec![0, 0]);
+        assert_eq!(state.a_fail_streak, vec![0, 0]);
         // 首局抽牌定先手；attacking_team = 先手座位所属队。
         let team = engine
             .ruleset
@@ -1152,6 +1161,22 @@ mod tests {
             .position(|t| t.contains(&state.turn_seat))
             .expect("先手座位应归属某一队");
         assert_eq!(state.attacking_team, team as u8);
+    }
+
+    #[test]
+    fn score_only_settle_keeps_placeholder_and_fixed_segment_set() {
+        // N18：score-only 跑到 settle 后 levels 仍为 initial 常量占位、streak 全队恒 0；
+        // 二者照常进快照与 stateHash 第 2/9 段，段集固定 10 段、与 RuleSet 无关，不省略段、
+        // 不用 0xFF。
+        let outcome = crate::cases::run_m0_golden().expect("m0 golden 运行失败");
+        assert_eq!(outcome.state.levels, vec![0, 0]);
+        assert_eq!(outcome.state.a_fail_streak, vec![0, 0]);
+        let canonical = CanonicalState::from(&outcome.state);
+        let bytes = canonical_bytes(&canonical);
+        // 第 2 段 levels 队位前缀 = 2；第 9 段 streak 队位前缀 = 2（队位数），均非省略。
+        assert_eq!(outcome.state.levels.len(), 2);
+        assert_eq!(outcome.state.a_fail_streak.len(), 2);
+        assert!(!bytes.is_empty());
     }
 
     // ---------- 名次方向（第二十六次变更 ④） ----------

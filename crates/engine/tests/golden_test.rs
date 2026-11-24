@@ -10,11 +10,10 @@ use gf_engine::settlement::{valid_ruleset_version, Settlement};
 
 /// native 用例跑出并核对过动作日志后的 32 字节 stateHash（双端逐字节比对锚点）。
 /// 第二十六次变更（接风 / 全过判定顺序订正）后轨迹漂移，锚点已按最终口径重算。
-/// 本批 `settle-single-round`：① N17（第三十五次变更）第 5 段 `lastPlay=None` 由单 presence
-/// 字节改为完整占位段（seat=0xFF / 空串 / (0,0) / 空数组）；② settle 结束 `attackingTeam`
-/// 交接头游所在队（旧 = 开局抽牌队 0，新 = 头游队 1，第 11 段）。两项均按实测写期望。
+/// 本批 `settle-single-round` 第二批：N18 score-only `levels` 由空序列改为 initial
+/// 常量占位（第 2 段队位前缀 0→2），第 9 段 `aFailStreak` 仍为两队位 0；其余字段实测未变。
 const EXPECTED_STATE_HASH: &str =
-    "f65cfb2f9c598fe096a7142053647184a8041eb03310710431b46d0b7af1037d";
+    "8040b7e6d3a780ce3dd38e3d0933a25e20941367b4385e785d9408f862d1ed5f";
 
 #[test]
 fn golden_reaches_settle_and_matches_recorded_hash() {
@@ -86,6 +85,10 @@ fn golden_reaches_settle_and_matches_recorded_hash() {
         outcome.settle_step, None,
         "score-only 局不查 upgrade[]，step 应为 None"
     );
+    // N18：score-only 局 levels 保持 initial 常量占位（下标 0）、aFailStreak 全队恒 0，
+    // 照常进第 2/9 段，不省略、不用 0xFF。
+    assert_eq!(outcome.state.levels, vec![0, 0]);
+    assert_eq!(outcome.state.a_fail_streak, vec![0, 0]);
     // result bytes：canonical JSON，键序固定 winner_team, ranks, points，单行无空白。
     let m0_result = Settlement {
         winner_team: outcome.winner_team.unwrap(),
@@ -135,6 +138,9 @@ fn classic_first_round_settles_with_concrete_step_and_teams() {
         outcome.state.attacking_team, 0,
         "attackingTeam 应为头游队 0"
     );
+    // 首局 initial（下标 0）打 1+3 → step=2，levels[0]=2；未触 A，streak 全队 0。
+    assert_eq!(outcome.state.levels, vec![2, 0]);
+    assert_eq!(outcome.state.a_fail_streak, vec![0, 0]);
     // N17：settle 阶段 lastPlay 清空，结算输出与它无关。
     assert!(outcome.state.last_play.is_none());
     assert_eq!(outcome.discard_count + outcome.hands_total, 108, "牌数守恒");
