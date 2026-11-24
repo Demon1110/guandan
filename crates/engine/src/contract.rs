@@ -188,6 +188,12 @@ pub struct State {
     pub finish_order: Vec<u8>,
     /// 第 11 段：本局「打级队」队序号 u8（§5.12 第 822 行）。越界即不变量破坏。
     pub attacking_team: u8,
+    /// 当前局序号 `roundNo: u16`（§6.5 第 1100 行）：与 `SettleResult.roundNo` 同口径。
+    ///
+    /// TODO(M0-GAP-SEQ-CROSS-ROUND)：⑧ 跨局携带尚未落地（`State` 无场次/局数计数），
+    /// 本字段先落成全链路占位：开局恒 0，跨局递增待 ⑧ 接线。**不进 `stateHash`**
+    /// （§5.12 十段字段集不含局序号）。
+    pub round_no: u16,
     /// §5.12 第 800 行：快照同时保存 `seed` 原值，`seedDigest` 由它派生；
     /// seed 本身不进哈希拼接。
     pub seed: u64,

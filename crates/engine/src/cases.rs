@@ -19,6 +19,9 @@ pub struct ActionLogEntry {
     pub seat: u8,
     pub kind: String,
     pub cards: Vec<u16>,
+    /// 局序号 `roundNo: u16`（§6.5 第 1100 行）；与 `SettleResult.roundNo` 同口径。
+    /// TODO(M0-GAP-SEQ-CROSS-ROUND)：跨局递增待 ⑧ 落地，当前恒 0。
+    pub round_no: u16,
 }
 
 /// 双端比对产物：最终状态、32 字节 stateHash、动作日志，外加一组终局诊断字段。
@@ -116,11 +119,13 @@ pub fn run_m0_golden() -> Result<GoldenOutcome, String> {
                 seat: state.turn_seat,
                 kind: "play".to_owned(),
                 cards: cards.clone(),
+                round_no: state.round_no,
             },
             Action::Pass => ActionLogEntry {
                 seat: state.turn_seat,
                 kind: "pass".to_owned(),
                 cards: Vec::new(),
+                round_no: state.round_no,
             },
         };
         state = engine.apply(state, action).map_err(|e| e.to_string())?;

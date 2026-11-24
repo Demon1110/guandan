@@ -91,6 +91,7 @@ impl ServerRoom {
         let record = ActionRecord {
             seat_seq: self.seat_seq[seat as usize],
             room_seq: self.next_room_seq,
+            round_no: self.state.round_no,
             seat,
             request_id: self.next_request_id,
             action: action.clone(),

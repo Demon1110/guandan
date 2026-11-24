@@ -285,6 +285,8 @@ impl M0Engine {
             finish_order: Vec::new(),
             seed,
             passes_since_last_play: 0,
+            // TODO(M0-GAP-SEQ-CROSS-ROUND)：跨局序号连续待 ⑧ 落地；首局占位 0，不进哈希。
+            round_no: 0,
         })
     }
 
@@ -769,6 +771,13 @@ impl M0Engine {
             data.zones
                 .insert(self.hand_zone().0.clone(), hand.cards.clone());
         }
+        // 队级状态：score-only 局 `levels` 为空，`seat.levels` 与两个 `round.*` 键
+        // 一并不出现（§5.12 字段级编码表缺值行）；无级牌状态不写 null、不留占位。
+        if !state.levels.is_empty() {
+            data.seat_levels = Some(state.levels.clone());
+            data.round_level = state.levels.get(state.attacking_team as usize).copied();
+            data.round_attacking_team = Some(state.attacking_team);
+        }
         if let Some(last) = &state.last_play {
             data.last_play = Some(ViewLastPlay {
                 seat: last.seat,
@@ -776,7 +785,6 @@ impl M0Engine {
                 cards: last.cards.clone(),
             });
         }
-        // G4：score-only 的 levels 为空序列，视图键不出现。
         let bytes = encode_canonical(&fields, &data);
         View { bytes }
     }

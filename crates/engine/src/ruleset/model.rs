@@ -711,12 +711,17 @@ pub struct MatchCap {
     pub rounds: u16,
 }
 
-/// `view.fields` 三种写法（§5.1）：`seat.levels`、区号、`lastPlay`。
+/// `view.fields` 五类写法（§5.1）：`seat.levels`、区号、`lastPlay`、
+/// `round.level`、`round.attackingTeam`（第二十二次变更）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ViewField {
     SeatLevels,
     Zone(ZoneId),
     LastPlay,
+    /// `round.level`：本局局级牌档位下标（= `levels[attackingTeam]`）。
+    RoundLevel,
+    /// `round.attackingTeam`：本局打级队队序号。
+    RoundAttackingTeam,
 }
 
 impl<'de> Deserialize<'de> for ViewField {
@@ -728,6 +733,8 @@ impl<'de> Deserialize<'de> for ViewField {
         match raw.as_str() {
             "seat.levels" => Ok(ViewField::SeatLevels),
             "lastPlay" => Ok(ViewField::LastPlay),
+            "round.level" => Ok(ViewField::RoundLevel),
+            "round.attackingTeam" => Ok(ViewField::RoundAttackingTeam),
             other => Ok(ViewField::Zone(ZoneId(other.to_owned()))),
         }
     }

@@ -55,4 +55,4 @@ flow:
   assert: { minPlayers: 4, cardCount: 108 }
 matchCap: { rounds: 12 }
 settle: { algorithm: level-up, levelTableRef: guandan-level }
-view: { schemaVersion: 1, fields: [hand, seat.levels, discard, lastPlay] }
+view: { schemaVersion: 2, fields: [hand, seat.levels, discard, lastPlay, round.level, round.attackingTeam] }

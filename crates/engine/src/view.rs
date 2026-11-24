@@ -21,12 +21,17 @@ pub struct ViewLastPlay {
     pub cards: Vec<u16>,
 }
 
-/// 视图投影数据：键为 zoneId；`seat_levels` 为 `None` 时该键不出现。
+/// 视图投影数据：键为 zoneId；`seat_levels` / `round_level` /
+/// `round_attacking_team` 为 `None` 时对应键不出现（§5.12 字段级编码表）。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ViewData {
     pub zones: BTreeMap<String, Vec<u16>>,
     pub seat_levels: Option<Vec<u8>>,
     pub last_play: Option<ViewLastPlay>,
+    /// `round.level`：本局局级牌档位下标（`levels[attackingTeam]`）；无级牌状态时不出现。
+    pub round_level: Option<u8>,
+    /// `round.attackingTeam`：本局打级队队序号；无级牌状态时不出现。
+    pub round_attacking_team: Option<u8>,
 }
 
 fn escape_json_string(out: &mut Vec<u8>, s: &str) {
@@ -115,6 +120,20 @@ pub fn encode_canonical(fields: &[ViewField], data: &ViewData) -> Vec<u8> {
                 out.extend_from_slice(b"\"cards\":");
                 write_card_ids(&mut out, &last.cards);
                 out.push(b'}');
+            }
+            ViewField::RoundLevel => {
+                let Some(level) = data.round_level else {
+                    continue; // score-only / 无级牌状态时该键不出现（§5.12 第 879 行）
+                };
+                push_pair(&mut out, "round.level", &mut first);
+                out.extend_from_slice(level.to_string().as_bytes());
+            }
+            ViewField::RoundAttackingTeam => {
+                let Some(team) = data.round_attacking_team else {
+                    continue; // score-only / 无级牌状态时该键不出现（§5.12 第 880 行）
+                };
+                push_pair(&mut out, "round.attackingTeam", &mut first);
+                out.extend_from_slice(team.to_string().as_bytes());
             }
         }
     }

@@ -22,17 +22,21 @@ use gf_engine::hash::{state_hash, CanonicalState};
 /// 越过缓冲起点）。
 pub const RECONNECT_BUFFER_CAPACITY: usize = 200;
 
-/// §6.5 第 1032 行动作记录：`{seatSeq, roomSeq, seat, requestId, kind, payload, tsMs}`，
+/// §6.5 第 1100 行动作记录：`{seatSeq, roomSeq, roundNo, seat, requestId, kind, payload, tsMs}`，
 /// **只此一份记录类型**；重放水位一律用 `roomSeq`，座位序号只用于 `Reconnect` 水位与换算。
 ///
 /// M0 边界：`kind` / `payload` 直接镜像在引擎 [`Action`] 上（`Play{cards}` / `Pass`）；
 /// `ts_ms` 用房间序号占位，in-process 原型不接时钟。
+/// `round_no`（第二十三次变更）与 `SettleResult.roundNo` 同口径；⑧ 跨局携带未落地，
+/// 当前恒 0，跨局递增待接线。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActionRecord {
-    /// 每座位单调递增（§6.2 第 979 行），从 0 起算。
+    /// 每座位单调递增（§6.2 第 979 行），从 0 起算；跨局不归零。
     pub seat_seq: u64,
-    /// 房间内全局递增广播序（§6.2 第 979 行），从 0 起算；缓冲与回放水位都用它。
+    /// 房间内全局递增广播序（§6.2 第 979 行），从 0 起算；跨局不归零。缓冲与回放水位都用它。
     pub room_seq: u64,
+    /// 局序号 `roundNo: u16`，回放按它切段（§6.5 第 1100 行）。
+    pub round_no: u16,
     /// 动作发起座位。
     pub seat: u8,
     /// 幂等键（§6.4）；M0 占位序号。
@@ -289,6 +293,7 @@ mod tests {
         ActionRecord {
             seat_seq,
             room_seq,
+            round_no: 0,
             seat,
             request_id: room_seq,
             action: Action::Pass,

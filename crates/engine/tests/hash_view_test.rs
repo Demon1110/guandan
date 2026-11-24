@@ -9,8 +9,8 @@ use gf_engine::view::{encode_canonical, present_8, view_hash, ViewData, ViewLast
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
-const EXPECTED_SHA256: &str = "9e0b756d600f8eb6b74b098f804735c752a2232f0ca3772673a3a4da51afcc72";
-const EXPECTED_LEN: usize = 129;
+const EXPECTED_SHA256: &str = "36e7bdc6d3ea4bba20ec571f3034c2663ec253909c56b4d649a2713c6aeeab51";
+const EXPECTED_LEN: usize = 169;
 
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
@@ -19,12 +19,15 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 #[test]
 fn canonical_view_vector_matches_fixture() {
-    // 白名单序：hand, seat.levels, discard, lastPlay（§5.12 第 821 行）。
+    // 白名单序：hand, seat.levels, discard, lastPlay, round.level, round.attackingTeam
+    // （§5.12 第 882 行定值向量；第二十二次变更新增两键）。
     let fields = vec![
         ViewField::Zone(ZoneId("hand".to_owned())),
         ViewField::SeatLevels,
         ViewField::Zone(ZoneId("discard".to_owned())),
         ViewField::LastPlay,
+        ViewField::RoundLevel,
+        ViewField::RoundAttackingTeam,
     ];
 
     let mut zones = BTreeMap::new();
@@ -38,6 +41,8 @@ fn canonical_view_vector_matches_fixture() {
             pattern_id: "single".to_owned(),
             cards: vec![5],
         }),
+        round_level: Some(2),
+        round_attacking_team: Some(0),
     };
 
     let bytes = encode_canonical(&fields, &data);
@@ -63,8 +68,7 @@ fn view_hash_is_16_hex_chars_and_deterministic() {
     zones.insert("hand".to_owned(), vec![0, 1, 2]);
     let data = ViewData {
         zones,
-        seat_levels: None,
-        last_play: None,
+        ..Default::default()
     };
     let bytes = encode_canonical(&fields, &data);
 
@@ -77,4 +81,15 @@ fn view_hash_is_16_hex_chars_and_deterministic() {
     // seat / roomSeq 不同，viewHash 应不同。
     let h3 = view_hash(2, 42, &bytes);
     assert_ne!(h1, h3);
+}
+
+/// 无级牌状态（score-only 局）：`round.level` / `round.attackingTeam` 两键都不出现，
+/// 不写 null、不留占位（§5.12 第 879–880 行）。
+#[test]
+fn round_keys_absent_without_level_state() {
+    let fields = vec![ViewField::RoundLevel, ViewField::RoundAttackingTeam];
+    let data = ViewData::default();
+    let bytes = encode_canonical(&fields, &data);
+    assert_eq!(bytes, b"{}");
+    assert!(!bytes.windows(11).any(|w| w == b"round.level"));
 }
