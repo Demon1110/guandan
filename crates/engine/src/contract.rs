@@ -7,6 +7,7 @@
 //!   `EngineError` 变体清单；
 //! - §5.7（第 630–660 行）：25 个错误码全表。
 
+use crate::hash::{LastPlay, RngState, TributeState, ZoneEntry};
 use crate::ruleset::RuleSetBody;
 use std::collections::HashSet;
 
@@ -151,17 +152,52 @@ pub struct ZoneId(pub String);
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PatternId(pub String);
 
-/// 引擎运行期状态（M1 补全内部结构；M0 只锁定接口形状）。
-#[derive(Clone, Debug, Default)]
+/// 引擎运行期状态：直接承载 §5.12 第 2–10 项九段字段（N6）。
+///
+/// `CanonicalState` 是 `From<&State>` 的单向只读投影，只承担序列化与双端比对，
+/// 不另存真源（§5.12 第 837 行）。
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct State {
-    /// 占位：M1 接入完整牌局状态（§3.3 信息隔离：对外只开 `view(seat)`）。
-    pub placeholder: (),
+    /// 第 2 段：phase 枚举序号 u16。
+    pub phase: u16,
+    /// 第 2 段：当前行动座位 u8。
+    pub turn_seat: u8,
+    /// 第 2 段：每队一个 u8，按队伍序号升序。
+    pub levels: Vec<u8>,
+    /// 第 3 段：座位号升序。
+    pub seats: Vec<u8>,
+    /// 第 4 段：按 `(seat, zoneId)` 实例化的各区手牌。
+    pub zones: Vec<ZoneEntry>,
+    /// 第 5 段：本回合无人出过牌时为 `None`。
+    pub last_play: Option<LastPlay>,
+    /// 第 6 段：每座位 u64 序号线，按座位号升序。
+    pub seq_watermark: Vec<(u8, u64)>,
+    /// 第 7 段：进贡 / 占位。
+    pub tribute: TributeState,
+    /// 第 8 段：计数器与种子摘要。
+    pub rng: RngState,
+    /// 第 9 段：每队一个 u8（0–3），按队伍序号升序。
+    pub a_fail_streak: Vec<u8>,
+    /// 第 10 段：按出完先后升序的座位序列。
+    pub finish_order: Vec<u8>,
+    /// §5.12 第 800 行：快照同时保存 `seed` 原值，`seedDigest` 由它派生；
+    /// seed 本身不进哈希拼接。
+    pub seed: u64,
+    /// N11 运行期记账：连续过牌数。§5.12 九段内没有对应字段，
+    /// **不进 stateHash**；崩溃恢复需由动作日志重建（设计缺口，见回报 N11）。
+    pub passes_since_last_play: u8,
 }
 
-/// 玩家提交的动作（M1 补全 payload 分型；§5.9 `SubmitAction.payload`）。
-#[derive(Clone, Debug, Default)]
-pub struct Action {
-    pub placeholder: (),
+/// 玩家提交的动作（§5.9 第 721–726 行 `SubmitAction.payload` 按 kind 分型）。
+///
+/// N12（待裁决）：协议侧 payload 形状是唯一依据，引擎侧未另写；按它镜像为
+/// `Play{cards}` / `Pass` 两型，`pass` 为空结构体、禁止带字段。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Action {
+    /// 出牌：只传牌 id（`patternId` 由服务端判定，`patternHint` 不参与判定）。
+    Play { cards: Vec<u16> },
+    /// 过牌：空结构体。
+    Pass,
 }
 
 /// 下发视图：`view` 是 bytes，内容为 canonical JSON（§5.9 / §5.12）。

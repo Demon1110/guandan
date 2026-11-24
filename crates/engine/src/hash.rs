@@ -71,6 +71,27 @@ pub struct CanonicalState {
     pub finish_order: Vec<u8>,
 }
 
+/// 单向只读投影：`State` 是唯一真源，`CanonicalState` 只做序列化（N6，§5.12 第 837 行）。
+///
+/// `seed` 原值与 `passes_since_last_play`（N11 运行期记账）不投影进九段。
+impl From<&crate::contract::State> for CanonicalState {
+    fn from(state: &crate::contract::State) -> Self {
+        Self {
+            phase: state.phase,
+            turn_seat: state.turn_seat,
+            levels: state.levels.clone(),
+            seats: state.seats.clone(),
+            zones: state.zones.clone(),
+            last_play: state.last_play.clone(),
+            seq_watermark: state.seq_watermark.clone(),
+            tribute: state.tribute.clone(),
+            rng: state.rng.clone(),
+            a_fail_streak: state.a_fail_streak.clone(),
+            finish_order: state.finish_order.clone(),
+        }
+    }
+}
+
 /// 版本三元组与哈希的并列存放载体（版本不进拼接，§5.12 第 793 行）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HashBundle {
@@ -118,6 +139,10 @@ impl Writer {
 }
 
 /// 把 [`CanonicalState`] 按九段固定顺序序列化为定宽小端字节流。
+///
+/// N2（长度前缀宽度，§5.12 第 838 行）：段内元素个数一律 `u8` 前缀（`levels`/`seats`/
+/// `zones`/`seqWatermark`/`finishOrder` 等）；牌 id 数组与字符串（`patternId`）一律 `u16`
+/// 前缀（小端，先计数后元素）。宽度属编码定义的一部分，双端必须同一宽度。
 pub fn canonical_bytes(state: &CanonicalState) -> Vec<u8> {
     let mut w = Writer::new();
 
