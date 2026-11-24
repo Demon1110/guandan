@@ -15,8 +15,12 @@ fn main() {
         .map(|b| format!("{b:02x}"))
         .collect();
     let finish_order: Vec<String> = outcome.finish_order.iter().map(|s| s.to_string()).collect();
-    let terminal_team = outcome
-        .terminal_team
+    let completed_team = outcome
+        .completed_team
+        .map(|t| t.to_string())
+        .unwrap_or_else(|| "-".to_owned());
+    let winner_team = outcome
+        .winner_team
         .map(|t| t.to_string())
         .unwrap_or_else(|| "-".to_owned());
 
@@ -26,7 +30,8 @@ fn main() {
     println!("steps: {}", outcome.steps);
     println!("phase: {}", outcome.phase);
     println!("finishOrder: [{}]", finish_order.join(","));
-    println!("terminalTeam: {terminal_team}");
+    println!("completedTeam: {completed_team}");
+    println!("winnerTeam: {winner_team}");
     println!("discardCount: {}", outcome.discard_count);
     println!("handsTotal: {}", outcome.hands_total);
     for (i, action) in outcome.actions.iter().enumerate() {

@@ -23,8 +23,9 @@ pub struct ActionLogEntry {
 
 /// 双端比对产物：最终状态、32 字节 stateHash、动作日志，外加一组终局诊断字段。
 ///
-/// 诊断字段（`steps`/`phase`/`finish_order`/`terminal_team`/`settle_count`/
-/// `discard_count`/`hands_total`）只服务终局复核与双端逐字段比对，**不进 stateHash**。
+/// 诊断字段（`steps`/`phase`/`finish_order`/`completed_team`/`winner_team`/
+/// `settle_count`/`discard_count`/`hands_total`）只服务终局复核与双端逐字段比对，
+/// **不进 stateHash**（§5.12 第 8 项字段集不含）。
 #[derive(Clone, Debug)]
 pub struct GoldenOutcome {
     pub state: State,
@@ -36,9 +37,14 @@ pub struct GoldenOutcome {
     pub phase: u16,
     /// 终局名次：4 个座位按出完先后排序。
     pub finish_order: Vec<u8>,
-    /// 最先全员出完的队伍下标（§5.13 第 902 行「局终止与名次」：双下 / 1+3 / 1+4
-    /// 三种收尾中，最晚名次编号最小者；1+4 形态下为对家队，不等于头游所在队）。
-    pub terminal_team: Option<u8>,
+    /// 先全员出完的队伍下标（局终止判定用；原 `terminal_team` 改名，语义不变）。
+    /// 诊断字段，**不进 stateHash**（§5.12 第 8 项字段集不含）。§5.13 第 902 行三种
+    /// 收尾：双下 1+2 / 1+3 / 1+4；1+4 形态下是对家队，不等于头游所在队。
+    pub completed_team: Option<u8>,
+    /// 头游（`finish_order[0]`）所在队（升级用）。诊断字段，**不进 stateHash**
+    /// （§5.12 第 8 项字段集不含）。1+4 形态下是头游队，与 `completed_team`
+    /// 不是同一概念，不许互相替代。
+    pub winner_team: Option<u8>,
     /// settle 转移发生次数，正常应恰为 1。
     pub settle_count: u32,
     /// 弃牌区累计牌数。
@@ -145,11 +151,13 @@ pub fn run_m0_golden() -> Result<GoldenOutcome, String> {
         .map(|z| z.cards.len())
         .unwrap_or(0);
     // 终局触发（§5.13 第 902 行「局终止与名次」）：一局在某队全部队员均已出完时结束。
-    // 掼蛋基线三种收尾都由这一条覆盖——该队占 1、2 名（双下）、夹进对家一人（1+3）、
-    // 对家两人先出完而本队头游在前（1+4）。terminal_team = 最先全员出完的队伍：
-    // 队员全部进入 finish_order 的队伍中，「最晚名次」（在 finish_order 中的最大下标）
-    // 最小者；并列按队伍下标小者。注意它不等于头游所在队——1+4 形态下是对家队。
-    let terminal_team = engine
+    // 三种收尾形态（四人两队基线）：双下 1+2（该队占 1、2 名）、1+3（夹进对家一人）、
+    // 1+4（对家两人先出完而本队头游在前）。
+    // completed_team = 最先全员出完的队伍：队员全部进入 finish_order 的队伍中，
+    // 「最晚名次」（在 finish_order 中的最大下标）最小者；并列按队伍下标小者。
+    // winner_team = 头游（finish_order[0]）所在队，供升级用。1+4 形态下
+    // completed_team 是对家队、winner_team 是头游队，两者不是同一概念，不许互相替代。
+    let completed_team = engine
         .ruleset
         .seats
         .teams
@@ -172,6 +180,15 @@ pub fn run_m0_golden() -> Result<GoldenOutcome, String> {
         })
         .min_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)))
         .map(|(i, _)| i as u8);
+    let winner_team = state.finish_order.first().and_then(|&head| {
+        engine
+            .ruleset
+            .seats
+            .teams
+            .iter()
+            .position(|team| team.contains(&head))
+            .map(|i| i as u8)
+    });
 
     if state.phase != PHASE_SETTLE {
         return Err(format!(
@@ -196,16 +213,25 @@ pub fn run_m0_golden() -> Result<GoldenOutcome, String> {
             state.finish_order
         ));
     }
-    let Some(team) = terminal_team else {
+    let Some(completed) = completed_team else {
         return Err(format!(
             "终局没有队伍全员进入名次：finishOrder={:?}",
             state.finish_order
         ));
     };
-    let team_seats = &engine.ruleset.seats.teams[team as usize];
-    if !team_seats.iter().all(|s| state.finish_order.contains(s)) {
+    let Some(winner) = winner_team else {
         return Err(format!(
-            "terminal_team={team} 座位 {team_seats:?} 未全部进入名次：finishOrder={:?}",
+            "头游座位未归属任何队伍：finishOrder={:?}",
+            state.finish_order
+        ));
+    };
+    let completed_seats = &engine.ruleset.seats.teams[completed as usize];
+    if !completed_seats
+        .iter()
+        .all(|s| state.finish_order.contains(s))
+    {
+        return Err(format!(
+            "completed_team={completed} 座位 {completed_seats:?} 未全部进入名次：finishOrder={:?}",
             state.finish_order
         ));
     }
@@ -238,7 +264,8 @@ pub fn run_m0_golden() -> Result<GoldenOutcome, String> {
         actions,
         steps,
         phase: outcome_phase,
-        terminal_team: Some(team),
+        completed_team: Some(completed),
+        winner_team: Some(winner),
         settle_count,
         discard_count,
         hands_total,
@@ -247,16 +274,27 @@ pub fn run_m0_golden() -> Result<GoldenOutcome, String> {
 
 // ---------- wasm C ABI 导出（仅 wasm32 目标） ----------
 
-// 报告缓冲定长 48 字节，native 端与 Node 宿主共用同一份布局：
-// - `[0..32]`  stateHash 原始 32 字节；
-// - `[32..36]` steps u32 LE；
-// - `[36..40]` phase u32 LE；
-// - `[40..44]` finish_order_len u32 LE；
-// - `[44..48]` finish_order 4×u8，不足位填 `0xFF`。
-// 宿主读完必须调用 `gf_free(ptr, 48)` 释放。
+// 报告缓冲定长 64 字节，native 端与 Node 宿主共用同一份小端布局：
+// - `[0..4]`   abiVersion u32 LE（本次 = 2；1 表示旧的 48 字节布局）；
+// - `[4..5]`   completedTeam u8，先全员出完的队，`0xFF` = 无；
+// - `[5..6]`   winnerTeam u8，头游所在队，`0xFF` = 无；
+// - `[6..8]`   reserved u16 LE，恒 0，留给以后；
+// - `[8..40]`  stateHash 原始 32 字节；
+// - `[40..44]` steps u32 LE；
+// - `[44..48]` phase u32 LE；
+// - `[48..52]` finishOrderLen u32 LE；
+// - `[52..56]` finishOrder 4×u8，不足位填 `0xFF`；
+// - `[56..60]` discardCount u32 LE；
+// - `[60..64]` handsTotal u32 LE。
+// finishOrder 固定 4 槽：四座基线够用；六人变体要扩 ABI 时靠 abiVersion 区分，
+// 不在本笔做大。宿主读完必须调用 `gf_free(ptr, 64)` 释放。
 
 #[cfg(target_arch = "wasm32")]
-const REPORT_BUF_LEN: usize = 48;
+const REPORT_BUF_LEN: usize = 64;
+
+/// 报告 ABI 版本号：2 = 64 字节布局；1 = 旧 48 字节布局。
+#[cfg(target_arch = "wasm32")]
+const REPORT_ABI_VERSION: u32 = 2;
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
@@ -264,18 +302,22 @@ pub extern "C" fn gf_free(ptr: *mut u8, len: usize) {
     if ptr.is_null() {
         return;
     }
-    // 重建 Vec 释放；容量按 len 还原（本链路只释放定长 48 字节报告缓冲）。
+    // 重建 Vec 释放；容量按 len 还原（本链路只释放定长 64 字节报告缓冲）。
     unsafe {
         let _ = Vec::<u8>::from_raw_parts(ptr, len, len);
     }
 }
 
-/// 跑完 m0 golden，返回 48 字节报告堆缓冲指针（布局见 `REPORT_BUF_LEN` 注释）。
+/// 跑完 m0 golden，返回 64 字节报告堆缓冲指针（布局见 `REPORT_BUF_LEN` 注释）。
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn gf_m0_golden_report() -> *mut u8 {
     let outcome = run_m0_golden().expect("m0 golden 运行失败");
     let mut buf = Vec::with_capacity(REPORT_BUF_LEN);
+    buf.extend_from_slice(&REPORT_ABI_VERSION.to_le_bytes());
+    buf.push(outcome.completed_team.unwrap_or(0xFF));
+    buf.push(outcome.winner_team.unwrap_or(0xFF));
+    buf.extend_from_slice(&0u16.to_le_bytes());
     buf.extend_from_slice(&outcome.state_hash);
     buf.extend_from_slice(&(outcome.steps as u32).to_le_bytes());
     buf.extend_from_slice(&(outcome.phase as u32).to_le_bytes());
@@ -283,6 +325,8 @@ pub extern "C" fn gf_m0_golden_report() -> *mut u8 {
     for i in 0..4 {
         buf.push(outcome.finish_order.get(i).copied().unwrap_or(0xFF));
     }
+    buf.extend_from_slice(&(outcome.discard_count as u32).to_le_bytes());
+    buf.extend_from_slice(&(outcome.hands_total as u32).to_le_bytes());
     let ptr = buf.as_mut_ptr();
     std::mem::forget(buf);
     ptr

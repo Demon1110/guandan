@@ -30,7 +30,56 @@ fn golden_reaches_settle_and_matches_recorded_hash() {
         108,
         "终局牌数必须守恒"
     );
-    assert!(outcome.terminal_team.is_some(), "终局应有队伍全员先出完");
+    assert!(outcome.completed_team.is_some(), "终局应有队伍全员先出完");
+    assert!(outcome.winner_team.is_some(), "终局头游应归属某一队");
+    // 交叉核对两队口径：winner_team = 头游（finish_order[0]）所在队；
+    // completed_team = 全员进入名次的队伍中最晚名次编号最小者（§5.13 第 902 行）。
+    let teams = build_engine().expect("构造引擎失败").ruleset.seats.teams;
+    let head = outcome.finish_order[0];
+    let expected_winner = teams
+        .iter()
+        .position(|t| t.contains(&head))
+        .map(|i| i as u8);
+    let expected_completed = teams
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.iter().all(|s| outcome.finish_order.contains(s)))
+        .map(|(i, t)| {
+            let last = t
+                .iter()
+                .map(|s| {
+                    outcome
+                        .finish_order
+                        .iter()
+                        .position(|x| x == s)
+                        .expect("队员应在名次中")
+                })
+                .max()
+                .expect("队伍非空");
+            (i as u8, last)
+        })
+        .min_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)))
+        .map(|(i, _)| i);
+    assert_eq!(
+        outcome.winner_team, expected_winner,
+        "winner_team 应等于头游所在队"
+    );
+    assert_eq!(
+        outcome.completed_team, expected_completed,
+        "completed_team 应等于先全员出完的队"
+    );
+    // 当前种子实测为 1+4 形态（finish_order=[2,1,3,0]：头游 seat2 属队 0，
+    // 对家 seat1/seat3 占 2、3 名，队友 seat0 补末名）；此形态下
+    // completed_team（对家队）与 winner_team（头游队）不相等，二者不许互相替代。
+    let winner_is_1plus4 = expected_winner
+        .map(|w| teams[w as usize].contains(&outcome.finish_order[3]))
+        .unwrap_or(false);
+    if winner_is_1plus4 {
+        assert_ne!(
+            outcome.completed_team, outcome.winner_team,
+            "1+4 形态下 completed_team（对家队）不等于 winner_team（头游队）"
+        );
+    }
     let hex: String = outcome
         .state_hash
         .iter()
