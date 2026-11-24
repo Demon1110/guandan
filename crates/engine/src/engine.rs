@@ -1,17 +1,17 @@
-//! M0 最小执行路径：发牌（`deal.shuffle`）→ 单张出牌（`pattern.same-rank count:1`
-//! + `action.require-legal`）→ `score-only` 结算。
+//! 执行路径：发牌（`deal.shuffle`）→ 出牌（`action.require-legal`，牌型判定见
+//! [`crate::patterns`]）→ `score-only` 结算。
 //!
-//! 只覆盖 `m0-minimal` 夹具用到的原语；其余原语（进贡/还贡/抗贡、炸弹/顺子/同花顺/
-//! 四王炸、`level.*`、`compare.*`、未用到的 `turn.*` 分支）属 M1，本批不实现，
-//! 命中即走保守空候选 / 内部错误，不在判定链路里发明规则。
+//! M1 本批已落地 `patterns[]` 已声明牌型的判定、枚举与压制比较；进贡/还贡/抗贡、
+//! `level.*` 升级档、接风等原语仍属后续批次，命中走保守空候选 / 内部错误，不在判定
+//! 链路里发明规则。逢人配、三带二、级牌点力三条 hold 见 [`crate::patterns`] 顶部注释。
 //!
 //! 确定性纪律（§3.3 约束 2）：纯整数、无浮点、无 `SystemTime`/线程 RNG/文件网络 I/O；
 //! 排序给全序；RNG 唯一来源是引擎注入的种子与计数器。
 
 use crate::contract::{Action, Engine, EngineError, Seat, State, View, ZoneId};
 use crate::hash::{seed_digest, LastPlay, RngState, TributeState, ZoneEntry};
+use crate::patterns;
 use crate::ruleset::model::ZoneScope;
-use crate::ruleset::params::PrimitiveParams;
 use crate::ruleset::RuleSetBody;
 use crate::view::{encode_canonical, ViewData, ViewLastPlay};
 
@@ -92,27 +92,6 @@ impl M0Engine {
 
     fn deck_total(&self) -> usize {
         self.base_total() + self.joker_total()
-    }
-
-    /// N13：`rankKey` = 该点数在 `naturalOrder`（+ `levelInsert` 合成序；m0 无级牌，
-    /// 即 `naturalOrder`）里的 0 基下标。`countKey` 对单张恒为 1。
-    fn rank_key(&self, card: u16) -> u32 {
-        let base_total = self.base_total();
-        if (card as usize) < base_total {
-            let base = (card as usize) / self.copies();
-            let rank_idx = base % self.rank_count();
-            let rank = self.ruleset.deck.ranks[rank_idx].as_str();
-            self.ruleset
-                .natural_order
-                .iter()
-                .position(|r| r.as_str() == rank)
-                .unwrap_or(rank_idx) as u32
-        } else {
-            // 王排在序尾：little-joker 在前、big-joker 在后，各 `copies` 张。
-            let joker_slot = (card as usize - base_total) / self.copies();
-            let tail = self.ruleset.natural_order.len();
-            tail.saturating_sub(2).saturating_add(joker_slot) as u32
-        }
     }
 
     // ---------- RNG（N7：算法文档未定义，取 BLAKE3(seed‖counter) 前 8 字节） ----------
@@ -272,14 +251,6 @@ impl M0Engine {
             .any(|team| team.iter().all(|s| state.finish_order.contains(s)))
     }
 
-    /// 找 `pattern.same-rank count:1` 单张牌型定义（m0-minimal 唯一在役牌型）。
-    fn single_pattern(&self) -> Option<&crate::ruleset::model::PatternDef> {
-        self.ruleset
-            .patterns
-            .iter()
-            .find(|p| matches!(p.params, PrimitiveParams::SameRank { count: 1 }))
-    }
-
     // ---------- legal_actions ----------
 
     fn legal_actions_impl(&self, state: &State) -> Result<Vec<Action>, EngineError> {
@@ -308,29 +279,22 @@ impl M0Engine {
 
         // 候选四元组：(countKey, rankKey, cards 牌 id 序列, primitiveId)，全序（§5.12 第 842 行）。
         let mut candidates: Vec<(u32, u32, Vec<u16>, String, Action)> = Vec::new();
-
-        if let Some(pattern) = self.single_pattern() {
-            let pattern_id = pattern.id.0.clone();
-            for &card in &hand {
-                let rank_key = self.rank_key(card);
-                // 领出（lastPlay 为空）任意单张合法；跟牌必须点数压过上家单张。
-                let legal = match &state.last_play {
-                    None => true,
-                    Some(last) => rank_key > last.pattern_key.1,
-                };
-                if legal {
-                    candidates.push((
-                        1,
-                        rank_key,
-                        vec![card],
-                        pattern_id.clone(),
-                        Action::Play { cards: vec![card] },
-                    ));
-                }
+        for rec in patterns::enumerate(&self.ruleset, &hand) {
+            // 领出（lastPlay 为空）任意成型牌型合法；跟牌只保留能压过 lastPlay 的候选。
+            let legal = match &state.last_play {
+                None => true,
+                Some(last) => patterns::beats(&self.ruleset, &rec, last),
+            };
+            if legal {
+                candidates.push((
+                    rec.pattern_key.0,
+                    rec.pattern_key.1,
+                    rec.cards.clone(),
+                    rec.pattern_id.clone(),
+                    Action::Play { cards: rec.cards },
+                ));
             }
         }
-        // TODO(M1-GAP-patterns)：pair/triple/straight/plate/steel/bomb/straight-flush/
-        // joker-bomb 等牌型原语本批不实现；命中这些原语的候选不在此枚举。
 
         candidates.sort_by(|a, b| (&a.0, &a.1, &a.2, &a.3).cmp(&(&b.0, &b.1, &b.2, &b.3)));
         for candidate in candidates {
@@ -385,16 +349,22 @@ impl M0Engine {
 
         match action {
             Action::Play { cards } => {
-                // 落子前复检合法性，防止越权动作进入状态迁移。
-                let legal = self.legal_actions_impl(&state)?;
-                let legal_play = legal.iter().any(|a| match a {
-                    Action::Play { cards: legal_cards } => *legal_cards == cards,
-                    Action::Pass => false,
-                });
-                if !legal_play {
-                    return Err(EngineError::IllegalAction {
-                        reason: format!("seat {seat} 提交的出牌不在合法集合内"),
-                    });
+                // §5.9 第 203 行：出牌只传牌 id，`patternId` 由服务端判定。复检按牌结构
+                // 判定牌型并判定能否压过 lastPlay，不再要求提交的 cards 精确等于枚举清单。
+                let rec = patterns::recognize(&self.ruleset, &cards).ok_or_else(|| {
+                    EngineError::IllegalAction {
+                        reason: format!("seat {seat} 提交的牌不构成任何已声明牌型"),
+                    }
+                })?;
+                if let Some(last) = &state.last_play {
+                    if !patterns::beats(&self.ruleset, &rec, last) {
+                        return Err(EngineError::IllegalAction {
+                            reason: format!(
+                                "seat {seat} 提交的牌压不过上家 {}（{:?}）",
+                                last.pattern_id, last.pattern_key
+                            ),
+                        });
+                    }
                 }
 
                 let hand_idx = self.hand_zone_index();
@@ -422,15 +392,12 @@ impl M0Engine {
                     }
                 }
 
-                let rank_key = self.rank_key(cards[0]);
-                let pattern_id = self
-                    .single_pattern()
-                    .map(|p| p.id.0.clone())
-                    .unwrap_or_else(|| "single".to_owned());
+                // `last_play` 写服务端判定出的真实 `pattern_id` 与 `pattern_key`，
+                // 不再硬写 `(1, rank_key(cards[0]))`（§5.12 第 797、842 行）。
                 state.last_play = Some(LastPlay {
                     seat,
-                    pattern_id,
-                    pattern_key: (1, rank_key),
+                    pattern_id: rec.pattern_id,
+                    pattern_key: rec.pattern_key,
                     cards,
                 });
                 state.passes_since_last_play = 0;
