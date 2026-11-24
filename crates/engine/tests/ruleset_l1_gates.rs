@@ -8,6 +8,7 @@ use gf_engine::ruleset::{from_yaml, validate};
 
 const DEFAULT_PATTERNS: &str =
     "  - { id: single, primitiveId: pattern.same-rank, params: { count: 1 } }";
+const DEFAULT_ACTIONS: &str = "  - { kind: play, primitive: action.require-legal, legalFrom: patterns, params: { force: true, consume: hand } }\n  - { kind: pass, primitive: action.pass, legalFrom: play, params: {} }";
 
 struct Opts<'a> {
     seats: &'a str,
@@ -16,6 +17,7 @@ struct Opts<'a> {
     level_table: &'a str,
     level_block: &'a str,
     patterns: &'a str,
+    actions: &'a str,
     /// `tribute` 段内联体；空串表示整段省略。
     tribute: &'a str,
     score_dim: &'a str,
@@ -30,6 +32,7 @@ impl<'a> Opts<'a> {
             level_table: "",
             level_block: "",
             patterns: DEFAULT_PATTERNS,
+            actions: DEFAULT_ACTIONS,
             tribute: "enabled: false",
             score_dim: "team",
         }
@@ -68,8 +71,7 @@ compare:
   flushRank: above-bomb-5
 {tribute_line}
 actions:
-  - {{ kind: play, primitive: action.require-legal, legalFrom: patterns, params: {{ force: true, consume: hand }} }}
-  - {{ kind: pass, primitive: action.pass, legalFrom: play, params: {{}} }}
+{actions}
 lifecycle: [deal, tribute, play, settle]
 flow:
   deal: {{ zone: hand, perSeat: {per_seat}, reveal: false }}
@@ -86,6 +88,7 @@ view: {{ schemaVersion: 1, fields: [hand, lastPlay] }}
         level_table = o.level_table,
         level_block = o.level_block,
         patterns = o.patterns,
+        actions = o.actions,
         tribute_line = tribute_line,
         score_dim = o.score_dim,
     )
@@ -489,5 +492,154 @@ resist: two-big-jokers"#;
 fn tribute_disabled_single_key_accepted() {
     let mut o = Opts::four_seat();
     o.tribute = "enabled: false";
+    assert_clean(&base(&o));
+}
+
+// ---------- 原语侧参数值域（§5.2 参数表第 510/525/532/533/541/543 行） ----------
+
+#[test]
+fn tribute_pay_count_out_of_range_rejected() {
+    let mut o = Opts::four_seat();
+    o.actions = "  - { kind: pass, primitive: tribute.pay, legalFrom: play, params: { count: 3, selection: max-rank-except-wildcard } }";
+    assert_gate(
+        &base(&o),
+        ErrorCode::RsSchemaInvalid,
+        "actions[0].params.count",
+    );
+}
+
+#[test]
+fn tribute_pay_count_boundaries_accepted() {
+    for count in [1u8, 2] {
+        let mut o = Opts::four_seat();
+        let actions = format!("  - {{ kind: pass, primitive: tribute.pay, legalFrom: play, params: {{ count: {count}, selection: max-rank-except-wildcard }} }}");
+        o.actions = &actions;
+        assert_clean(&base(&o));
+    }
+}
+
+#[test]
+fn tribute_return_count_out_of_range_rejected() {
+    let mut o = Opts::four_seat();
+    o.actions = "  - { kind: pass, primitive: tribute.return, legalFrom: play, params: { ceiling: under-ten, count: 3, fallback: smallest } }";
+    assert_gate(
+        &base(&o),
+        ErrorCode::RsSchemaInvalid,
+        "actions[0].params.count",
+    );
+}
+
+#[test]
+fn tribute_return_count_boundaries_accepted() {
+    for count in [1u8, 2] {
+        let mut o = Opts::four_seat();
+        let actions = format!("  - {{ kind: pass, primitive: tribute.return, legalFrom: play, params: {{ ceiling: under-ten, count: {count}, fallback: smallest }} }}");
+        o.actions = &actions;
+        assert_clean(&base(&o));
+    }
+}
+
+#[test]
+fn deal_shuffle_per_seat_out_of_range_rejected() {
+    let mut o = Opts::four_seat();
+    o.actions = "  - { kind: pass, primitive: deal.shuffle, legalFrom: play, params: { zone: hand, perSeat: 28 } }";
+    assert_gate(
+        &base(&o),
+        ErrorCode::RsSchemaInvalid,
+        "actions[0].params.perSeat",
+    );
+}
+
+#[test]
+fn deal_shuffle_per_seat_boundaries_accepted() {
+    for per_seat in [1u16, 27] {
+        let mut o = Opts::four_seat();
+        let actions = format!("  - {{ kind: pass, primitive: deal.shuffle, legalFrom: play, params: {{ zone: hand, perSeat: {per_seat} }} }}");
+        o.actions = &actions;
+        assert_clean(&base(&o));
+    }
+}
+
+#[test]
+fn consume_cards_count_out_of_range_rejected() {
+    let mut o = Opts::four_seat();
+    o.actions = "  - { kind: pass, primitive: action.consume-cards, legalFrom: patterns, params: { zone: hand, count: 9 } }";
+    assert_gate(
+        &base(&o),
+        ErrorCode::RsSchemaInvalid,
+        "actions[0].params.count",
+    );
+}
+
+#[test]
+fn consume_cards_count_boundaries_accepted() {
+    for count in [0u8, 8] {
+        let mut o = Opts::four_seat();
+        let actions = format!("  - {{ kind: pass, primitive: action.consume-cards, legalFrom: patterns, params: {{ zone: hand, count: {count} }} }}");
+        o.actions = &actions;
+        assert_clean(&base(&o));
+    }
+}
+
+#[test]
+fn rng_pick_stream_out_of_range_rejected() {
+    let mut o = Opts::four_seat();
+    o.actions = "  - { kind: pass, primitive: rng.pick, legalFrom: play, params: { stream: 4 } }";
+    assert_gate(
+        &base(&o),
+        ErrorCode::RsSchemaInvalid,
+        "actions[0].params.stream",
+    );
+}
+
+#[test]
+fn rng_pick_stream_boundaries_accepted() {
+    for stream in [0u32, 3] {
+        let mut o = Opts::four_seat();
+        let actions = format!("  - {{ kind: pass, primitive: rng.pick, legalFrom: play, params: {{ stream: {stream} }} }}");
+        o.actions = &actions;
+        assert_clean(&base(&o));
+    }
+}
+
+#[test]
+fn min_players_count_out_of_range_rejected() {
+    let mut o = Opts::four_seat();
+    o.actions =
+        "  - { kind: pass, primitive: assert.min-players, legalFrom: play, params: { count: 9 } }";
+    assert_gate(
+        &base(&o),
+        ErrorCode::RsSchemaInvalid,
+        "actions[0].params.count",
+    );
+}
+
+#[test]
+fn min_players_count_boundaries_accepted() {
+    for count in [1u8, 8] {
+        let mut o = Opts::four_seat();
+        let actions = format!("  - {{ kind: pass, primitive: assert.min-players, legalFrom: play, params: {{ count: {count} }} }}");
+        o.actions = &actions;
+        assert_clean(&base(&o));
+    }
+}
+
+// ---------- level.pass 原语侧 combos 值域（问题 a 收口） ----------
+
+#[test]
+fn level_pass_primitive_combos_out_of_range_rejected() {
+    let mut o = Opts::four_seat();
+    o.actions = "  - { kind: pass, primitive: level.pass, legalFrom: play, params: { combos: [[2,1]], streakLimit: 3, resetOnFail: true } }";
+    assert_gate(
+        &base(&o),
+        ErrorCode::RsSchemaInvalid,
+        "actions[0].params.combos",
+    );
+}
+
+#[test]
+fn level_pass_primitive_combos_accepted() {
+    let mut o = Opts::four_seat();
+    o.actions = "  - { kind: pass, primitive: level.pass, legalFrom: play, params: { combos: [[1,2]], streakLimit: 3, resetOnFail: true } }";
     assert_clean(&base(&o));
 }

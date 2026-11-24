@@ -37,6 +37,89 @@ fn rank_combo_errors(combo: &[u8], team_size: Option<usize>, seats_count: u8) ->
     errs
 }
 
+/// 原语侧参数值域闸门（§5.2 参数表第 510/525/532/533/541/543 行）。
+///
+/// `loc_prefix` 形如 `actions[0].params` / `patterns[0].params`，字段路径拼在其后。
+/// 牌型六类值域由 patterns 循环内的专用闸门覆盖；本函数兜底进贡 / 行动 / 轮转 / 发牌 /
+/// 随机 / 断言 / 级牌原语的数值区间。
+fn gate_primitive_params(
+    params: &PrimitiveParams,
+    loc_prefix: &str,
+    team_size: Option<usize>,
+    seats_count: u8,
+    push: &mut impl FnMut(ErrorCode, &str, String),
+) {
+    let mut u8_range = |field: &str, value: u8, lo: u8, hi: u8, what: &str| {
+        if !(lo..=hi).contains(&value) {
+            push(
+                ErrorCode::RsSchemaInvalid,
+                &format!("{loc_prefix}.{field}"),
+                format!("{what} 必须在 {lo}–{hi} 之间，实际 {value}"),
+            );
+        }
+    };
+    match params {
+        PrimitiveParams::PayParams { count, .. } => {
+            u8_range("count", *count, 1, 2, "tribute.pay count")
+        }
+        PrimitiveParams::ReturnParams { count, .. } => {
+            u8_range("count", *count, 1, 2, "tribute.return count")
+        }
+        PrimitiveParams::Shuffle {
+            per_seat: Some(ps), ..
+        } => {
+            if !(1..=27).contains(ps) {
+                push(
+                    ErrorCode::RsSchemaInvalid,
+                    &format!("{loc_prefix}.perSeat"),
+                    format!("deal.shuffle perSeat 必须在 1–27 之间，实际 {ps}"),
+                );
+            }
+        }
+        PrimitiveParams::Shuffle { .. } => {}
+        PrimitiveParams::ConsumeCards { count, .. } => {
+            u8_range("count", *count, 0, 8, "consume-cards count")
+        }
+        PrimitiveParams::RngPick { stream } => {
+            if *stream > 3 {
+                push(
+                    ErrorCode::RsSchemaInvalid,
+                    &format!("{loc_prefix}.stream"),
+                    format!("rng.pick stream 必须在 0–3 之间，实际 {stream}"),
+                );
+            }
+        }
+        PrimitiveParams::MinPlayers { count } => {
+            u8_range("count", *count, 1, 8, "min-players count")
+        }
+        PrimitiveParams::LevelPass {
+            combos,
+            streak_limit,
+            ..
+        } => {
+            if let Some(combos) = combos {
+                for combo in combos {
+                    for err in rank_combo_errors(combo, team_size, seats_count) {
+                        push(
+                            ErrorCode::RsSchemaInvalid,
+                            &format!("{loc_prefix}.combos"),
+                            err,
+                        );
+                    }
+                }
+            }
+            if !(1..=3).contains(streak_limit) {
+                push(
+                    ErrorCode::RsSchemaInvalid,
+                    &format!("{loc_prefix}.streakLimit"),
+                    format!("streakLimit 必须在 1–3 之间，实际 {streak_limit}"),
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn validate(ruleset: &RuleSetBody, levels: &[Level]) -> Validation {
     let mut result = Validation::default();
 
@@ -536,6 +619,13 @@ pub fn validate(ruleset: &RuleSetBody, levels: &[Level]) -> Validation {
             }
             _ => {}
         }
+        gate_primitive_params(
+            &pattern.params,
+            &format!("patterns[{i}].params"),
+            team_size,
+            ruleset.seats.count,
+            &mut push,
+        );
     }
     for (i, action) in ruleset.actions.iter().enumerate() {
         if let PrimitiveParams::Reserved { primitive_id } = &action.params {
@@ -545,6 +635,13 @@ pub fn validate(ruleset: &RuleSetBody, levels: &[Level]) -> Validation {
                 format!("原语 `{primitive_id}` 属 v2 预留 / v1 未启用，v1 解释器不收录"),
             );
         }
+        gate_primitive_params(
+            &action.params,
+            &format!("actions[{i}].params"),
+            team_size,
+            ruleset.seats.count,
+            &mut push,
+        );
         // §5.1 第 392 行：`turn` 是 play 内轮次子阶段，不是合法 legalFrom 取值。
         if let LegalFrom::Zone(zone) = &action.legal_from {
             if zone.0 == "turn" {
