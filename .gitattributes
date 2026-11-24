@@ -1,0 +1,20 @@
+# 统一行尾：仓库内存 LF，检出一律 LF。
+# 本机 core.autocrlf=true 会把 LF 检出成 CRLF，每次提交都刷 warning，
+# 且 Windows 与 CI 两套行尾容易在整文件重写时产生噪音 diff。
+* text=auto eol=lf
+
+# 二进制资源不参与文本转换（否则会被当文本做行尾规范化，破坏文件）
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.webp   binary
+*.ico    binary
+*.ttf    binary
+*.otf    binary
+*.woff   binary
+*.woff2  binary
+*.zip    binary
+*.gz     binary
+*.pdf    binary
+*.wasm   binary
