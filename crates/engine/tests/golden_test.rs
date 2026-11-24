@@ -8,9 +8,9 @@ use gf_engine::engine::{M0Engine, PHASE_SETTLE};
 use gf_engine::hash::{canonical_bytes, state_hash, CanonicalState};
 
 /// native 用例跑出并核对过动作日志后的 32 字节 stateHash（双端逐字节比对锚点）。
-/// §5.2 随机源口径变更（20 字节 BLAKE3 + 拒绝采样 + Fisher-Yates 降序）后重算。
+/// 轮转 / 接风按 `flow.turn` 接线（`partnerLead` 生效）后轨迹变化，本锚点已重算。
 const EXPECTED_STATE_HASH: &str =
-    "925e4018c4c51ef276d9bfbb754038fc00c81c6eadb7c5a3cf60e16e3af281ac";
+    "375719e335d0384c8af47adf54a6371c50a591c9ca9c23b5d8a1f9a63593a696";
 
 #[test]
 fn golden_reaches_settle_and_matches_recorded_hash() {
@@ -68,18 +68,18 @@ fn golden_reaches_settle_and_matches_recorded_hash() {
         outcome.completed_team, expected_completed,
         "completed_team 应等于先全员出完的队"
     );
-    // 当前种子实测为 1+4 形态（finish_order=[2,1,3,0]：头游 seat2 属队 0，
-    // 对家 seat1/seat3 占 2、3 名，队友 seat0 补末名）；此形态下
-    // completed_team（对家队）与 winner_team（头游队）不相等，二者不许互相替代。
-    let winner_is_1plus4 = expected_winner
-        .map(|w| teams[w as usize].contains(&outcome.finish_order[3]))
-        .unwrap_or(false);
-    if winner_is_1plus4 {
-        assert_ne!(
-            outcome.completed_team, outcome.winner_team,
-            "1+4 形态下 completed_team（对家队）不等于 winner_team（头游队）"
-        );
-    }
+    // 当前种子实测为 1+3 形态（finish_order=[1,2,3,0]：头游 seat1 属队 1，队友 seat3 占
+    // 第 3 名，对家 seat2、seat0 夹第 2、4 名）；此形态下 winner_team（头游队）与
+    // completed_team（先全员出完的队）同为队 1，二者不是 1+4 下的对家关系。
+    assert_eq!(
+        outcome.finish_order,
+        vec![1, 2, 3, 0],
+        "收尾名次应与实测 1+3 形态一致"
+    );
+    assert_eq!(
+        outcome.completed_team, outcome.winner_team,
+        "1+3 形态下 completed_team 与 winner_team 同为头游队"
+    );
     let hex: String = outcome
         .state_hash
         .iter()
