@@ -132,7 +132,7 @@ pub enum PrimitiveParams {
     },
     LevelUpgrade,
     LevelPass {
-        combos: Vec<[u8; 2]>,
+        combos: Option<Vec<Vec<u8>>>,
         streak_limit: u8,
         reset_on_fail: bool,
     },
@@ -282,15 +282,13 @@ struct LevelCurrentRaw {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LevelPassRaw {
-    #[serde(default = "default_combos")]
-    combos: Vec<[u8; 2]>,
+    // 缺省 combos 只在 teamSize = 2 时有定义；dispatch 拿不到 seats 上下文，
+    // 默认值是否成立由 L1 顶层 `level.pass.combos` 闸门判定（§5.1 `level` 行）。
+    combos: Option<Vec<Vec<u8>>>,
     #[serde(rename = "streakLimit", default = "default_one_u8")]
     streak_limit: u8,
     #[serde(rename = "resetOnFail", default = "default_true")]
     reset_on_fail: bool,
-}
-fn default_combos() -> Vec<[u8; 2]> {
-    vec![[1, 2], [1, 3]]
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

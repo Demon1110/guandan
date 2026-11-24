@@ -5,9 +5,37 @@
 
 use crate::contract::{ErrorCode, Finding, Level, Validation};
 use crate::ruleset::ladder;
-use crate::ruleset::model::{FlushRank, LegalFrom, RuleSetBody};
+use crate::ruleset::model::{FlushRank, LegalFrom, RuleSetBody, ScoreDimension, UpgradeBasis};
 use crate::ruleset::params::PrimitiveParams;
 use std::collections::HashSet;
+
+/// 校验一个名次组合（`teamRanks` / `pass.combos` 共用同一套名次编码，§5.1）：
+/// 长度 = `teamSize`、元素 `1..=seats.count`、互不相同且升序。返回逐条错误消息。
+fn rank_combo_errors(combo: &[u8], team_size: Option<usize>, seats_count: u8) -> Vec<String> {
+    let mut errs = Vec::new();
+    if let Some(ts) = team_size {
+        if combo.len() != ts {
+            errs.push(format!(
+                "名次组合 {:?} 长度 {} ≠ teamSize {ts}",
+                combo,
+                combo.len()
+            ));
+        }
+    }
+    if combo.iter().any(|r| !(1..=seats_count).contains(r)) {
+        errs.push(format!(
+            "名次组合 {:?} 元素必须在 1..={seats_count} 之间",
+            combo
+        ));
+    }
+    if combo.windows(2).any(|w| w[0] == w[1]) {
+        errs.push(format!("名次组合 {:?} 元素不得重复", combo));
+    }
+    if combo.windows(2).any(|w| w[0] > w[1]) {
+        errs.push(format!("名次组合 {:?} 必须按升序规范书写", combo));
+    }
+    errs
+}
 
 pub fn validate(ruleset: &RuleSetBody, levels: &[Level]) -> Validation {
     let mut result = Validation::default();
@@ -91,52 +119,202 @@ pub fn validate(ruleset: &RuleSetBody, levels: &[Level]) -> Validation {
         }
     }
 
-    // —— levelTable.upgrade[]：teamRanks 不得重复、step 1–3（§5.1 第 383 行） ——
-    if let Some(table) = &ruleset.level_table {
-        let mut seen: HashSet<[u8; 2]> = HashSet::new();
-        for row in &table.upgrade {
-            if !seen.insert(row.team_ranks) {
+    // —— seats.teams：各队规模一致才可确定 teamSize（§5.1 第 380 行、§5.4 L1） ——
+    // 队伍覆盖不全 / 重叠属 L2（RS_TEAM_COVERAGE_INVALID），本轮不实现。
+    let team_size: Option<usize> = {
+        let teams = &ruleset.seats.teams;
+        if teams.is_empty() {
+            push(
+                ErrorCode::RsSchemaInvalid,
+                "seats.teams",
+                "teams 不能为空队伍集合；队伍覆盖/重叠校验属 L2（RS_TEAM_COVERAGE_INVALID）"
+                    .to_owned(),
+            );
+            None
+        } else {
+            let first = teams[0].len();
+            let inconsistent = teams.iter().any(|t| t.len() != first);
+            if inconsistent {
+                let sizes: Vec<usize> = teams.iter().map(|t| t.len()).collect();
                 push(
                     ErrorCode::RsSchemaInvalid,
-                    "levelTable.upgrade",
-                    format!("teamRanks {:?} 重复出现", row.team_ranks),
+                    "seats.teams",
+                    format!(
+                        "各队规模不一致（{sizes:?}），无法确定 teamSize；队伍覆盖本身属 L2（RS_TEAM_COVERAGE_INVALID）"
+                    ),
                 );
+                None
+            } else {
+                Some(first)
             }
-            if !(1..=3).contains(&row.step) {
-                push(
-                    ErrorCode::RsSchemaInvalid,
-                    "levelTable.upgrade.step",
-                    format!("step 必须在 1–3 之间，实际 {}", row.step),
-                );
+        }
+    };
+
+    // flow.score.dimension 缺省 team（§5.1 第 411 行）；未声明 flow 视为 team，视为满足。
+    let score_dimension_team = ruleset
+        .flow
+        .as_ref()
+        .and_then(|f| f.score.as_ref())
+        .and_then(|s| s.dimension)
+        != Some(ScoreDimension::Player);
+
+    // —— levelTable：basis 互斥键集、rank-combo 名次组合 / step、score-diff 分值表（§5.1 第 383 行、§5.4 L1） ——
+    if let Some(table) = &ruleset.level_table {
+        match table.upgrade_basis {
+            UpgradeBasis::RankCombo => {
+                if table.upgrade.is_none() {
+                    push(
+                        ErrorCode::RsSchemaInvalid,
+                        "levelTable.upgrade",
+                        "rank-combo basis 要求 upgrade[] 齐备".to_owned(),
+                    );
+                }
+                if table.rank_scores.is_some() || table.upgrade_by_diff.is_some() {
+                    push(
+                        ErrorCode::RsSchemaInvalid,
+                        "levelTable.rankScores",
+                        "rank-combo basis 不得出现 rankScores / upgradeByDiff（两个 basis 键集互斥）".to_owned(),
+                    );
+                }
+                if let Some(rows) = &table.upgrade {
+                    let mut seen: HashSet<Vec<u8>> = HashSet::new();
+                    for (i, row) in rows.iter().enumerate() {
+                        let loc = format!("levelTable.upgrade[{i}].teamRanks");
+                        for err in
+                            rank_combo_errors(&row.team_ranks, team_size, ruleset.seats.count)
+                        {
+                            push(ErrorCode::RsSchemaInvalid, &loc, err);
+                        }
+                        if !seen.insert(row.team_ranks.clone()) {
+                            push(
+                                ErrorCode::RsSchemaInvalid,
+                                &loc,
+                                format!("teamRanks {:?} 与另一条重复", row.team_ranks),
+                            );
+                        }
+                        if !(0..=3).contains(&row.step) {
+                            push(
+                                ErrorCode::RsSchemaInvalid,
+                                &format!("levelTable.upgrade[{i}].step"),
+                                format!(
+                                    "step 必须在 0–3 之间（0 = 该组合不升档），实际 {}",
+                                    row.step
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+            UpgradeBasis::ScoreDiff => {
+                if table.upgrade.is_some() {
+                    push(
+                        ErrorCode::RsSchemaInvalid,
+                        "levelTable.upgrade",
+                        "score-diff basis 要求 upgrade[] 缺席".to_owned(),
+                    );
+                }
+                match (&table.rank_scores, &table.upgrade_by_diff) {
+                    (Some(scores), Some(diff_rows)) => {
+                        if scores.len() != ruleset.seats.count as usize {
+                            push(
+                                ErrorCode::RsSchemaInvalid,
+                                "levelTable.rankScores",
+                                format!(
+                                    "rankScores 长度必须等于 seats.count（{}），实际 {}",
+                                    ruleset.seats.count,
+                                    scores.len()
+                                ),
+                            );
+                        }
+                        let mut prev: Option<u16> = None;
+                        let mut has_zero_fallback = false;
+                        for (i, row) in diff_rows.iter().enumerate() {
+                            if row.min_diff == 0 {
+                                has_zero_fallback = true;
+                            }
+                            if let Some(p) = prev {
+                                if row.min_diff > p {
+                                    push(
+                                        ErrorCode::RsSchemaInvalid,
+                                        &format!("levelTable.upgradeByDiff[{i}].minDiff"),
+                                        format!(
+                                            "minDiff {} 未按降序排列（前一条 {p}）",
+                                            row.min_diff
+                                        ),
+                                    );
+                                }
+                            }
+                            prev = Some(row.min_diff);
+                            if !(0..=3).contains(&row.step) {
+                                push(
+                                    ErrorCode::RsSchemaInvalid,
+                                    &format!("levelTable.upgradeByDiff[{i}].step"),
+                                    format!("step 必须在 0–3 之间，实际 {}", row.step),
+                                );
+                            }
+                        }
+                        if !has_zero_fallback {
+                            push(
+                                ErrorCode::RsSchemaInvalid,
+                                "levelTable.upgradeByDiff",
+                                "upgradeByDiff 必须含一条 minDiff: 0 兜底".to_owned(),
+                            );
+                        }
+                        if !score_dimension_team {
+                            push(
+                                ErrorCode::RsSchemaInvalid,
+                                "flow.score.dimension",
+                                "score-diff basis 要求 flow.score.dimension = team".to_owned(),
+                            );
+                        }
+                    }
+                    _ => {
+                        push(
+                            ErrorCode::RsSchemaInvalid,
+                            "levelTable.upgradeByDiff",
+                            "score-diff basis 要求 rankScores[] 与 upgradeByDiff[] 齐备".to_owned(),
+                        );
+                    }
+                }
             }
         }
     }
 
     // —— level.pass.combos / streakLimit（§5.1 第 384 行、§5.2 第 537 行） ——
-    // G2（待裁决）：§5.1/§5.2 两处写 1–3，§5.4 第 569 行写「1–9」；按两处一致的 1–3 实现，
-    // §5.4 那处记为笔误待裁决。
+    // streakLimit 值域 1–3（§5.4 L1 已对齐；原 1–9 为笔误）。
     if let Some(level) = &ruleset.level {
-        if level.pass.combos.is_empty() {
+        let combos: Vec<Vec<u8>> = match &level.pass.combos {
+            Some(c) => c.clone(),
+            None => match team_size {
+                Some(2) => vec![vec![1, 2], vec![1, 3]],
+                _ => {
+                    push(
+                        ErrorCode::RsSchemaInvalid,
+                        "level.pass.combos",
+                        "缺省 combos 只在 teamSize = 2 时有定义；teamSize ≠ 2 时必须显式声明"
+                            .to_owned(),
+                    );
+                    Vec::new()
+                }
+            },
+        };
+        if combos.is_empty() {
             push(
                 ErrorCode::RsSchemaInvalid,
                 "level.pass.combos",
                 "pass.combos 不得为空表".to_owned(),
             );
         }
-        for combo in &level.pass.combos {
-            let [a, b] = *combo;
-            if !(1..=4).contains(&a) || !(1..=4).contains(&b) {
-                push(
-                    ErrorCode::RsSchemaInvalid,
-                    "level.pass.combos",
-                    format!("名次组合 {:?} 元素必须在 1–4 之间", combo),
-                );
+        let mut seen: HashSet<Vec<u8>> = HashSet::new();
+        for combo in &combos {
+            for err in rank_combo_errors(combo, team_size, ruleset.seats.count) {
+                push(ErrorCode::RsSchemaInvalid, "level.pass.combos", err);
             }
-            if a == b {
+            if !seen.insert(combo.clone()) {
                 push(
                     ErrorCode::RsSchemaInvalid,
                     "level.pass.combos",
-                    format!("名次组合 {:?} 两值不得相同", combo),
+                    format!("名次组合 {:?} 与另一条重复", combo),
                 );
             }
         }
@@ -247,6 +425,78 @@ pub fn validate(ruleset: &RuleSetBody, levels: &[Level]) -> Validation {
         );
     }
 
+    // —— tribute 必填性与 pairs 值域（§5.1 第 390 行、§5.2 第 531–534 行） ——
+    match &ruleset.tribute {
+        None => push(
+            ErrorCode::RsSchemaInvalid,
+            "tribute",
+            "tribute 段必填（§5.1 `tribute` 行：掼蛋必填，缺省即拒）".to_owned(),
+        ),
+        Some(t) => {
+            if t.enabled {
+                if t.trigger.is_none() {
+                    push(
+                        ErrorCode::RsSchemaInvalid,
+                        "tribute.trigger",
+                        "enabled=true 时 trigger 必填".to_owned(),
+                    );
+                }
+                match &t.pairs {
+                    None => push(
+                        ErrorCode::RsSchemaInvalid,
+                        "tribute.pairs",
+                        "enabled=true 时 pairs 必填".to_owned(),
+                    ),
+                    Some(pairs) if pairs.is_empty() => push(
+                        ErrorCode::RsSchemaInvalid,
+                        "tribute.pairs",
+                        "pairs 不得为空表".to_owned(),
+                    ),
+                    Some(_) => {}
+                }
+                if t.return_.is_none() {
+                    push(
+                        ErrorCode::RsSchemaInvalid,
+                        "tribute.return",
+                        "enabled=true 时 return 必填（ceiling/count/fallback 三键齐全）".to_owned(),
+                    );
+                }
+                if t.resist.is_none() {
+                    push(
+                        ErrorCode::RsSchemaInvalid,
+                        "tribute.resist",
+                        "enabled=true 时 resist 必填".to_owned(),
+                    );
+                }
+            }
+            // pairs 值域：payer/receiver 为名次数值 1..=seats.count（§5.1 第 390 行），显式给出即校验。
+            if let Some(pairs) = &t.pairs {
+                for (j, pair) in pairs.iter().enumerate() {
+                    if !(1..=ruleset.seats.count).contains(&pair.payer) {
+                        push(
+                            ErrorCode::RsSchemaInvalid,
+                            &format!("tribute.pairs[{j}].payer"),
+                            format!(
+                                "payer 必须在 1..={} 之间，实际 {}",
+                                ruleset.seats.count, pair.payer
+                            ),
+                        );
+                    }
+                    if !(1..=ruleset.seats.count).contains(&pair.receiver) {
+                        push(
+                            ErrorCode::RsSchemaInvalid,
+                            &format!("tribute.pairs[{j}].receiver"),
+                            format!(
+                                "receiver 必须在 1..={} 之间，实际 {}",
+                                ruleset.seats.count, pair.receiver
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     // —— v2 预留 / v1 未启用 / 未知原语引用即拒绝（§5.2 第 547–549 行） ——
     for (i, pattern) in ruleset.patterns.iter().enumerate() {
         if let PrimitiveParams::Reserved { primitive_id } = &pattern.params {
@@ -255,6 +505,36 @@ pub fn validate(ruleset: &RuleSetBody, levels: &[Level]) -> Validation {
                 &format!("patterns[{i}].primitiveId"),
                 format!("原语 `{primitive_id}` 属 v2 预留 / v1 未启用，v1 解释器不收录"),
             );
+        }
+    }
+
+    // —— patterns[].params 取值范围（§5.2 参数表第 513–518 行） ——
+    for (i, pattern) in ruleset.patterns.iter().enumerate() {
+        let mut range = |field: &str, value: u8, lo: u8, hi: u8, what: &str| {
+            if !(lo..=hi).contains(&value) {
+                push(
+                    ErrorCode::RsSchemaInvalid,
+                    &format!("patterns[{i}].params.{field}"),
+                    format!("{what} 必须在 {lo}–{hi} 之间，实际 {value}"),
+                );
+            }
+        };
+        match &pattern.params {
+            PrimitiveParams::SameRank { count } => range("count", *count, 1, 8, "same-rank count"),
+            PrimitiveParams::Straight { length, .. } => {
+                range("length", *length, 5, 12, "straight length")
+            }
+            PrimitiveParams::ConsecutivePairs { pairs } => {
+                range("pairs", *pairs, 2, 10, "consecutive-pairs pairs")
+            }
+            PrimitiveParams::ConsecutiveTriples { triples } => {
+                range("triples", *triples, 2, 6, "consecutive-triples triples")
+            }
+            PrimitiveParams::Bomb { count } => range("count", *count, 4, 8, "bomb count"),
+            PrimitiveParams::StraightFlush { length } => {
+                range("length", *length, 5, 12, "straight-flush length")
+            }
+            _ => {}
         }
     }
     for (i, action) in ruleset.actions.iter().enumerate() {

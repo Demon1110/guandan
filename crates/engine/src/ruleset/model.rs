@@ -115,17 +115,13 @@ pub enum TributeTrigger {
     LastRoundRank,
 }
 
-/// 名次枚举：first/second/third/fourth，无 `last` 别名（§5.1 `tribute.pairs`）。
+/// 升级判定 basis（§5.1 `levelTable.upgradeBasis`）：默认 `rank-combo`。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-pub enum SeatRank {
-    #[serde(rename = "first")]
-    First,
-    #[serde(rename = "second")]
-    Second,
-    #[serde(rename = "third")]
-    Third,
-    #[serde(rename = "fourth")]
-    Fourth,
+pub enum UpgradeBasis {
+    #[serde(rename = "rank-combo")]
+    RankCombo,
+    #[serde(rename = "score-diff")]
+    ScoreDiff,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -345,29 +341,49 @@ pub enum ZoneScope {
     Shared,
 }
 
-/// `levelTable.upgrade[]` 单行（§5.1）。
+/// `levelTable.upgrade[]` 单行（§5.1）。`teamRanks` 长度随 `teamSize` 参数化，L1 校验。
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpgradeRow {
     #[serde(rename = "teamRanks")]
-    pub team_ranks: [u8; 2],
+    pub team_ranks: Vec<u8>,
     pub step: u8,
 }
 
-/// 级牌表本体（§5.1 `levelTable`）。
+/// `levelTable.upgradeByDiff[]` 单行（§5.1 `score-diff` basis：按两队分值差升级）。
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpgradeDiffRow {
+    #[serde(rename = "minDiff")]
+    pub min_diff: u16,
+    pub step: u8,
+}
+
+fn default_upgrade_basis() -> UpgradeBasis {
+    UpgradeBasis::RankCombo
+}
+
+/// 级牌表本体（§5.1 `levelTable`）。两个 basis 的键集互斥，L1 校验（§5.4 L1）。
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LevelTable {
     pub id: String,
     pub initial: RankKey,
     pub ranks: Vec<RankKey>,
-    pub upgrade: Vec<UpgradeRow>,
+    #[serde(rename = "upgradeBasis", default = "default_upgrade_basis")]
+    pub upgrade_basis: UpgradeBasis,
+    pub upgrade: Option<Vec<UpgradeRow>>,
+    #[serde(rename = "rankScores")]
+    pub rank_scores: Option<Vec<u16>>,
+    #[serde(rename = "upgradeByDiff")]
+    pub upgrade_by_diff: Option<Vec<UpgradeDiffRow>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PassConfig {
-    pub combos: Vec<[u8; 2]>,
+    /// 名次组合，长度随 `teamSize` 参数化；缺省仅在 `teamSize = 2` 时有定义（§5.1 `level` 行）。
+    pub combos: Option<Vec<Vec<u8>>>,
     #[serde(rename = "streakLimit")]
     pub streak_limit: u8,
     #[serde(rename = "resetOnFail")]
@@ -492,8 +508,9 @@ pub struct CompareConfig {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TributePair {
-    pub payer: SeatRank,
-    pub receiver: SeatRank,
+    /// 名次数值 `1..=seats.count`（`1` 即头游，§5.1 `tribute` 行），L1 校验值域。
+    pub payer: u8,
+    pub receiver: u8,
     pub when: TributeWhen,
 }
 
@@ -512,13 +529,14 @@ pub struct TributePay {
     pub selection: PaySelection,
 }
 
-/// `tribute` 段（§5.1）。`enabled=false` 时整段不运行；本轮夹具整段省略（G6）。
+/// `tribute` 段（§5.1）。缺段由 L1 按必填拒绝（location `tribute`）；
+/// `enabled=false` 时其余子键可整段省略，`enabled=true` 时 `trigger`/`pairs`/`return`/`resist` 必填。
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TributeConfig {
     pub enabled: bool,
     pub trigger: Option<TributeTrigger>,
-    pub pairs: Vec<TributePair>,
+    pub pairs: Option<Vec<TributePair>>,
     #[serde(rename = "return")]
     pub return_: Option<TributeReturn>,
     pub resist: Option<TributeResist>,
