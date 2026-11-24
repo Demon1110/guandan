@@ -732,10 +732,16 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 | C→S | `Heartbeat` | `matchId, seat, clientSeq` | 客户端每 15 秒一次；服务端 30 秒内未收到该座位任何消息即判掉线（**唯一判定点**，§6.2 同步） |
 | S→C | `RoomSnapshot` | `matchId, seat, rulesetId, rulesetVersion, roomSeq, lastSeatSeq, viewHash, viewSchemaVersion, view, snapshotReset` | 全量视图（按 `view.fields` 裁剪）。`rulesetId`/`rulesetVersion` 为房间创建时锁定的 RuleSet 身份与版本，与 `viewSchemaVersion` 组成客户端白名单缓存键 `(rulesetId, viewSchemaVersion)`（§9.2）。`view` 的类型是 **`bytes`**，内容是 canonical JSON，编码规则见 §5.12；`viewSchemaVersion: u16` 是这份 `view` 用的白名单版本（取自 RuleSet `view.schemaVersion`，房间创建时锁定）；**不下发 `stateHash`**；`snapshotReset: bool`，缺省 false，true 表示客户端必须丢弃本地状态并接受本快照（§6.2） |
 | S→C | `RoomDelta` | `matchId, roomSeq, events[]` | 增量事件；断线期间存最近 200 条（§6.2）。`roomSeq` 是房间广播序；本消息是房间广播，**不带 `seatSeq`**，座位水位只在 `Reconnect`/`ActionAck` 按座位传递 |
-| S→C | `ActionAck` | `requestId, seatSeq, roomSeq, accepted, reason?` | 回执；`reason` 取 §5.7 错误码**全表** |
+| S→C | `ActionAck` | `requestId, seatSeq, roomSeq, accepted, reason?` | 回执；`reason` 为 **ASCII 字符串**，取值必须来自 §5.7 错误码**全表**（不在表内即服务端违约，P0 审计项）；`accepted=true` 时该字段不出现（第二十四次变更） |
 | S→C | `PhaseChange` | `phase, deadlineMs` | 阶段切换（发牌/进贡/出牌/结算） |
-| S→C | `SettleResult` | `roundNo, roomSeq, result, levelsAfter, nextDealInMs` | 结算广播；`levelsAfter` 是**每队**级牌（§5.13）；`roomSeq` 是本帧房间广播序。本帧不携带 `viewHash`，客户端不重算视图哈希（§5.12/§7.2） |
+| S→C | `SettleResult` | `roundNo, roomSeq, result, levelsAfter, nextDealInMs, reason?` | 结算广播；`result` 为 **`bytes`（canonical JSON）**，结构与 §7.x `round_record.result`（`settlement`）同构：`{winner_team, ranks, points}`，编码规则见下方「三类载体」；`levelsAfter` 是**每队**级牌（§5.13）；`roomSeq` 是本帧房间广播序；`reason` 为 ASCII 字符串、取自 §5.7 全表，仅在结算异常时出现。本帧不携带 `viewHash`，客户端不重算视图哈希（§5.12/§7.2）（第二十四次变更） |
 | S→C | `TrusteeState` | `seat, mode(ai\|human), reason` | 托管状态变化 |
+
+**三类协议载体的取值（第二十四次变更，2026-11-24 用户裁定 A，冻结）**
+
+1. **`SettleResult.result`**：类型 `bytes`，内容为 canonical JSON，编码规则与 §5.12「视图编码」六条完全一致（键序按 `settlement` 结构固定为 `winner_team, ranks, points`；单行、无空白、不写 `null`；`ranks` 为按名次 1→n 的 `seat` 数组、`points` 为整数）。**允许随玩法扩展**：新增结算字段只能追加在 `points` 之后，不得改序、不得改名；proto 侧不设结构体，客户端按 `roundNo` 对应的 `rulesetVersion` 解析。
+2. **`ActionAck.reason` / `SettleResult.reason`**：类型 `string`，**ASCII**，取值必须来自 §5.7 错误码全表；不在表内的字符串即服务端违约，按 P0 审计项处理（与「白名单外字段」同一处置口径）。`accepted=true` / 结算正常时该字段不出现（不写空串、不写 `null`）。
+3. **`rulesetVersion`**（含 `RoomSnapshot.rulesetVersion`、`SettleResult` 间接引用与快照内同名字段）：类型 `string`，字符集 `[A-Za-z0-9._-]`、长度 **1–32**；只作**身份键**，**禁止按字符串字典序比较大小**（版本大小语义不适用），仅在 `(engineVersion, interpreterVersion, rulesetVersion)` 三元组**相等性**判定里使用（§5.12/§10.4）。
 
 **`SubmitAction.payload` 按 `kind` 分型**（proto 用 `oneof`，每型独立消息）：
 
@@ -1642,6 +1648,7 @@ P0 之外不做自动干预，只有两项自动动作：`canary` 指标超标�
 | 第二十一次变更（整手全百搭边界闭合） | 2026-11-24，M1 实现期最后一处设计空白：B1 已定"含整手全百搭按自身级牌点数使用"，但未说"张数如何映射到牌型"，而本副牌百搭只有 2 张、">2 张全百搭"物理不可达，实现侧无从判定。用户裁决 **A（现在就闭合）**。据此定：整手全百搭一律按自身点数取同一 `rankKey`，**张数直接决定牌型**（1 `single`、2 `pair`、3 `triple`、4–8 `bomb-N`），不得判成顺子/三连对/钢板/三带二/同花顺（同 `rankKey` 既无连续也无异花色）；该条与 `deck.copies` 无关，多副牌同样适用、不另设上限；张数超出牌型表已声明值域（>8 张或未声明该张数炸弹）按 `IllegalAction` 拒，不降级。**未动**：逢人配张数不限、`rankKey` 取解序、`joker-bomb` 不收百搭、`wildcard.inStraightFlush=true`、其余 §5.10 取值 | §5.13（逢人配行）；§12.2 |
 | 第二十二次变更（视图补全：局级牌与打级队进视图） | 2026-11-24，B3 落地后暴露的连带缺口：白名单只有 `seat.levels`（两队档位），而 B3 之后**只有打级队那一份参与牌力**，客户端要渲染"级牌是哪张"必须知道是哪一队、哪一档；若让客户端自行推理，断线重连与中途加入的座位推不出 `attackingTeam`，渲染错牌而服务端 `viewHash` 自证查不出来。用户选 **B（直接下发）**。据此：①`view.fields` 允许的写法由三类扩到五类，新增 `round.level`（本局局级牌档位下标 = `levels[attackingTeam]`）与 `round.attackingTeam`（本局打级队序号）；②两者都是桌面公开信息（谁先出、谁打级人人可见），不构成信息泄露；③示例 YAML 的白名单按"只增不改序"追加两键、`view.schemaVersion` 由 1 升 **2**；④§5.12 字段级编码表新增两行（`u8` 单值、无级牌状态与 `score-only` 局该键不出现）；⑤定值向量随白名单序重算为 169 字节 canonical JSON、SHA-256 `36e7bdc6…ab51`（旧向量 `9e0b756d…cc72`、129 字节作废）；⑥`viewHash` 全部既有值随之作废，需随实现一并重算。**未动**：`stateHash` 段集与段数、`RoomSnapshot` 字段集、`lastPlay` 与 zone 编码、`seat.levels` 口径 | §5.1（`view` 行、示例 YAML）；§5.12（字段级编码表、定值向量）；§12.2 |
 | 第二十三次变更（跨局序号连续口径） | 2026-11-24，M1 的"再来一局"硬 gate 会撞上这条：一局结束进入下一局时 `roomSeq`/`seatSeq` 是否归零，设计稿只写了"均从 0 起算"，没说跨局。用户选 **A（连续、不归零）**。据此：①两个序号**在每场（match）内跨局连续递增**，只有新一场（`matchId` 变化）才从 0 起算；`snapSeq` 与 `roomSeq` 同一序列、同样连续；②**局切换不靠序号归零判断**，由 `SettleResult.roundNo` 与下一局 `DealEvent` 标识，客户端只需"严格递增"一条规则；③`ActionRecord` 与 `actions.jsonl` 增 `roundNo: u16`，回放按它切段；④旧口径"每个序号每局从 0 起算"作废。**未动**：`STALE_SEQ` 只按座位水位判定、`roomSeq`/`seatSeq` 字段名分工、重放水位一律用 `roomSeq`、`snapSeq` 与 `roomSeq` 同源 | §6.2（序号作用域）；§6.5（动作记录）；§9.4（回放包 `actions.jsonl`）；§12.2 |
+| 第二十四次变更（三类协议载体冻结） | 2026-11-24，M0 backlog 里挂着的三个待冻结载体（`SettleResult.result` 编码、`reason` 类型、`rulesetVersion` 载体）一直是实现侧的 TODO 项。用户裁定 **A（一次性全冻结）**：①`SettleResult.result` 定为 `bytes` + canonical JSON，与 §5.12 视图编码同一六条规则，结构同 `round_record.result`（`{winner_team, ranks, points}`），新增字段只能追加在 `points` 之后、不改序不改名；②`ActionAck.reason`/`SettleResult.reason` 定为 ASCII 字符串、取值必须来自 §5.7 全表，表外即服务端违约（P0）；正常时字段不出现；③`rulesetVersion` 定为 `string`，字符集 `[A-Za-z0-9._-]`、长度 1–32，只作身份键、**禁止按字符串比大小**，仅用于版本三元组相等判定；④`SettleResult` 帧增可选 `reason?`。**未动**：帧集与其余字段、`stateHash`、视图编码、错误码表取值 | §6.5（协议帧表与「三类载体」块）；§12.2 |
 
 **留痕的意义**：评审时若发现"为什么一个棋牌项目要 40～44 周"，答案在 12.2 而不是在某一节的数字里；若未来要缩范围，也按 12.2 的变更顺序倒着砍。
 

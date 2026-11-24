@@ -731,6 +731,18 @@
 - **代价**：`ActionRecord` 结构变化 → `actions.jsonl` 与回放包 schema 加一列，服务端写日志的路径要同步；旧口径「每局归零」作废。
 - **未动**：`STALE_SEQ` 判定口径、两个序号的字段分工、重放水位一律 `roomSeq`。
 
+## 第二十四次变更：三类协议载体冻结（2026-11-24）
+
+- **触发**：`SettleResult.result` 编码、`reason` 类型、`rulesetVersion` 载体三项在 M0 backlog 里挂着，实现侧只能留 TODO。
+- **用户裁定**：「选 a」（一次性全冻结）。
+- **落码**：
+  - `SettleResult.result: bytes`，canonical JSON，规则与 §5.12 视图编码同一套；结构同 `round_record.result`（`{winner_team, ranks, points}`），新增字段只能追加在末尾。
+  - `ActionAck.reason` / `SettleResult.reason`：ASCII 字符串，取值必须在 §5.7 全表内，表外即 P0 违约；正常时字段不出现。
+  - `rulesetVersion`: string，`[A-Za-z0-9._-]`、1–32 字符；只作身份键、禁止按字符串比大小，只用于版本三元组相等判定。
+  - `SettleResult` 增可选 `reason?`。
+- **代价**：proto 里 `result` 保持 `bytes`（无静态结构），客户端解析依赖 `rulesetVersion`；CI 需加一条"`reason` 必须来自错误码全表"的断言，否则拼错会漏过。
+- **未动**：帧集、其余字段、`stateHash`、视图编码、错误码表取值。
+
 ## 未决问题（等用户拍板）
 
 | # | 问题 | 需要谁决定 | 状态 |
