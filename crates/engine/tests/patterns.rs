@@ -1085,6 +1085,33 @@ fn joker_bomb_rejects_wildcard() {
     assert_illegal(apply_play(&engine, four.clone(), four), "3 王 + 百搭");
 }
 
+#[test]
+fn wildcard_straight_flush_makes_flush() {
+    let r = fixture_body();
+    let engine = engine();
+    // 黑桃 2-3-4-5（下标 0/1/2/3）+ 百搭补 6 → 同花顺 2-3-4-5-6，高点 6 下标 4。
+    // `inStraightFlush=true`（§5.10 第 773 行）后百搭可入同花顺，不得退回普通顺子。
+    let cards = vec![
+        c(&r, 0, 0, 0),
+        c(&r, 1, 0, 0),
+        c(&r, 2, 0, 0),
+        c(&r, 3, 0, 0),
+        w(&r, 0),
+    ];
+    assert_played(
+        apply_play(&engine, cards.clone(), cards.clone()),
+        "straight-flush-5",
+        (5, 4),
+        "百搭补同花顺",
+    );
+    let state = state_with(&engine, cards.clone());
+    let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
+    assert!(
+        plays_contain(&legal, &cards),
+        "百搭同花顺应进枚举: {legal:?}"
+    );
+}
+
 // ---------- 跨型压制边界（§5.13 第 894/895 行：非同型非炸弹不能压） ----------
 
 fn plays_contain(legal: &[Action], cards: &[u16]) -> bool {
