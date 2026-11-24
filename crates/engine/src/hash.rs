@@ -1,7 +1,7 @@
-//! `stateHash` 九段拼接（§5.12 第 791–802 行、第 833–838 行）。
+//! `stateHash` 十段拼接（§5.12 第 791–802 行、第 833–838 行）。
 //!
 //! 纪律（§3.3 约束 2、§5.12「规范化与序列化」）：
-//! - 九段固定顺序、显式字段序、little-endian、定宽整数；
+//! - 十段固定顺序、显式字段序、little-endian、定宽整数；
 //! - 字符串 UTF-8 不做 NFC 归一化；
 //! - 不依赖 `HashMap` 迭代顺序与 struct 字段声明顺序；排序给全序；
 //! - 哈希函数固定 BLAKE3-256（32 字节）；对外呈现取前 8 字节 = 16 个十六进制字符；
@@ -44,7 +44,7 @@ pub struct RngState {
 
 /// §5.12 第 791 行明确要求用这个名字的固定结构体。
 ///
-/// 字段即 §5.12 第 2–10 项的九段；第 1 项版本三元组旁挂在 [`HashBundle`]。
+/// 字段即 §5.12 第 2–11 项的十段；第 1 项版本三元组旁挂在 [`HashBundle`]。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CanonicalState {
     /// 第 2 段：phase 枚举序号 u16。
@@ -69,11 +69,13 @@ pub struct CanonicalState {
     pub a_fail_streak: Vec<u8>,
     /// 第 10 段：按出完先后升序的座位序列；未出完的座位不列入。
     pub finish_order: Vec<u8>,
+    /// 第 11 段：本局「打级队」队序号，单个 u8、无长度前缀。
+    pub attacking_team: u8,
 }
 
 /// 单向只读投影：`State` 是唯一真源，`CanonicalState` 只做序列化（N6，§5.12 第 837 行）。
 ///
-/// `seed` 原值与 `passes_since_last_play`（N11 运行期记账）不投影进九段。
+/// `seed` 原值与 `passes_since_last_play`（N11 运行期记账）不投影进十段。
 impl From<&crate::contract::State> for CanonicalState {
     fn from(state: &crate::contract::State) -> Self {
         Self {
@@ -88,6 +90,7 @@ impl From<&crate::contract::State> for CanonicalState {
             rng: state.rng.clone(),
             a_fail_streak: state.a_fail_streak.clone(),
             finish_order: state.finish_order.clone(),
+            attacking_team: state.attacking_team,
         }
     }
 }
@@ -138,7 +141,7 @@ impl Writer {
     }
 }
 
-/// 把 [`CanonicalState`] 按九段固定顺序序列化为定宽小端字节流。
+/// 把 [`CanonicalState`] 按十段固定顺序序列化为定宽小端字节流。
 ///
 /// N2（长度前缀宽度，§5.12 第 838 行）：段内元素个数一律 `u8` 前缀（`levels`/`seats`/
 /// `zones`/`seqWatermark`/`finishOrder` 等）；牌 id 数组与字符串（`patternId`）一律 `u16`
@@ -234,6 +237,9 @@ pub fn canonical_bytes(state: &CanonicalState) -> Vec<u8> {
         w.u8(seat);
     }
 
+    // 第 11 段：attackingTeam 单个 u8，无长度前缀（§5.12 第 822 行）。
+    w.u8(state.attacking_team);
+
     w.0
 }
 
@@ -303,6 +309,7 @@ mod tests {
             },
             a_fail_streak: vec![0, 0],
             finish_order: vec![],
+            attacking_team: 0,
         }
     }
 

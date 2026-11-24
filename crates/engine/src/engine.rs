@@ -179,12 +179,35 @@ impl M0Engine {
             counter: 0,
             seed_digest: seed_digest(seed),
         };
+
+        // §5.2 第 560 行 / §5.13 第 876 行：场次首局先 `bounded(总张数)` 取牌 id 下标 `i`；
+        // 抽出的牌不剔出牌堆、正常参与本局，随后才 Fisher–Yates 洗牌并按座位序连续切分；
+        // 切分完按牌 id 定位持牌座位 → 该座位先出、其队即 `attackingTeam`（§5.12 第 822 行）。
+        //
+        // TODO(M0-GAP-SEQ-CROSS-ROUND)：State 目前没有场次/局数计数（跨局携带是未做的 ⑧），
+        // 本笔只能「每局按首局处理」；非首局不抽牌的判据待局数字段落地后再补，此处不造计数。
+        let drawn_card = Self::bounded(&mut rng, seed, stream, total as u64) as u16;
+
         // Fisher–Yates 降序：`for i in (1..n).rev() { j = bounded(i+1); swap(a[i], a[j]) }`，
         // j ∈ 0..=i（§5.2 第 558 行）。
         for i in (1..deck.len()).rev() {
             let j = Self::bounded(&mut rng, seed, stream, i as u64 + 1) as usize;
             deck.swap(i, j);
         }
+
+        // 按牌 id 反查持牌座位：洗牌后该牌落在第 `pos` 个槽位，座位 = `pos / perSeat`。
+        let lead_seat = deck
+            .iter()
+            .position(|&card| card == drawn_card)
+            .map(|pos| pos / per_seat)
+            .unwrap_or(0) as u8;
+        let attacking_team = self
+            .ruleset
+            .seats
+            .teams
+            .iter()
+            .position(|team| team.contains(&lead_seat))
+            .unwrap_or(0) as u8;
 
         let hand_idx = self.hand_zone_index();
         let discard_idx = self.discard_zone_index();
@@ -208,11 +231,27 @@ impl M0Engine {
             });
         }
 
+        // §5.13 第 897 行：两队级牌都从 `levelTable.initial` 起，`levels` 存
+        // `levelTable.ranks` 的下标；G4 score-only 局无 `levelTable`，保持空序列不崩。
+        let team_count = self.ruleset.seats.teams.len();
+        let levels = match &self.ruleset.level_table {
+            Some(table) => {
+                let idx = table
+                    .ranks
+                    .iter()
+                    .position(|rank| rank == &table.initial)
+                    .map(|i| i as u8)
+                    .unwrap_or(0);
+                vec![idx; team_count]
+            }
+            None => Vec::new(),
+        };
+
         Ok(State {
             phase: PHASE_PLAY,
-            turn_seat: 0, // §5.13 第 856 行：v1 固定座位 0 先出
-            // G4：score-only 局 `seat.levels` 空序列、键不出现。
-            levels: Vec::new(),
+            turn_seat: lead_seat,
+            attacking_team,
+            levels,
             seats: (0..seat_count as u8).collect(),
             zones,
             last_play: None,
@@ -644,6 +683,8 @@ impl M0Engine {
         // 最后一墩；§5.12 第 819 行只规定「本回合无人出过牌时该键不出现」，未写局终快照口径。
         // 现取清空，待裁决，本批不改行为。
         state.last_play = None;
+        // TODO(M0-GAP-ATTACK-TEAM-NEXT)：settle 应把 `attacking_team` 置为头游（finish_order[0]）
+        // 所在队属，属用户明确推迟的 ⑥ 四步那一批；本笔只开局抽牌定首出，结算不改队属。
         Ok(())
     }
 
@@ -779,6 +820,23 @@ mod tests {
             EngineError::Internal { .. } => {}
             other => panic!("应为 Internal，实际 {other:?}"),
         }
+    }
+
+    #[test]
+    fn m0_deal_keeps_empty_levels_and_sets_attacking_team() {
+        let engine = engine();
+        let state = engine.deal(M0_SEED).expect("发牌失败");
+        // G4 score-only 局无 levelTable：levels 保持空序列，不许崩。
+        assert!(state.levels.is_empty());
+        // 首局抽牌定先手；attacking_team = 先手座位所属队。
+        let team = engine
+            .ruleset
+            .seats
+            .teams
+            .iter()
+            .position(|t| t.contains(&state.turn_seat))
+            .expect("先手座位应归属某一队");
+        assert_eq!(state.attacking_team, team as u8);
     }
 
     // ---------- 第一笔：轮转方向 / skipFinished / 全过后领出 / 接风 ----------
@@ -980,12 +1038,16 @@ mod tests {
             cards: vec![big_joker],
         });
         state.turn_seat = 0;
-        let low = state
+        // 受控手牌：首局抽牌前置后洗牌序列已变，手牌内容不能依赖随机发牌结果；
+        // 固定放一张普通 2，确保两手引擎（force=false / force=true）判定的都是低牌。
+        let low = patterns::card_id(&loose.ruleset, 0, 0, 0);
+        let hand_idx = loose.hand_zone_index();
+        state
             .zones
-            .iter()
-            .find(|z| z.seat == 0 && z.zone_id == loose.hand_zone_index())
+            .iter_mut()
+            .find(|z| z.seat == 0 && z.zone_id == hand_idx)
             .expect("seat 0 手牌区")
-            .cards[0];
+            .cards = vec![low];
 
         // force=false：枚举保留该压不过的单张，落子成功。
         let legal = loose.legal_actions(&state).expect("枚举合法动作失败");

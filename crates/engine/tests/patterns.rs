@@ -1373,3 +1373,49 @@ fn same_pattern_follow_compares_key() {
         "低顺子压高顺子",
     );
 }
+
+// ---------- B3：局级打级队 + levels 初始化 + 首局抽牌前置 ----------
+
+#[test]
+fn classic_deal_inits_levels_and_attacking_team() {
+    let engine = engine();
+    let state = engine.deal(M0_SEED).expect("发牌失败");
+    // levelTable.initial = "2"，ranks ["2".."A"] 中 "2" 下标 0；两队都从 initial 起。
+    assert_eq!(state.levels, vec![0, 0]);
+    // 首局抽牌定先手：先手座位所属队即 attacking_team（§5.12 第 822 行）。
+    let team = engine
+        .ruleset
+        .seats
+        .teams
+        .iter()
+        .position(|t| t.contains(&state.turn_seat))
+        .expect("先手座位应归属某一队");
+    assert_eq!(state.attacking_team, team as u8);
+    // 先手手牌非空、弃牌区为空；抽出的牌不剔出牌堆，正常参与本局。
+    let hand_idx = engine
+        .ruleset
+        .zones
+        .iter()
+        .position(|z| z.id.0 == "hand")
+        .unwrap() as u16;
+    let hand = state
+        .zones
+        .iter()
+        .find(|z| z.seat == state.turn_seat && z.zone_id == hand_idx)
+        .expect("先手手牌区");
+    assert!(!hand.cards.is_empty());
+    let discard_idx = engine
+        .ruleset
+        .zones
+        .iter()
+        .position(|z| z.id.0 == "discard")
+        .map(|i| i as u16);
+    if let Some(idx) = discard_idx {
+        let discard = state
+            .zones
+            .iter()
+            .find(|z| z.zone_id == idx)
+            .expect("弃牌区");
+        assert!(discard.cards.is_empty());
+    }
+}

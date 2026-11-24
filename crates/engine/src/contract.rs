@@ -158,7 +158,7 @@ pub struct ZoneId(pub String);
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PatternId(pub String);
 
-/// 引擎运行期状态：直接承载 §5.12 第 2–10 项九段字段（N6）。
+/// 引擎运行期状态：直接承载 §5.12 第 2–11 项十段字段（N6）。
 ///
 /// `CanonicalState` 是 `From<&State>` 的单向只读投影，只承担序列化与双端比对，
 /// 不另存真源（§5.12 第 837 行）。
@@ -186,10 +186,12 @@ pub struct State {
     pub a_fail_streak: Vec<u8>,
     /// 第 10 段：按出完先后升序的座位序列。
     pub finish_order: Vec<u8>,
+    /// 第 11 段：本局「打级队」队序号 u8（§5.12 第 822 行）。越界即不变量破坏。
+    pub attacking_team: u8,
     /// §5.12 第 800 行：快照同时保存 `seed` 原值，`seedDigest` 由它派生；
     /// seed 本身不进哈希拼接。
     pub seed: u64,
-    /// N11 运行期记账：连续过牌数。§5.12 九段内没有对应字段，
+    /// N11 运行期记账：连续过牌数。§5.12 十段内没有对应字段，
     /// **不进 stateHash**；崩溃恢复需由动作日志重建（设计缺口，见回报 N11）。
     pub passes_since_last_play: u8,
 }

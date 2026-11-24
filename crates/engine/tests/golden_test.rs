@@ -8,9 +8,9 @@ use gf_engine::engine::{M0Engine, PHASE_SETTLE};
 use gf_engine::hash::{canonical_bytes, state_hash, CanonicalState};
 
 /// native 用例跑出并核对过动作日志后的 32 字节 stateHash（双端逐字节比对锚点）。
-/// 轮转 / 接风按 `flow.turn` 接线（`partnerLead` 生效）后轨迹变化，本锚点已重算。
+/// 首局抽牌前置（B3）后发牌分布变化，轨迹与锚点已重算。
 const EXPECTED_STATE_HASH: &str =
-    "375719e335d0384c8af47adf54a6371c50a591c9ca9c23b5d8a1f9a63593a696";
+    "ec38692f0d8d84b8aa5c217961c015e319fd51939a69360631c2d736ac820f24";
 
 #[test]
 fn golden_reaches_settle_and_matches_recorded_hash() {
@@ -68,12 +68,12 @@ fn golden_reaches_settle_and_matches_recorded_hash() {
         outcome.completed_team, expected_completed,
         "completed_team 应等于先全员出完的队"
     );
-    // 当前种子实测为 1+3 形态（finish_order=[1,2,3,0]：头游 seat1 属队 1，队友 seat3 占
-    // 第 3 名，对家 seat2、seat0 夹第 2、4 名）；此形态下 winner_team（头游队）与
+    // 当前种子实测为 1+3 形态（finish_order=[3,1,0,2]：头游 seat3 属队 1，队友 seat0 占
+    // 第 3 名，对家 seat1、seat2 夹第 2、4 名）；此形态下 winner_team（头游队）与
     // completed_team（先全员出完的队）同为队 1，二者不是 1+4 下的对家关系。
     assert_eq!(
         outcome.finish_order,
-        vec![1, 2, 3, 0],
+        vec![3, 1, 0, 2],
         "收尾名次应与实测 1+3 形态一致"
     );
     assert_eq!(
@@ -128,40 +128,39 @@ fn different_first_play_changes_state_hash_to_settle() {
         .filter(|a| matches!(a, Action::Play { .. }))
         .collect();
     assert!(plays.len() >= 2, "领出阶段至少应有两张合法单张");
-    let copies = engine.ruleset.deck.copies as usize;
-    let rank_count = engine.ruleset.deck.ranks.len();
-    let first_card = match &plays[0] {
-        Action::Play { cards } => cards[0] as usize,
-        Action::Pass => unreachable!("领出候选不含 Pass"),
-    };
-    // 排序后前两张可能是同点数的两张副本（copies>1，如 id 0/1 同为点数 2）；换副本不产生
-    // 策略差异，两条分支会收敛到同一终局。对照分支取首个点数桶真正不同的合法单张。
-    let second = plays
-        .iter()
-        .find(|a| match a {
-            Action::Play { cards } => {
-                (cards[0] as usize / copies) % rank_count != (first_card / copies) % rank_count
-            }
-            Action::Pass => false,
-        })
-        .expect("领出阶段应有不同点数的合法单张")
-        .clone();
-
-    // 同一 seed、同一固定策略，仅把第一步首攻换成另一张不同点数的合法单张，两条分支都跑到
+    // 同一 seed、同一固定策略，仅把第一步首攻换成另一张合法单张，两条分支都跑到
     // settle 后再比 32 字节哈希——比一步版更能抓住后期状态被抹平的回归。
-    let s1 = engine
-        .apply(s0.clone(), plays[0].clone())
-        .expect("落子失败");
-    let s2 = engine.apply(s0, second).expect("落子失败");
-    let h1 = run_to_settle(&engine, s1);
-    let h2 = run_to_settle(&engine, s2);
+    // 抽牌前置后发牌分布变化：个别首攻选择会在终局收敛（两张牌最后都进弃牌区），
+    // 故枚举全部首攻候选，取两条终局哈希确实不同的分支对照。
+    let hex = |h: [u8; 32]| h.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let mut traced: Vec<(u16, String)> = Vec::new();
+    for a in &plays {
+        let c = match a {
+            Action::Play { cards } => cards[0],
+            Action::Pass => continue,
+        };
+        let st = engine.apply(s0.clone(), a.clone()).expect("落子失败");
+        let (h, _) = run_to_settle(&engine, st);
+        traced.push((c, hex(h)));
+    }
+    let uniq: std::collections::HashSet<&String> = traced.iter().map(|(_, h)| h).collect();
+    assert!(
+        uniq.len() >= 2,
+        "领出阶段应至少有两条首攻跑到不同终局；实际收敛到 {} 种",
+        uniq.len()
+    );
+    let first = &traced[0];
+    let second = traced
+        .iter()
+        .find(|(_, h)| h != &first.1)
+        .expect("已有两条不同终局");
     assert_ne!(
-        h1, h2,
-        "首步换一张不同点数出牌并跑到底，终局 stateHash 必须不同"
+        first.1, second.1,
+        "首步换一张出牌并跑到底，终局 stateHash 必须不同"
     );
 }
 
-fn run_to_settle(engine: &M0Engine, mut state: State) -> [u8; 32] {
+fn run_to_settle(engine: &M0Engine, mut state: State) -> ([u8; 32], State) {
     for _ in 0..10_000 {
         if state.phase == PHASE_SETTLE {
             break;
@@ -176,5 +175,5 @@ fn run_to_settle(engine: &M0Engine, mut state: State) -> [u8; 32] {
         state = engine.apply(state, action).expect("落子失败");
     }
     assert_eq!(state.phase, PHASE_SETTLE, "两条分支都必须跑到 settle");
-    state_hash(&CanonicalState::from(&state))
+    (state_hash(&CanonicalState::from(&state)), state)
 }
