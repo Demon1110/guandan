@@ -394,7 +394,7 @@ fn straight_23456_recognized() {
     assert_played(
         apply_play(&engine, cards.clone(), cards),
         "straight-5",
-        (5, 4),
+        (5, 5),
         "顺子 2-3-4-5-6",
     );
 }
@@ -442,7 +442,7 @@ fn wheel_filled_by_wildcard_still_zero_rank_key() {
 #[test]
 fn flush_wheel_follows_top_not_zero() {
     let r = fixture_body();
-    // 同花 A-2-3-4-5：轮子特例只豁免非同花，同花顺跟随顶牌 5（合成序 key 3）。
+    // 同花 A-2-3-4-5：轮子特例只豁免非同花；同花顺跟随顶牌 5，按自然序 key 4。
     let cards = vec![
         c(&r, 12, 0, 0),
         c(&r, 0, 0, 0),
@@ -454,7 +454,7 @@ fn flush_wheel_follows_top_not_zero() {
     assert_played(
         apply_play(&engine, cards.clone(), cards),
         "straight-flush-5",
-        (5, 3),
+        (5, 4),
         "同花顺轮子不取 0",
     );
 }
@@ -563,7 +563,7 @@ fn synth_rank_key_table_level_above_a() {
 #[test]
 fn straight_10jqka_top_a() {
     let r = fixture_body();
-    // 10-J-Q-K-A 杂花色，高点 A（下标 12）。
+    // 10-J-Q-K-A 杂花色，高点 A（下标 12）；组牌型按自然序，A 取自然位 13。
     let cards = vec![
         c(&r, 8, 0, 0),
         c(&r, 9, 1, 0),
@@ -575,7 +575,7 @@ fn straight_10jqka_top_a() {
     assert_played(
         apply_play(&engine, cards.clone(), cards),
         "straight-5",
-        (5, 12),
+        (5, 13),
         "顺子 10-J-Q-K-A",
     );
 }
@@ -636,7 +636,7 @@ fn straight_rejects_gap() {
 #[test]
 fn plate_234_recognized() {
     let r = fixture_body();
-    // 2/3/4 各一对，高点 4（下标 2），共 6 张。
+    // 2/3/4 各一对，高点 4（下标 2），共 6 张；自然序 key 3。
     let cards = vec![
         c(&r, 0, 0, 0),
         c(&r, 0, 2, 0),
@@ -649,7 +649,7 @@ fn plate_234_recognized() {
     assert_played(
         apply_play(&engine, cards.clone(), cards),
         "plate-3",
-        (6, 2),
+        (6, 3),
         "三连对 2-3-4",
     );
 }
@@ -657,7 +657,7 @@ fn plate_234_recognized() {
 #[test]
 fn plate_qka_boundary_endpoint() {
     let r = fixture_body();
-    // Q-K-A 端点三连对，高点 A（下标 12）。
+    // Q-K-A 端点三连对，高点 A（下标 12）；自然序 key 13。
     let cards = vec![
         c(&r, 10, 0, 0),
         c(&r, 10, 2, 0),
@@ -670,7 +670,7 @@ fn plate_qka_boundary_endpoint() {
     assert_played(
         apply_play(&engine, cards.clone(), cards),
         "plate-3",
-        (6, 12),
+        (6, 13),
         "端点三连对 Q-K-A",
     );
 }
@@ -713,7 +713,7 @@ fn plate_rejects_wrong_card_count() {
 #[test]
 fn steel_23_recognized() {
     let r = fixture_body();
-    // 2/3 各三张，高点 3（下标 1），共 6 张。
+    // 2/3 各三张，高点 3（下标 1），共 6 张；自然序 key 2。
     let cards = vec![
         c(&r, 0, 0, 0),
         c(&r, 0, 0, 1),
@@ -726,7 +726,7 @@ fn steel_23_recognized() {
     assert_played(
         apply_play(&engine, cards.clone(), cards),
         "steel-2",
-        (6, 1),
+        (6, 2),
         "钢板 2-3",
     );
 }
@@ -734,7 +734,7 @@ fn steel_23_recognized() {
 #[test]
 fn steel_qk_boundary_endpoint() {
     let r = fixture_body();
-    // Q-K 端点两组三张，高点 K（下标 11）。
+    // Q-K 端点两组三张，高点 K（下标 11）；自然序 key 12。
     let cards = vec![
         c(&r, 10, 0, 0),
         c(&r, 10, 0, 1),
@@ -747,7 +747,7 @@ fn steel_qk_boundary_endpoint() {
     assert_played(
         apply_play(&engine, cards.clone(), cards),
         "steel-2",
-        (6, 11),
+        (6, 12),
         "端点钢板 Q-K",
     );
 }
@@ -848,7 +848,7 @@ fn bomb_rejects_cross_rank() {
 #[test]
 fn straight_flush_23456_recognized() {
     let r = fixture_body();
-    // 同黑桃 2-3-4-5-6，高点 6（下标 4）。
+    // 同黑桃 2-3-4-5-6，高点 6（下标 4）；自然序 key 5。
     let cards = vec![
         c(&r, 0, 0, 0),
         c(&r, 1, 0, 0),
@@ -860,7 +860,7 @@ fn straight_flush_23456_recognized() {
     assert_played(
         apply_play(&engine, cards.clone(), cards),
         "straight-flush-5",
-        (5, 4),
+        (5, 5),
         "同花顺 2-3-4-5-6",
     );
 }
@@ -868,7 +868,7 @@ fn straight_flush_23456_recognized() {
 #[test]
 fn flush_mixed_suit_falls_back_to_plain_straight() {
     let r = fixture_body();
-    // 2-3-4-5 黑桃 + 6 红桃：花色混杂，应判普通顺子而不是同花顺。
+    // 2-3-4-5 黑桃 + 6 红桃：花色混杂，应判普通顺子而不是同花顺；自然序 key 5。
     let cards = vec![
         c(&r, 0, 0, 0),
         c(&r, 1, 0, 0),
@@ -880,7 +880,7 @@ fn flush_mixed_suit_falls_back_to_plain_straight() {
     assert_played(
         apply_play(&engine, cards.clone(), cards),
         "straight-5",
-        (5, 4),
+        (5, 5),
         "花色混杂退回普通顺子",
     );
 }
@@ -941,7 +941,7 @@ fn flush_beats_bomb5_and_loses_to_bomb6() {
         &engine,
         bomb6.clone(),
         "straight-flush-5",
-        (5, 4),
+        (5, 5),
         flush.clone(),
     );
     let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
@@ -1401,7 +1401,7 @@ fn wildcard_straight_single_gap() {
     assert_played(
         apply_play(&engine, cards.clone(), cards),
         "straight-5",
-        (5, 4),
+        (5, 5),
         "百搭补顺子单孔",
     );
 }
@@ -1411,7 +1411,7 @@ fn wildcard_straight_multi_gap_picks_top_solution() {
     let r = fixture_body();
     let engine = engine();
     // 真牌 3-4-5-6（下标 1/2/3/4）+ 百搭：可达解 2-3-4-5-6（高点 4）与 3-4-5-6-7
-    // （高点 5）；按「rankKey 最大者」取 3-4-5-6-7，高点 7 下标 5。
+    // （高点 5）；按「rankKey 最大者」取 3-4-5-6-7，高点 7 下标 5，自然序 key 6。
     let cards = vec![
         c(&r, 1, 0, 0),
         c(&r, 2, 1, 0),
@@ -1422,7 +1422,7 @@ fn wildcard_straight_multi_gap_picks_top_solution() {
     assert_played(
         apply_play(&engine, cards.clone(), cards.clone()),
         "straight-5",
-        (5, 5),
+        (5, 6),
         "多孔顺子取最大解 3-4-5-6-7",
     );
     let state = state_with(&engine, cards.clone());
@@ -1437,7 +1437,7 @@ fn wildcard_straight_multi_gap_picks_top_solution() {
 fn wildcard_plate_fills_slot() {
     let r = fixture_body();
     let engine = engine();
-    // 2 一对、3 一对、4 一张 + 百搭补成三连对 2-3-4，高点 4 下标 2。
+    // 2 一对、3 一对、4 一张 + 百搭补成三连对 2-3-4，高点 4 下标 2，自然序 key 3。
     let cards = vec![
         c(&r, 0, 0, 0),
         c(&r, 0, 2, 0),
@@ -1449,7 +1449,7 @@ fn wildcard_plate_fills_slot() {
     assert_played(
         apply_play(&engine, cards.clone(), cards),
         "plate-3",
-        (6, 2),
+        (6, 3),
         "百搭补三连对",
     );
 }
@@ -1458,7 +1458,7 @@ fn wildcard_plate_fills_slot() {
 fn wildcard_steel_fills_slot() {
     let r = fixture_body();
     let engine = engine();
-    // 2 三张、3 两张 + 百搭补成钢板 2-3，高点 3 下标 1。
+    // 2 三张、3 两张 + 百搭补成钢板 2-3，高点 3 下标 1，自然序 key 2。
     let cards = vec![
         c(&r, 0, 0, 0),
         c(&r, 0, 0, 1),
@@ -1470,7 +1470,7 @@ fn wildcard_steel_fills_slot() {
     assert_played(
         apply_play(&engine, cards.clone(), cards),
         "steel-2",
-        (6, 1),
+        (6, 2),
         "百搭补钢板",
     );
 }
@@ -1519,8 +1519,8 @@ fn joker_bomb_rejects_wildcard() {
 fn wildcard_straight_flush_makes_flush() {
     let r = fixture_body();
     let engine = engine();
-    // 黑桃 2-3-4-5（下标 0/1/2/3）+ 百搭补 6 → 同花顺 2-3-4-5-6，高点 6 下标 4。
-    // `inStraightFlush=true`（§5.10 第 773 行）后百搭可入同花顺，不得退回普通顺子。
+    // 黑桃 2-3-4-5（下标 0/1/2/3）+ 百搭补 6 → 同花顺 2-3-4-5-6，高点 6 下标 4，
+    // 自然序 key 5。`inStraightFlush=true`（§5.10 第 773 行）后百搭可入同花顺，不得退回普通顺子。
     let cards = vec![
         c(&r, 0, 0, 0),
         c(&r, 1, 0, 0),
@@ -1531,7 +1531,7 @@ fn wildcard_straight_flush_makes_flush() {
     assert_played(
         apply_play(&engine, cards.clone(), cards.clone()),
         "straight-flush-5",
-        (5, 4),
+        (5, 5),
         "百搭补同花顺",
     );
     let state = state_with(&engine, cards.clone());
@@ -1611,7 +1611,7 @@ fn plate_cannot_beat_straight() {
         c(&r, 3, 3, 0),
         c(&r, 4, 0, 0),
     ];
-    let state = follow_state(&engine, plate.clone(), "straight-5", (5, 4), straight);
+    let state = follow_state(&engine, plate.clone(), "straight-5", (5, 5), straight);
     let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
     assert!(
         !plays_contain(&legal, &plate),
@@ -1643,7 +1643,7 @@ fn steel_cannot_beat_plate() {
         c(&r, 2, 0, 0),
         c(&r, 2, 2, 0),
     ];
-    let state = follow_state(&engine, steel.clone(), "plate-3", (6, 2), plate);
+    let state = follow_state(&engine, steel.clone(), "plate-3", (6, 3), plate);
     let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
     assert!(
         !plays_contain(&legal, &steel),
@@ -1672,7 +1672,7 @@ fn bomb4_beats_straight() {
         c(&r, 3, 3, 0),
         c(&r, 4, 0, 0),
     ];
-    let state = follow_state(&engine, bomb.clone(), "straight-5", (5, 4), straight);
+    let state = follow_state(&engine, bomb.clone(), "straight-5", (5, 5), straight);
     let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
     assert!(plays_contain(&legal, &bomb), "bomb-4 应能压顺子: {legal:?}");
     let after = engine
@@ -1730,7 +1730,7 @@ fn straight_flush_beats_non_bomb() {
         .expect("同花顺压单张应落子成功");
     let last = after.last_play.as_ref().expect("应有 last_play");
     assert_eq!(last.pattern_id, "straight-flush-5");
-    assert_eq!(last.pattern_key, (5, 4));
+    assert_eq!(last.pattern_key, (5, 5));
 }
 
 #[test]
@@ -1766,7 +1766,7 @@ fn same_pattern_follow_compares_key() {
         &engine,
         straight_high.clone(),
         "straight-5",
-        (5, 4),
+        (5, 5),
         straight_low.clone(),
     );
     let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
@@ -1784,13 +1784,13 @@ fn same_pattern_follow_compares_key() {
         .expect("高顺子应落子成功");
     let last = after.last_play.as_ref().expect("应有 last_play");
     assert_eq!(last.pattern_id, "straight-5");
-    assert_eq!(last.pattern_key, (5, 5));
+    assert_eq!(last.pattern_key, (5, 6));
 
     let state = follow_state(
         &engine,
         straight_low.clone(),
         "straight-5",
-        (5, 5),
+        (5, 6),
         straight_high.clone(),
     );
     assert_illegal(
@@ -1801,6 +1801,46 @@ fn same_pattern_follow_compares_key() {
             },
         ),
         "低顺子压高顺子",
+    );
+}
+
+// ---------- B10：级牌组牌型自然位口径（第二十五次变更） ----------
+
+#[test]
+fn b10_level_two_in_straight_uses_natural_top() {
+    let r = fixture_body();
+    let engine = engine();
+    // 级牌 = 2 时 `2-3-4-5-6` 合法；组牌型只按自然序顶牌 6 取 key 5，级牌 2 不升
+    // above-A，也不存在「级牌当 A」的第二解，不额外加权。
+    let cards = vec![
+        c(&r, 0, 0, 0),
+        c(&r, 1, 1, 0),
+        c(&r, 2, 2, 0),
+        c(&r, 3, 3, 0),
+        c(&r, 4, 0, 1),
+    ];
+    assert_played(
+        apply_play(&engine, cards.clone(), cards),
+        "straight-5",
+        (5, 5),
+        "级牌 2 入顺子按自然序顶牌",
+    );
+}
+
+#[test]
+fn b10_five_pairs_rejected_as_illegal() {
+    let r = fixture_body();
+    let engine = engine();
+    // 五连对共 10 张：组牌型张数上限 6（plate-3 固定 6 张），超出一律 IllegalAction；
+    // 炸弹 / 王炸 / 三带二不受此条约束。
+    let mut cards = Vec::new();
+    for rank in 0..5 {
+        cards.push(c(&r, rank, 0, 0));
+        cards.push(c(&r, rank, 2, 0));
+    }
+    assert_illegal(
+        apply_play(&engine, cards.clone(), cards),
+        "五连对 10 张超出组牌型上限",
     );
 }
 

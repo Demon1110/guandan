@@ -126,11 +126,28 @@ impl RankContext {
     }
 
     /// 真实点数的 `rankKey`：合成序下标 +1；`0` 是保留值（轮子特例），真实点数与
-    /// 大小王不得映射到 `0`（§5.13 第 931 行）。
+    /// 大小王不得映射到 `0`（§5.13 第 931 行）。散牌型（单张 / 对 / 三张 / 三带二主牌）
+    /// 与炸弹走这套合成序。
     fn rank_key(&self, r: &RuleSetBody, rank_idx: usize) -> u32 {
         let key = &r.deck.ranks[rank_idx];
         let order = self.synth_order(r);
         let pos = order.iter().position(|k| **k == *key).unwrap_or(rank_idx);
+        let k = pos as u32 + 1;
+        debug_assert!(k >= 1, "真实点数 rankKey 不得取保留值 0");
+        k
+    }
+
+    /// 自然序 `rankKey`：组牌型（顺子 / 三连对 / 钢板 / 同花顺）只按自身自然点数位参与，
+    /// 不经过 `levelInsert` 提升（第二十五次变更）；级牌 = 2 时 2 就是自然序最小位，
+    /// 不存在「级牌当 A」的第二解，也不额外加权。两套序各在本 `patternId` 内可比，
+    /// 跨型只按 `compare.ladder`，不做数值比较，两套键不得在同一比较里混用。
+    fn natural_rank_key(&self, r: &RuleSetBody, rank_idx: usize) -> u32 {
+        let key = &r.deck.ranks[rank_idx];
+        let pos = r
+            .natural_order
+            .iter()
+            .position(|k| k.0 == key.0)
+            .unwrap_or(rank_idx);
         let k = pos as u32 + 1;
         debug_assert!(k >= 1, "真实点数 rankKey 不得取保留值 0");
         k
@@ -508,6 +525,7 @@ fn match_straight(
         };
         // 轮子特例（第十七次变更）：非同花 `A-2-3-4-5` 的 rankKey 恒取保留值 0，
         // 不论含不含级牌、是否百搭补位，不受 levelInsert 提升；同花顺不适用本特例。
+        // 组牌型其余情形只按自然序顶牌取 rankKey（第二十五次变更），不走合成序。
         let mut window_sorted = window.clone();
         window_sorted.sort_unstable();
         let wheel = vec![0, 1, 2, 3, rc - 1];
@@ -515,7 +533,7 @@ fn match_straight(
         let rank_key = if !flush && is_wheel {
             0
         } else {
-            ctx.rank_key(r, top)
+            ctx.natural_rank_key(r, top)
         };
         let mut cards = Vec::new();
         for &rank in &window {
@@ -574,7 +592,8 @@ fn match_consecutive(
             cards.extend_from_slice(&g.wild[used_wild..used_wild + need]);
             used_wild += need;
         }
-        let sol = make_sol(r, ctx, ctx.rank_key(r, top), cards);
+        // 三连对 / 钢板属组牌型：rankKey 只按自然序顶牌（第二十五次变更），不经过合成序。
+        let sol = make_sol(r, ctx, ctx.natural_rank_key(r, top), cards);
         replace_best(&mut best, sol);
     }
     best.map(|sol| build_rec(def, (groups * per_group) as u32, sol.rank_key, sol.cards))
