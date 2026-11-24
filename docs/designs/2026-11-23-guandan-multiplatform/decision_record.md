@@ -839,6 +839,24 @@
   - 客户端据 `roundNo + phase` 判断局状态，不依赖增量事件推断。
 - **未动**：其余快照字段、`view` 编码与白名单、`viewHash`/`viewSchemaVersion` 口径、`stateHash` 与锚点。
 
+## 第三十三次变更：牌型判断器组合化 `pattern.compose`（2026-11-24）
+
+- **触发**：用户提问「有没有现成的 DSL 规则引擎 crate，用可配参数的执行器 + 判断器分派，扩展性和复用性会更好」。
+- **排查结论（写进台账备查）**：
+  - crates.io 上的通用引擎全是业务规则引擎（`zen-engine`〔GoRules JDM〕、`rust-rule-engine`〔RETE + GRL〕、`fast-decision`〔JSON 条件树〕），语义是「事实匹配条件 → 触发动作」，做不了「手牌组合枚举 + 牌力全序比较」；
+  - `world_rules` 声称含掼蛋/斗地主等 7 种扑克，但定位是「规则条文 + 示例算法知识库」，非权威判定内核，且无确定性与性能门禁；
+  - 通用 RETE 引擎撞三条硬约束：`HashMap` 迭代序破确定性、每动作重匹配破 59.15µs 预算（1500 房反推）、依赖引入破 wasm 零 import 与包体门禁。
+- **用户裁定**：把判断器拆成可组合的小 predicate，牌型 = predicate 组合 + 参数。
+- **落稿**：
+  - 新增组合式原语 `pattern.compose`，参数 `{shape, attach?, sameSuit?, maxCards, wheel?, wildcardAllowed?}`；
+  - 判断器闭集五条：`rank.same` / `rank.contiguous` / `suit.same` / `joker.only` / `attach`；组合只允许「与」，无 `or`/`not`/变量/循环/表达式；
+  - 现有 8 个牌型原语定为 `pattern.compose` 的**预置形状**，同一套 `ShapePlan`，判定结果逐条等价；掼蛋基线不迁移写法；
+  - 身份仍由 `patterns[].id` 给，不允许匿名牌型；同一 RuleSet 内规范化形状重复即 L1 `RS_SCHEMA_INVALID`（不新增错误码）；
+  - `maxCards` 必填（2–20）取代引擎写死的「组牌型最长 6 张」；掼蛋基线取 6；
+  - §5.12 新增「载入期编译 `ShapePlan`」段，规定**实现顺序**：先 `enum-path-rewrite`，再组合化，不得并行改同一块代码。
+- **未动**：§5.10 15 行取值、14 个 `patternId` 与 `patternKey` 口径、级牌组牌序、轮子特例、`triple-pair` 主牌口径、`legal_actions` 排序键与规范子集、消歧规则、`stateHash` 段集与锚点、错误码全表、协议与视图。
+- **代价**：判定内核多一层载入期编译产物，须补「预置形状 vs `compose` 等价性」差分测试；斗地主仍缺阶段扩展（`lifecycle` 硬编码四段）、底牌与叫地主动作，属另一批。
+
 ## 未决问题（等用户拍板）
 
 | # | 问题 | 需要谁决定 | 状态 |
