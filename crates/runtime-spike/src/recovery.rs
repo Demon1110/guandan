@@ -171,6 +171,103 @@ pub fn replay_delta(
     Ok(state)
 }
 
+/// 待迁入：客户端本地副本（M0 in-process 镜像；线上为客户端私有状态，不进服务端权威源）。
+#[derive(Clone, Debug)]
+pub struct ClientLocal {
+    /// 本地状态副本；`SnapshotReset` 丢弃后为 `None`，接受快照后再填回。
+    pub state: Option<State>,
+    /// 本地所属座位（`Reconnect` 绑定座位，§5.9 第 713 行）。
+    pub seat: u8,
+    /// 该座位本地已应用到的最后 `seatSeq`（`lastSeatSeq` 水位）。
+    pub last_seat_seq: u64,
+    /// 记账字段：本次恢复是否走过"丢弃本地状态"分支（证明清空先于接受快照）。
+    pub discarded: bool,
+}
+
+impl ClientLocal {
+    /// 待迁入：用本地副本与断线座位水位构造；`discarded` 初始为 false。
+    pub fn new(state: Option<State>, seat: u8, last_seat_seq: u64) -> Self {
+        Self {
+            state,
+            seat,
+            last_seat_seq,
+            discarded: false,
+        }
+    }
+}
+
+/// 待迁入：[`recover_client`] 的恢复结果；用 enum 表达分支，不只返回裸状态。
+#[derive(Clone, Debug)]
+pub enum RecoveryOutcome {
+    /// 增量路径：本地原状态为 `Some`，逐条重放增量后得到新状态。
+    Delta {
+        state: State,
+        last_seat_seq: u64,
+        events_applied: usize,
+    },
+    /// 快照重置路径：已先丢弃本地状态（`discarded`），再接受全量快照。
+    SnapshotReset {
+        state: State,
+        /// 丢弃前本地是否持有状态副本。
+        discarded: bool,
+        /// 对应 `RoomSnapshot.snapshot_reset`（§6.2 第 978 行，应为 true）。
+        snapshot_reset: bool,
+    },
+}
+
+/// 待迁入：客户端恢复统一入口（两条路径共用一套，不由测试各自拼装）。
+///
+/// - `Delta`：本地 `state` 必须为 `Some`（`None` 直接返回错误，不许凭空造状态），
+///   从 `from_room_seq + 1` 逐条重放，并把该座位 `last_seat_seq` 推进到增量末条对应值。
+/// - `SnapshotReset`：先把 `local.state` 置 `None`、`last_seat_seq` 清零、记 `discarded`，
+///   **再**接受快照填回本地状态；清空动作发生在接受快照之前。
+pub fn recover_client(
+    engine: &M0Engine,
+    local: &mut ClientLocal,
+    decision: &ReconnectDecision,
+    snapshot: &RoomSnapshot,
+) -> Result<RecoveryOutcome, EngineError> {
+    match decision {
+        ReconnectDecision::Delta { events, .. } => {
+            let Some(state) = local.state.take() else {
+                return Err(EngineError::Internal {
+                    message: "Delta 重放需要本地状态副本，但 local.state 为 None".to_owned(),
+                });
+            };
+            let state = replay_delta(engine, state, events)?;
+            // 推进该座位水位到增量内属于本座位的末条 seatSeq。
+            let mut last_seq = local.last_seat_seq;
+            for record in events {
+                if record.seat == local.seat {
+                    last_seq = last_seq.max(record.seat_seq);
+                }
+            }
+            let applied = events.len();
+            local.state = Some(state.clone());
+            local.last_seat_seq = last_seq;
+            Ok(RecoveryOutcome::Delta {
+                state,
+                last_seat_seq: last_seq,
+                events_applied: applied,
+            })
+        }
+        ReconnectDecision::SnapshotReset => {
+            // 协议要求：先丢弃本地状态，再接受新快照（§6.2 第 978 行）。
+            let discarded = local.state.is_some();
+            local.state = None;
+            local.last_seat_seq = 0;
+            local.discarded = true;
+            let state = snapshot.state.clone();
+            local.state = Some(state.clone());
+            Ok(RecoveryOutcome::SnapshotReset {
+                state,
+                discarded,
+                snapshot_reset: snapshot.snapshot_reset,
+            })
+        }
+    }
+}
+
 /// 待迁入：恢复后哈希自证。`CanonicalState` 单向投影 → BLAKE3-256 32 字节全量。
 pub fn state_hash_of(state: &State) -> [u8; 32] {
     state_hash(&CanonicalState::from(state))
@@ -186,6 +283,7 @@ pub fn hex_full(hash: &[u8; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gf_engine::cases::{build_engine, M0_SEED};
 
     fn record(room_seq: u64, seat: u8, seat_seq: u64) -> ActionRecord {
         ActionRecord {
@@ -260,5 +358,62 @@ mod tests {
         let decision = decide(&buffer, 0, 0);
         assert!(matches!(decision, ReconnectDecision::SnapshotReset));
         assert!(!matches!(decision, ReconnectDecision::Delta { .. }));
+    }
+
+    #[test]
+    fn delta_rejects_missing_local_state() {
+        let engine = build_engine().expect("构造引擎失败");
+        let decision = ReconnectDecision::Delta {
+            from_room_seq: 0,
+            events: Vec::new(),
+        };
+        let snapshot = RoomSnapshot {
+            state: engine.deal(M0_SEED).expect("发牌失败"),
+            snapshot_reset: false,
+            room_seq: 0,
+        };
+        let mut local = ClientLocal::new(None, 0, 0);
+        let err = recover_client(&engine, &mut local, &decision, &snapshot)
+            .expect_err("Delta 分支本地状态为 None 必须返回错误，不许凭空造状态");
+        assert!(matches!(err, EngineError::Internal { .. }));
+        assert!(local.state.is_none());
+    }
+
+    #[test]
+    fn reset_discards_local_state_before_accepting_snapshot() {
+        let engine = build_engine().expect("构造引擎失败");
+        let local_state = engine.deal(M0_SEED).expect("发牌失败");
+        let snap_state = engine.deal(M0_SEED).expect("发牌失败");
+        let snapshot = RoomSnapshot {
+            state: snap_state.clone(),
+            snapshot_reset: true,
+            room_seq: 5,
+        };
+        let mut local = ClientLocal::new(Some(local_state), 0, 7);
+
+        let outcome = recover_client(
+            &engine,
+            &mut local,
+            &ReconnectDecision::SnapshotReset,
+            &snapshot,
+        )
+        .expect("快照重置恢复失败");
+
+        match outcome {
+            RecoveryOutcome::SnapshotReset {
+                state,
+                discarded,
+                snapshot_reset,
+            } => {
+                assert!(discarded, "丢弃前本地持有副本应记 discarded=true");
+                assert!(snapshot_reset, "快照重置分支必须带出 snapshot_reset=true");
+                assert_eq!(state, snap_state);
+            }
+            other => panic!("期望 SnapshotReset，实际 {other:?}"),
+        }
+        // 记账字段证明清空发生在接受快照之前；水位已清零。
+        assert!(local.discarded);
+        assert_eq!(local.last_seat_seq, 0);
+        assert_eq!(local.state, Some(snap_state));
     }
 }

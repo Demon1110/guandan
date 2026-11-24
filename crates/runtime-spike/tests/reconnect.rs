@@ -2,7 +2,8 @@
 //! `stateHash` 与断线前逐字节一致——32 字节全量比对，不是只看前 8 位）。
 //!
 //! 分层：服务端推进 / 断线模拟在 [`harness`]（一次性夹具，M1 丢弃）；缓冲 / 判定 /
-//! 重放在 [`recovery`]（待迁入 `crates/table-runtime`）。
+//! 客户端恢复入口 / 重放在 [`recovery`]（待迁入 `crates/table-runtime`）。两条路径
+//! 共用同一个 [`recovery::recover_client`] 入口，不由测试各自拼装。
 //!
 //! 边界：本轮 in-process，快照直接传 `State` 克隆，不做 wire 编解码；不依赖
 //! `gf-protocol`。
@@ -10,13 +11,13 @@
 use gf_engine::contract::{Engine, State};
 use gf_runtime_spike::harness::{engine, ServerRoom};
 use gf_runtime_spike::recovery::{
-    decide, hex_full, replay_delta, state_hash_of, ReconnectBuffer, ReconnectDecision,
-    RECONNECT_BUFFER_CAPACITY,
+    decide, hex_full, recover_client, state_hash_of, ClientLocal, ReconnectBuffer,
+    ReconnectDecision, RecoveryOutcome, RECONNECT_BUFFER_CAPACITY,
 };
 
 /// ① 增量路径：断线点落在 200 条缓冲覆盖范围内 → 判定 `Delta`（`snapshotReset`
-/// 为 false）→ 客户端用补齐的增量从断线前状态逐条重放 → 恢复后 `stateHash` 与
-/// 服务端当前哈希 32 字节逐字节相等。
+/// 为 false）→ 客户端经统一入口用补齐的增量从断线前状态逐条重放 → 恢复后
+/// `stateHash` 与服务端当前哈希 32 字节逐字节相等。
 #[test]
 fn delta_replay_within_buffer_recovers_byte_identical_hash() {
     let mut server = ServerRoom::new(engine()).expect("发牌失败");
@@ -70,17 +71,34 @@ fn delta_replay_within_buffer_recovers_byte_identical_hash() {
     let ReconnectDecision::Delta {
         from_room_seq,
         events,
-    } = decision
+    } = &decision
     else {
         panic!("上方已断言为 Delta，此处不应落空");
     };
     assert!(!events.is_empty(), "断线区间不应为空增量");
-    assert_eq!(from_room_seq, disconnect_room_seq);
+    assert_eq!(*from_room_seq, disconnect_room_seq);
     assert_eq!(events.first().unwrap().room_seq, from_room_seq + 1);
     assert!(events.windows(2).all(|w| w[0].room_seq < w[1].room_seq));
+    let events_applied = events.len();
 
-    // 客户端从断线前副本逐条重放增量。
-    let client_after = replay_delta(&server.engine, client_before, &events).expect("增量重放失败");
+    // 客户端经统一恢复入口重放增量（本地副本必须 Some，不许凭空造状态）。
+    let mut local = ClientLocal::new(Some(client_before), disconnect_seat, client_last_seat_seq);
+    let snapshot = server.snapshot(false);
+    let outcome =
+        recover_client(&server.engine, &mut local, &decision, &snapshot).expect("增量恢复失败");
+
+    let client_after = match outcome {
+        RecoveryOutcome::Delta {
+            state,
+            last_seat_seq,
+            events_applied: applied,
+        } => {
+            assert_eq!(applied, events_applied);
+            assert!(last_seat_seq >= client_last_seat_seq);
+            state
+        }
+        other => panic!("期望 Delta 恢复结果，实际 {other:?}"),
+    };
     let hash_after = state_hash_of(&client_after);
 
     println!("[delta] 断线前 hash      = {}", hex_full(&hash_before));
@@ -121,8 +139,8 @@ fn delta_replay_within_buffer_recovers_byte_identical_hash() {
 
 /// ② `snapshotReset` 路径：断线跨度超出 200 条缓冲（座位 `lastSeatSeq` 对应的
 /// `roomSeq` 早于缓冲起点）→ 判定 `SnapshotReset` 且快照 `snapshotReset = true`
-/// → 客户端丢弃本地状态（清空副本与水位，断言不再持有旧 `stateHash`）→ 接受全量
-/// 快照 → 恢复后哈希与服务端当前哈希 32 字节全等。
+/// → 统一入口先丢弃本地状态（副本与水位清空，记账 `discarded`）→ 接受全量快照 →
+/// 恢复后哈希与服务端当前哈希 32 字节全等。
 ///
 /// 单局约 150 条房间事件凑不满 200 条；本用例在**同一房间**连打第二局：`settle`
 /// 后重新 `deal`，`roomSeq` 连续递增、`seatSeq` 按座位各自继续递增（跨局不归零，
@@ -197,17 +215,33 @@ fn snapshot_reset_when_disconnect_gap_exceeds_buffer() {
     let snapshot = server.snapshot(true);
     assert!(snapshot.snapshot_reset, "重置快照必须带 snapshotReset=true");
 
-    // 客户端丢弃本地状态：副本显式 drop、水位清空；丢弃后本地不再持有旧 stateHash。
-    // （`hash_before` 仅留作比对的哈希字节，不是本地状态副本。）
-    let client: Option<State> = Some(client_before);
-    drop(client);
-    let client: Option<State> = None;
-    assert!(client.is_none(), "丢弃后本地状态副本必须为空");
-    // 旧哈希只留在比对变量里；本地状态位已无 State 可投影。
-    assert_ne!(hash_before, hash_server_now, "断线前后状态本应不同");
+    // 客户端经统一恢复入口：先丢弃本地状态，再接受快照。
+    let mut local = ClientLocal::new(Some(client_before), disconnect_seat, client_last_seat_seq);
+    let outcome =
+        recover_client(&server.engine, &mut local, &decision, &snapshot).expect("快照重置恢复失败");
 
-    // 接受全量快照。
-    let client_after = snapshot.state.clone();
+    // (b) 返回分支是 Reset、`snapshot_reset=true`、`discarded=true`；记账字段证明
+    // 清空发生在接受快照之前，而不是测试自己写了个空值。
+    let client_after = match outcome {
+        RecoveryOutcome::SnapshotReset {
+            state,
+            discarded,
+            snapshot_reset,
+        } => {
+            assert!(discarded, "丢弃前本地持有副本应记 discarded=true");
+            assert!(snapshot_reset, "重置分支必须带出 snapshot_reset=true");
+            state
+        }
+        other => panic!("期望 SnapshotReset 恢复结果，实际 {other:?}"),
+    };
+    assert!(local.discarded, "本地记账应标记已丢弃");
+    assert_eq!(local.last_seat_seq, 0, "丢弃后水位必须清零");
+    assert_eq!(
+        local.state,
+        Some(client_after.clone()),
+        "接受快照后本地应持有新状态"
+    );
+
     let hash_after = state_hash_of(&client_after);
 
     println!("[reset] 断线前 hash      = {}", hex_full(&hash_before));
