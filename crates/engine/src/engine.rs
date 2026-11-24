@@ -13,6 +13,7 @@ use crate::contract::{Action, Engine, EngineError, Seat, State, View, ZoneId};
 use crate::hash::{seed_digest, LastPlay, RngState, TributeState, ZoneEntry};
 use crate::patterns;
 use crate::ruleset::model::{AfterAllPass, TurnDirection, ZoneScope};
+use crate::ruleset::params::PrimitiveParams;
 use crate::ruleset::RuleSetBody;
 use crate::view::{encode_canonical, ViewData, ViewLastPlay};
 
@@ -68,6 +69,51 @@ impl M0Engine {
             .iter()
             .position(|z| z.scope == ZoneScope::Shared)
             .map(|i| i as u16)
+    }
+
+    /// `action.require-legal` 参数（§5.2 第 524 行）：`force` 是否要求压过 lastPlay，
+    /// `consume` 出牌扣牌区；规则集未声明时取默认 force=true、consume=hand。
+    fn require_legal_params(&self) -> (bool, ZoneId) {
+        self.ruleset
+            .actions
+            .iter()
+            .find(|a| a.primitive == "action.require-legal")
+            .and_then(|a| match &a.params {
+                PrimitiveParams::RequireLegal { force, consume } => Some((*force, consume.clone())),
+                _ => None,
+            })
+            .unwrap_or((true, ZoneId("hand".to_owned())))
+    }
+
+    /// `action.consume-cards` 参数（§5.2 第 525 行）：`zone` 扣牌区，`count` 扣牌张数，
+    /// `count=0` 表按本次出牌张数；规则集未声明该动作时返回 `None`。
+    fn consume_cards_params(&self) -> Option<(ZoneId, u8)> {
+        self.ruleset
+            .actions
+            .iter()
+            .find(|a| a.primitive == "action.consume-cards")
+            .and_then(|a| match &a.params {
+                PrimitiveParams::ConsumeCards { zone, count } => Some((zone.clone(), *count)),
+                _ => None,
+            })
+    }
+
+    /// 本次出牌的扣牌区：显式 `action.consume-cards` 优先，否则取 `require-legal.consume`。
+    /// `count>0` 时「具体扣哪几张」文档未定义——取 `IllegalAction` 而非 `Internal`：
+    /// 这是当前规则集配置下不被允许的运行期动作（选牌规则缺失），不是引擎不变量
+    /// 破坏；拒绝时不做任何状态变更。TODO(M0-GAP-consume-count)：选牌口径待裁决。
+    fn resolve_consume_zone(&self) -> Result<ZoneId, EngineError> {
+        if let Some((zone, count)) = self.consume_cards_params() {
+            if count > 0 {
+                return Err(EngineError::IllegalAction {
+                    reason: format!(
+                        "action.consume-cards count={count}>0：扣牌张数大于本次出牌张数时具体取哪几张文档未定义，本批拒绝执行（待裁决）"
+                    ),
+                });
+            }
+            return Ok(zone);
+        }
+        Ok(self.require_legal_params().1)
     }
 
     fn rank_count(&self) -> usize {
@@ -370,12 +416,15 @@ impl M0Engine {
         let hand = hand.clone();
 
         // 候选四元组：(countKey, rankKey, cards 牌 id 序列, primitiveId)，全序（§5.12 第 842 行）。
+        let force = self.require_legal_params().0;
         let mut candidates: Vec<(u32, u32, Vec<u16>, String, Action)> = Vec::new();
         for rec in patterns::enumerate(&self.ruleset, &hand) {
-            // 领出（lastPlay 为空）任意成型牌型合法；跟牌只保留能压过 lastPlay 的候选。
+            // 领出（lastPlay 为空）任意成型牌型合法；跟牌时：force=true 只保留能压过
+            // lastPlay 的候选，force=false 只校牌型合法、不要求压过（§5.2 第 524 行）。
             let legal = match &state.last_play {
                 None => true,
-                Some(last) => patterns::beats(&self.ruleset, &rec, last),
+                Some(last) if force => patterns::beats(&self.ruleset, &rec, last),
+                Some(_) => true,
             };
             if legal {
                 candidates.push((
@@ -449,29 +498,41 @@ impl M0Engine {
                         reason: format!("seat {seat} 提交的牌不构成任何已声明牌型"),
                     }
                 })?;
-                if let Some(last) = &state.last_play {
-                    if !patterns::beats(&self.ruleset, &rec, last) {
-                        return Err(EngineError::IllegalAction {
-                            reason: format!(
-                                "seat {seat} 提交的牌压不过上家 {}（{:?}）",
-                                last.pattern_id, last.pattern_key
-                            ),
-                        });
+                let force = self.require_legal_params().0;
+                if force {
+                    if let Some(last) = &state.last_play {
+                        if !patterns::beats(&self.ruleset, &rec, last) {
+                            return Err(EngineError::IllegalAction {
+                                reason: format!(
+                                    "seat {seat} 提交的牌压不过上家 {}（{:?}）",
+                                    last.pattern_id, last.pattern_key
+                                ),
+                            });
+                        }
                     }
                 }
 
-                let hand_idx = self.hand_zone_index();
+                // 扣牌区读 require-legal.consume（或 consume-cards.zone），不再写死 hand。
+                let consume_zone = self.resolve_consume_zone()?;
+                let consume_idx =
+                    self.zone_index(&consume_zone)
+                        .ok_or_else(|| EngineError::Internal {
+                            message: format!("扣牌区 {} 未在 zones 声明", consume_zone.0),
+                        })?;
                 let hand = state
                     .zones
                     .iter_mut()
-                    .find(|z| z.seat == seat && z.zone_id == hand_idx)
+                    .find(|z| z.seat == seat && z.zone_id == consume_idx)
                     .ok_or_else(|| EngineError::Internal {
-                        message: format!("seat {seat} 私有手牌区缺失"),
+                        message: format!("seat {seat} 扣牌区 {} 缺失", consume_zone.0),
                     })?;
                 for &card in &cards {
                     let pos = hand.cards.iter().position(|c| *c == card).ok_or_else(|| {
                         EngineError::IllegalAction {
-                            reason: format!("牌 {card} 不在 seat {seat} 手牌中"),
+                            reason: format!(
+                                "牌 {card} 不在 seat {seat} 的 {} 区中",
+                                consume_zone.0
+                            ),
                         }
                     })?;
                     hand.cards.remove(pos);
@@ -892,5 +953,206 @@ mod tests {
             .expect("seat 0 出完");
         assert!(state.finish_order.contains(&0));
         assert_eq!(state.turn_seat, 1);
+    }
+
+    // ---------- 第二笔：require-legal force / consume 与消耗区 ----------
+
+    fn zone_index_of(engine: &M0Engine, zone_id: &str) -> u16 {
+        engine
+            .ruleset
+            .zones
+            .iter()
+            .position(|z| z.id.0 == zone_id)
+            .expect("测试区内应声明该区号") as u16
+    }
+
+    #[test]
+    fn force_false_allows_unbeaten_play_force_true_rejects() {
+        // §5.2 第 524 行：force=false 只校牌型合法、不要求压过；force=true 必须能压过。
+        let loose = engine_from(&m0_yaml().replace("force: true", "force: false"));
+        let mut state = loose.deal(M0_SEED).expect("发牌失败");
+        // lastPlay 取大王单张（点力最高），seat 0 手里任一普通单张都压不过。
+        let big_joker = patterns::joker_id(&loose.ruleset, true, 0);
+        state.last_play = Some(LastPlay {
+            seat: 1,
+            pattern_id: "single".to_owned(),
+            pattern_key: (1, 13),
+            cards: vec![big_joker],
+        });
+        state.turn_seat = 0;
+        let low = state
+            .zones
+            .iter()
+            .find(|z| z.seat == 0 && z.zone_id == loose.hand_zone_index())
+            .expect("seat 0 手牌区")
+            .cards[0];
+
+        // force=false：枚举保留该压不过的单张，落子成功。
+        let legal = loose.legal_actions(&state).expect("枚举合法动作失败");
+        assert!(
+            legal
+                .iter()
+                .any(|a| matches!(a, Action::Play { cards } if cards == &[low])),
+            "force=false 应允许压不过的成型单张"
+        );
+        let after = loose
+            .apply(state.clone(), Action::Play { cards: vec![low] })
+            .expect("force=false 压不过也应能出");
+        assert_eq!(after.turn_seat, 1);
+
+        // force=true：同一手压不过，枚举不给 Play，落子被拒。
+        let strict = engine();
+        let mut state2 = state.clone();
+        state2.last_play = state.last_play.clone();
+        let legal2 = strict.legal_actions(&state2).expect("枚举合法动作失败");
+        assert!(
+            legal2.iter().all(|a| !matches!(a, Action::Play { .. })),
+            "force=true 不应给出压不过的候选"
+        );
+        let err = strict
+            .apply(state2, Action::Play { cards: vec![low] })
+            .expect_err("force=true 压不过必须拒绝");
+        match err {
+            EngineError::IllegalAction { .. } => {}
+            other => panic!("应为 IllegalAction，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn consume_zone_takes_cards_from_declared_zone() {
+        // §5.2 第 524 行：consume 指向非 hand 区时，从该区扣牌，手牌区不动。
+        let yaml = m0_yaml()
+            .replace("consume: hand", "consume: stash")
+            .replace(
+                "  - { id: discard, scope: shared,  capacity: -1 }",
+                "  - { id: stash,   scope: private, capacity: 27 }\n  - { id: discard, scope: shared,  capacity: -1 }",
+            );
+        let engine = engine_from(&yaml);
+        let mut state = engine.deal(M0_SEED).expect("发牌失败");
+        let hand_idx = engine.hand_zone_index();
+        let stash_idx = zone_index_of(&engine, "stash");
+
+        // 从 seat 0 手牌移一张到 stash 区，stash 区条目手动补齐（发牌只落 hand）。
+        let card = state
+            .zones
+            .iter_mut()
+            .find(|z| z.seat == 0 && z.zone_id == hand_idx)
+            .expect("seat 0 手牌区")
+            .cards
+            .remove(0);
+        state.zones.push(ZoneEntry {
+            seat: 0,
+            zone_id: stash_idx,
+            cards: vec![card],
+        });
+        let hand_before = state
+            .zones
+            .iter()
+            .find(|z| z.seat == 0 && z.zone_id == hand_idx)
+            .expect("seat 0 手牌区")
+            .cards
+            .len();
+
+        // 领出态 lastPlay=None，直接出 stash 里这张。
+        state = engine
+            .apply(state, Action::Play { cards: vec![card] })
+            .expect("从 stash 扣牌应成功");
+
+        let stash_left = state
+            .zones
+            .iter()
+            .find(|z| z.seat == 0 && z.zone_id == stash_idx)
+            .expect("seat 0 stash 区")
+            .cards
+            .len();
+        let hand_after = state
+            .zones
+            .iter()
+            .find(|z| z.seat == 0 && z.zone_id == hand_idx)
+            .expect("seat 0 手牌区")
+            .cards
+            .len();
+        assert_eq!(stash_left, 0, "牌应从 stash 扣走");
+        assert_eq!(hand_after, hand_before, "手牌区不应被动");
+        let total: usize = state.zones.iter().map(|z| z.cards.len()).sum();
+        assert_eq!(total, 108, "终局牌数守恒");
+    }
+
+    #[test]
+    fn consume_cards_count_zero_takes_played_card_count() {
+        // §5.2 第 525 行：consume-cards count=0 按本次出牌张数扣牌。
+        let yaml = m0_yaml().replace(
+            "  - { kind: pass, primitive: action.pass, legalFrom: play, params: {} }",
+            "  - { kind: pass, primitive: action.pass, legalFrom: play, params: {} }\n  - { kind: play, primitive: action.consume-cards, legalFrom: play, params: { zone: hand, count: 0 } }",
+        );
+        let engine = engine_from(&yaml);
+        let mut state = engine.deal(M0_SEED).expect("发牌失败");
+        let hand_idx = engine.hand_zone_index();
+        let discard_idx = engine.discard_zone_index().expect("应有弃牌区");
+        let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
+        let action = legal.into_iter().next().expect("领出态应有候选");
+        let cards = match &action {
+            Action::Play { cards } => cards.clone(),
+            Action::Pass => unreachable!("领出候选不含 Pass"),
+        };
+        let hand_before = state
+            .zones
+            .iter()
+            .find(|z| z.seat == 0 && z.zone_id == hand_idx)
+            .expect("seat 0 手牌区")
+            .cards
+            .len();
+        let discard_before = state
+            .zones
+            .iter()
+            .find(|z| z.zone_id == discard_idx)
+            .expect("弃牌区")
+            .cards
+            .len();
+
+        state = engine.apply(state, action).expect("count=0 按出牌张数扣牌");
+
+        let hand_after = state
+            .zones
+            .iter()
+            .find(|z| z.seat == 0 && z.zone_id == hand_idx)
+            .expect("seat 0 手牌区")
+            .cards
+            .len();
+        let discard_after = state
+            .zones
+            .iter()
+            .find(|z| z.zone_id == discard_idx)
+            .expect("弃牌区")
+            .cards
+            .len();
+        assert_eq!(hand_before - hand_after, cards.len(), "手牌按出牌张数扣减");
+        assert_eq!(
+            discard_after - discard_before,
+            cards.len(),
+            "弃牌区按出牌张数增加"
+        );
+        let total: usize = state.zones.iter().map(|z| z.cards.len()).sum();
+        assert_eq!(total, 108, "牌数守恒");
+    }
+
+    #[test]
+    fn consume_cards_count_positive_is_rejected_conservatively() {
+        // count>0 时「具体扣哪几张」文档未定义：保守报 IllegalAction，不发明取牌规则。
+        let yaml = m0_yaml().replace(
+            "  - { kind: pass, primitive: action.pass, legalFrom: play, params: {} }",
+            "  - { kind: pass, primitive: action.pass, legalFrom: play, params: {} }\n  - { kind: play, primitive: action.consume-cards, legalFrom: play, params: { zone: hand, count: 1 } }",
+        );
+        let engine = engine_from(&yaml);
+        let state = engine.deal(M0_SEED).expect("发牌失败");
+        let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
+        let action = legal.into_iter().next().expect("领出态应有候选");
+        let err = engine
+            .apply(state, action)
+            .expect_err("count>0 选牌规则未定义，应保守拒绝");
+        match err {
+            EngineError::IllegalAction { .. } => {}
+            other => panic!("应为 IllegalAction，实际 {other:?}"),
+        }
     }
 }
