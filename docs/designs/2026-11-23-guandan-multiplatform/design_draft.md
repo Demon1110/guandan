@@ -1038,7 +1038,7 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 - **心跳**：客户端每 15 秒发一次 `Heartbeat`；服务端以"该座位最后一次收到任何消息"为水位，**30 秒未收到**判该座位掉线（判定动作只有这一处，客户端不做判定）。
 - **宽限期**：掉线后房间不销毁，进入 90 秒宽限期；期间该座位状态标 `offline`，倒计时照常推进，超时按 §6.3 处理。
 - **重连**：客户端带 `matchId + seat + lastSeatSeq` 重连，服务端下发快照 + 增量。环形缓冲按 `roomSeq` 索引，保留最近 200 条事件，缓冲起点为缓冲内最小 `roomSeq`；**若该座位 `lastSeatSeq` 对应的 `roomSeq` 早于缓冲起点**（长局 300 步或长时间断线；座位序号与房间序号的换算按动作记录里的双序号列，见 §6.5），服务端不回放增量，直接下发新快照，`RoomSnapshot.snapshotReset = true`，令客户端丢弃本地状态并接受新快照。
-- **序号作用域**：`seatSeq` 是**每座位单调递增**的，服务端按 `(matchId, seat)` 维护水位；广播顺序用 `roomSeq`（房间内全局递增）。两个序号均从 0 起算：该座位首条动作 `seatSeq=0`，房间首条广播事件 `roomSeq=0`。两者字段名不同（§5.9），不混用。`STALE_SEQ` 只按座位水位判定，避免 4 人并发出牌互相误判过期。
+- **序号作用域**：`seatSeq` 是**每座位单调递增**的，服务端按 `(matchId, seat)` 维护水位；广播顺序用 `roomSeq`（房间内全局递增）。两个序号**在每场（match）内从 0 起算、跨局不归零**（第二十三次变更，2026-11-24 用户裁定）：该座位首条动作 `seatSeq=0`、房间首条广播事件 `roomSeq=0`，进入第 2 局及以后各局时**接着上一局继续递增**，只有新一场（`matchId` 变化）才重新从 0 起算；`snapSeq` 与 `roomSeq` 同一序列、同样跨局连续。**局切换不靠序号归零判断**，由 `SettleResult.roundNo` 与下一局的 `DealEvent` 标识；回放导出按 `roundNo` 切段，客户端只需"序号严格递增"一条校验规则。两者字段名不同（§5.9），不混用。`STALE_SEQ` 只按座位水位判定，避免 4 人并发出牌互相误判过期。
 - **时钟**：所有计时以服务端单调时钟为准；客户端只做展示，不参与判定。倒计时用房间 tick 驱动，不用系统时间差。
 
 ### 6.3 超时与托管
@@ -1091,7 +1091,7 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 
 | 手段 | 频率 | 内容 | 恢复耗时（估算） |
 | --- | --- | --- | --- |
-| 动作日志 | 每步动作后追加到 Redis Stream | `ActionRecord = {seatSeq, roomSeq, seat, requestId, kind, payload, tsMs}`，与回放包 `actions.jsonl` 同一结构（**只此一份**，不再另立第二个记录类型）；重放水位一律用 `roomSeq` | — |
+| 动作日志 | 每步动作后追加到 Redis Stream | `ActionRecord = {seatSeq, roomSeq, roundNo, seat, requestId, kind, payload, tsMs}`（`roundNo: u16` 为跨局连续序号下唯一的局归属标识，回放按它切段；`seatSeq`/`roomSeq` 跨局不归零，见 §6.2），与回放包 `actions.jsonl` 同一结构（**只此一份**，不再另立第二个记录类型）；重放水位一律用 `roomSeq` | — |
 | 房间快照 | 每 30 秒 + 每阶段结束 | `{seed, engineVersion, interpreterVersion, rulesetVersion, phase, turnSeat, levels, attackingTeam, seats[seat], zones[(seat, zoneId, cards)], lastPlay, seqWatermark[], tribute, finishOrder, rng, aFailStreak, snapSeq}`——对应 §5.12 第 1–11 项全部字段，再加 `seed`/`snapSeq`；`tribute` 段进贡结束后归零但字段位保留，抗贡局/首局取占位值。**快照字段集与 `stateHash` 字段集必须一一对应**，少一个字段就等于少一段可重建状态 | — |
 | 重建方式 | — | 载入快照（`snapSeq` 即快照覆盖的最大 `roomSeq`，与 `roomSeq` 同一 u64 序列，故可直接比较步进）→ 从 `snapSeq+1` 重放到 `lastRoomSeq` → 校验 `stateHash` | 重放步数 ≤ 快照间隔内的动作（通常 < 30 步），预期 < 100ms；最坏全量 300 步 < 200ms |
 
@@ -1228,7 +1228,7 @@ P0 之外不做自动干预，只有两项自动动作：`canary` 指标超标�
 | 文件 | 内容 |
 | --- | --- |
 | manifest.json（重放包内） | `matchId`、`seed`、三个版本号、座位与玩家标识（脱敏）；回放头不记 `aFailStreak`，由 `actions.jsonl` 重放重建，旧格式缺字段按 0 初始化 |
-| `actions.jsonl` | 逐条动作，与 §6.5 的 `ActionRecord` **同构**：`seatSeq / roomSeq / seat / requestId / kind / payload / tsMs`；两列序号都显式保留，重放水位一律用 `roomSeq`，分歧步按 `roomSeq` 对齐 `hash_trace.jsonl` |
+| `actions.jsonl` | 逐条动作，与 §6.5 的 `ActionRecord` **同构**：`seatSeq / roomSeq / roundNo / seat / requestId / kind / payload / tsMs`；两列序号都显式保留，重放水位一律用 `roomSeq`，分歧步按 `roomSeq` 对齐 `hash_trace.jsonl` |
 | `hash_trace.jsonl` | 每步的 `stateHash` |
 | `logs.txt` | 该局的服务端日志（已裁剪到本局 trace） |
 | client_summary.json（重放包内） | 各端上报的客户端版本、平台、最后确认的 `roomSeq` 与 `seatSeq` |
@@ -1641,6 +1641,7 @@ P0 之外不做自动干预，只有两项自动动作：`canary` 指标超标�
 | 第二十次变更（组牌推荐进 DSL：B6 后半） | 2026-11-24，B6 裁决「只列规范子集」之后用户补一条需求："最好定义一套组排规范，让服务端一键推荐组牌、提示是否有同花顺等……按照这个逻辑组一套最有牌推荐，用户不同意可以自己自由组牌"，并选定 **C（权重写进 DSL）**、"但 DSL 里默认用 A 的规则"（即默认权重 = 用户给定的评分取向：炸弹 4→4…8→8、王炸 9、顺子与三带二越大分越高、对子 0 分、单张扣分）。据此落：①§5.1 `ai` 段扩为 `{features[], hint, recommend}`，`recommend = {enabled, weights}`，`weights` 全整数（禁浮点）；②新增只读接口 `recommend(&State, Seat) -> Result<Layout, EngineError>`（§2.4/§5.11），纯函数、不进 `stateHash`、不改 `legal_actions`；③`Layout` 形状与 `straightFlushCandidates`（含百搭方案、独立于最优拆分、`hasStraightFlush` 即候选非空）；④评分公式全整数：炸弹按张数权重、王炸 9、同花顺 6、顺子/三带二/三连对/钢板 = 基础分 + `⌊bonus ×(rankKey−1)/(N−1)⌋` 位次加分、对子 0、单张 −1；⑤默认权重表逐项写入（用户取向原样），已知 `straightFlush=6` 与 `bomb6=6` 同分、由 tie-break 决定先后；⑥tie-break 固定五级（分数 → 散张少 → 炸弹组总张数多 → ladder 位次降的字典序 → 枚举序最先），无随机；⑦搜索用确定性束搜索 `beamWidth = 64`（写死引擎、不进 RuleSet），束宽变更只影响推荐向量、不影响 `stateHash`；⑧预算 ≤2ms P99，超预算只记 P2 指标、不判错。**未动**：`stateHash` 段集与段数、`legal_actions` 排序键与规范子集、§5.10 冻结表全部取值 | §2.4（接口清单）；§5.1（`ai` 行与示例 YAML 可省略）；§5.11（新增「组牌推荐」段）；§12.2 |
 | 第二十一次变更（整手全百搭边界闭合） | 2026-11-24，M1 实现期最后一处设计空白：B1 已定"含整手全百搭按自身级牌点数使用"，但未说"张数如何映射到牌型"，而本副牌百搭只有 2 张、">2 张全百搭"物理不可达，实现侧无从判定。用户裁决 **A（现在就闭合）**。据此定：整手全百搭一律按自身点数取同一 `rankKey`，**张数直接决定牌型**（1 `single`、2 `pair`、3 `triple`、4–8 `bomb-N`），不得判成顺子/三连对/钢板/三带二/同花顺（同 `rankKey` 既无连续也无异花色）；该条与 `deck.copies` 无关，多副牌同样适用、不另设上限；张数超出牌型表已声明值域（>8 张或未声明该张数炸弹）按 `IllegalAction` 拒，不降级。**未动**：逢人配张数不限、`rankKey` 取解序、`joker-bomb` 不收百搭、`wildcard.inStraightFlush=true`、其余 §5.10 取值 | §5.13（逢人配行）；§12.2 |
 | 第二十二次变更（视图补全：局级牌与打级队进视图） | 2026-11-24，B3 落地后暴露的连带缺口：白名单只有 `seat.levels`（两队档位），而 B3 之后**只有打级队那一份参与牌力**，客户端要渲染"级牌是哪张"必须知道是哪一队、哪一档；若让客户端自行推理，断线重连与中途加入的座位推不出 `attackingTeam`，渲染错牌而服务端 `viewHash` 自证查不出来。用户选 **B（直接下发）**。据此：①`view.fields` 允许的写法由三类扩到五类，新增 `round.level`（本局局级牌档位下标 = `levels[attackingTeam]`）与 `round.attackingTeam`（本局打级队序号）；②两者都是桌面公开信息（谁先出、谁打级人人可见），不构成信息泄露；③示例 YAML 的白名单按"只增不改序"追加两键、`view.schemaVersion` 由 1 升 **2**；④§5.12 字段级编码表新增两行（`u8` 单值、无级牌状态与 `score-only` 局该键不出现）；⑤定值向量随白名单序重算为 169 字节 canonical JSON、SHA-256 `36e7bdc6…ab51`（旧向量 `9e0b756d…cc72`、129 字节作废）；⑥`viewHash` 全部既有值随之作废，需随实现一并重算。**未动**：`stateHash` 段集与段数、`RoomSnapshot` 字段集、`lastPlay` 与 zone 编码、`seat.levels` 口径 | §5.1（`view` 行、示例 YAML）；§5.12（字段级编码表、定值向量）；§12.2 |
+| 第二十三次变更（跨局序号连续口径） | 2026-11-24，M1 的"再来一局"硬 gate 会撞上这条：一局结束进入下一局时 `roomSeq`/`seatSeq` 是否归零，设计稿只写了"均从 0 起算"，没说跨局。用户选 **A（连续、不归零）**。据此：①两个序号**在每场（match）内跨局连续递增**，只有新一场（`matchId` 变化）才从 0 起算；`snapSeq` 与 `roomSeq` 同一序列、同样连续；②**局切换不靠序号归零判断**，由 `SettleResult.roundNo` 与下一局 `DealEvent` 标识，客户端只需"严格递增"一条规则；③`ActionRecord` 与 `actions.jsonl` 增 `roundNo: u16`，回放按它切段；④旧口径"每个序号每局从 0 起算"作废。**未动**：`STALE_SEQ` 只按座位水位判定、`roomSeq`/`seatSeq` 字段名分工、重放水位一律用 `roomSeq`、`snapSeq` 与 `roomSeq` 同源 | §6.2（序号作用域）；§6.5（动作记录）；§9.4（回放包 `actions.jsonl`）；§12.2 |
 
 **留痕的意义**：评审时若发现"为什么一个棋牌项目要 40～44 周"，答案在 12.2 而不是在某一节的数字里；若未来要缩范围，也按 12.2 的变更顺序倒着砍。
 

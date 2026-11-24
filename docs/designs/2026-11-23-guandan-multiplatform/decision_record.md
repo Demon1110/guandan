@@ -723,6 +723,14 @@
 - **代价**：所有既有 `viewHash` 值作废（含 M0 材料里记录的定值向量），实现侧必须重算并在 CI 里更新；这是 B3 之后不可避免的一次性重算，本条只是把它显式化。
 - **未动**：`stateHash` 段集、`RoomSnapshot` 字段集、zone/`lastPlay` 编码、`seat.levels` 口径。
 
+## 第二十三次变更：跨局序号连续（2026-11-24）
+
+- **触发**：M1「再来一局」gate 会撞上；设计稿只写「两个序号均从 0 起算」，没写第二局怎么算。
+- **用户裁定**：「选 A」（连续、不归零）。
+- **落码**：`roomSeq`/`seatSeq`/`snapSeq` 在每场（match）内**跨局连续递增**，只有 `matchId` 变化才从 0 起算；局切换由 `SettleResult.roundNo` 与下一局 `DealEvent` 标识（不靠归零）；`ActionRecord` 与 `actions.jsonl` 增 `roundNo: u16` 供回放切段。
+- **代价**：`ActionRecord` 结构变化 → `actions.jsonl` 与回放包 schema 加一列，服务端写日志的路径要同步；旧口径「每局归零」作废。
+- **未动**：`STALE_SEQ` 判定口径、两个序号的字段分工、重放水位一律 `roomSeq`。
+
 ## 未决问题（等用户拍板）
 
 | # | 问题 | 需要谁决定 | 状态 |
