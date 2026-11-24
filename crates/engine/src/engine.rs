@@ -1641,4 +1641,192 @@ mod tests {
             }
         }
     }
+
+    // ---------- pattern-compose 等价性差分：8 预置形状 vs compose 镜像（第三十三次变更） ----------
+
+    fn compose_engine() -> M0Engine {
+        let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        p.push("tests/fixtures/guandan-compose/ruleset.yaml");
+        let src = fs::read_to_string(p).expect("compose 夹具读取失败");
+        let body = from_yaml(&src).expect("compose 夹具构造失败");
+        M0Engine::new(body)
+    }
+
+    fn compose_engine_copies(copies: u8) -> M0Engine {
+        let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        p.push("tests/fixtures/guandan-compose/ruleset.yaml");
+        let src = fs::read_to_string(p).expect("compose 夹具读取失败");
+        let total = (13 * 4 + 2) * copies as usize;
+        let per_seat = total / 4;
+        let src = src
+            .replace("copies: 2", &format!("copies: {copies}"))
+            .replace("perSeat: 27", &format!("perSeat: {per_seat}"))
+            .replace("cardCount: 108", &format!("cardCount: {total}"));
+        let body = from_yaml(&src).expect("compose 变体夹具构造失败");
+        M0Engine::new(body)
+    }
+
+    /// 用 preset 侧状态的座位 / 手牌 / 跟牌上下文，在 mirror 引擎上重建等价状态。
+    fn mirror_state_with(engine: &M0Engine, other: &State) -> State {
+        let seat = other.turn_seat;
+        let idx = engine.hand_zone_index();
+        let hand: Vec<u16> = other
+            .zones
+            .iter()
+            .find(|z| z.seat == seat && z.zone_id == idx)
+            .map(|z| z.cards.clone())
+            .unwrap_or_default();
+        diff_state_with(engine, seat, hand, other.last_play.clone())
+    }
+
+    /// preset（8 既有原语）与 compose 镜像在同一手牌、同一上下文下逐条比对 `Vec<Action>`（含顺序）。
+    fn assert_compose_equivalent(
+        preset: &M0Engine,
+        mirror: &M0Engine,
+        state: &State,
+        hand: &[u16],
+    ) {
+        let a = preset
+            .legal_actions(state)
+            .expect("preset legal_actions 应成功");
+        let bstate = mirror_state_with(mirror, state);
+        let b = mirror
+            .legal_actions(&bstate)
+            .expect("mirror legal_actions 应成功");
+        assert_eq!(
+            a, b,
+            "preset/compose 枚举不一致: hand={hand:?} last={:?}",
+            state.last_play
+        );
+    }
+
+    #[test]
+    fn differential_compose_boundary_hands() {
+        let preset = classic_engine();
+        let mirror = compose_engine();
+        let r = &preset.ruleset;
+        // 覆盖：轮子 rankKey=0、级牌入组 2-3-4-5-6、百搭多孔多窗口、triple-pair 主牌口径
+        // （带对 A 不提升）、同花顺多解、8 张炸、剩 1–2 张。
+        let hands: Vec<Vec<u16>> = vec![
+            // 轮子 A-2-3-4-5（非同花，rankKey 恒 0）。
+            vec![
+                diff_card(r, 12, 0, 0),
+                diff_card(r, 0, 1, 0),
+                diff_card(r, 1, 2, 0),
+                diff_card(r, 2, 3, 0),
+                diff_card(r, 3, 0, 0),
+            ],
+            // 级牌入组牌型 2-3-4-5-6（级牌 = 2，rank 0..4）。
+            (0..5usize).map(|i| diff_card(r, i, i % 4, 0)).collect(),
+            // 百搭多孔：真牌 3、5 各一张 + 两张百搭，竞争多个顺子窗口。
+            vec![
+                diff_card(r, 1, 0, 0),
+                diff_card(r, 3, 1, 0),
+                diff_wild(r, 0),
+                diff_wild(r, 1),
+            ],
+            // triple-pair：主牌两张真 + 百搭补主；对子一张真 + 百搭补对（带对 A 不提升）。
+            vec![
+                diff_card(r, 0, 0, 0),
+                diff_card(r, 0, 0, 1),
+                diff_wild(r, 0),
+                diff_card(r, 12, 1, 0),
+                diff_wild(r, 1),
+            ],
+            // 同花顺多解：同花 4 张 + 百搭补第五孔。
+            vec![
+                diff_card(r, 1, 0, 0),
+                diff_card(r, 2, 0, 0),
+                diff_card(r, 3, 0, 0),
+                diff_card(r, 4, 0, 0),
+                diff_wild(r, 0),
+            ],
+            // 同点数满 8 张（bomb-8，两副四花色两副本）。
+            (0..4usize)
+                .flat_map(|s| [diff_card(r, 0, s, 0), diff_card(r, 0, s, 1)])
+                .collect(),
+            // 剩 1 张。
+            vec![diff_card(r, 5, 2, 0)],
+            // 剩 2 张。
+            vec![diff_card(r, 5, 2, 0), diff_card(r, 6, 2, 0)],
+        ];
+
+        let mut checked = 0usize;
+        for hand in &hands {
+            for seat in 0..4u8 {
+                let lead = diff_state_with(&preset, seat, hand.clone(), None);
+                assert_compose_equivalent(&preset, &mirror, &lead, hand);
+                checked += 1;
+                let last = LastPlay {
+                    seat: (seat + 3) % 4,
+                    pattern_id: "single".to_owned(),
+                    pattern_key: (1, 1),
+                    cards: vec![hand[0]],
+                };
+                let mid = diff_state_with(&preset, seat, hand.clone(), Some(last));
+                assert_compose_equivalent(&preset, &mirror, &mid, hand);
+                checked += 1;
+            }
+        }
+
+        // 整手全百搭 1/2/3/5/8 张（copies=8 变体，凑得齐 8 张百搭）。
+        let p8 = classic_engine_copies(8);
+        let m8 = compose_engine_copies(8);
+        let r8 = &p8.ruleset;
+        for n in [1usize, 2, 3, 5, 8] {
+            let hand: Vec<u16> = (0..n).map(|c| diff_wild(r8, c as u8)).collect();
+            for seat in 0..4u8 {
+                let lead = diff_state_with(&p8, seat, hand.clone(), None);
+                assert_compose_equivalent(&p8, &m8, &lead, &hand);
+                checked += 1;
+            }
+        }
+        eprintln!("compose 边界差分: {checked} 个上下文全部一致");
+        assert_eq!(checked, hands.len() * 4 * 2 + 5 * 4);
+    }
+
+    #[test]
+    fn differential_compose_random_hands() {
+        let preset = classic_engine();
+        let mirror = compose_engine();
+        let r = &preset.ruleset;
+        let mut deck: Vec<u16> = (0..13usize)
+            .flat_map(|rank| {
+                (0..4usize)
+                    .flat_map(move |suit| (0..2u8).map(move |copy| diff_card(r, rank, suit, copy)))
+            })
+            .collect();
+        deck.push(patterns::joker_id(r, false, 0));
+        deck.push(patterns::joker_id(r, false, 1));
+        deck.push(patterns::joker_id(r, true, 0));
+        deck.push(patterns::joker_id(r, true, 1));
+
+        const SAMPLES: usize = 200;
+        let mut rng = DiffRng(M0_SEED);
+        let mut checked = 0usize;
+        for _ in 0..SAMPLES {
+            let k = 1 + (rng.next() % 27) as usize;
+            for i in 0..deck.len() {
+                let j = (rng.next() as usize) % deck.len();
+                deck.swap(i, j);
+            }
+            let hand: Vec<u16> = deck[..k].to_vec();
+            for seat in 0..4u8 {
+                let lead = diff_state_with(&preset, seat, hand.clone(), None);
+                assert_compose_equivalent(&preset, &mirror, &lead, &hand);
+                checked += 1;
+                let last = LastPlay {
+                    seat: (seat + 3) % 4,
+                    pattern_id: "single".to_owned(),
+                    pattern_key: (1, 1),
+                    cards: vec![hand[0]],
+                };
+                let mid = diff_state_with(&preset, seat, hand.clone(), Some(last));
+                assert_compose_equivalent(&preset, &mirror, &mid, &hand);
+                checked += 1;
+            }
+        }
+        eprintln!("compose 随机差分: {checked} 个 (手牌×4 座位×领出/跟牌) 全部一致");
+        assert_eq!(checked, SAMPLES * 4 * 2);
+    }
 }

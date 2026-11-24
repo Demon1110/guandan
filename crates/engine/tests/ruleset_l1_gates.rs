@@ -759,3 +759,78 @@ fn streak_limit_above_max_rejected() {
         "level.pass.streakLimit",
     );
 }
+
+// ---------- pattern.compose 闭集 / wheel / 形状去重（第三十三次变更） ----------
+
+#[test]
+fn compose_valid_shape_accepted() {
+    let mut o = Opts::four_seat();
+    o.patterns = "  - { id: pair-c, primitiveId: pattern.compose, params: { shape: { \"rank.same\": { count: 2 } }, maxCards: 2 } }";
+    assert_clean(&base(&o));
+}
+
+#[test]
+fn compose_duplicate_shape_rejected() {
+    let mut o = Opts::four_seat();
+    o.patterns = "  - { id: a, primitiveId: pattern.compose, params: { shape: { \"rank.same\": { count: 2 } }, maxCards: 2 } }\n  - { id: b, primitiveId: pattern.compose, params: { shape: { \"rank.same\": { count: 2 } }, maxCards: 2 } }";
+    assert_gate(&base(&o), ErrorCode::RsSchemaInvalid, "patterns[1].params");
+}
+
+#[test]
+fn compose_collides_with_preset_shape_rejected() {
+    let mut o = Opts::four_seat();
+    o.patterns = "  - { id: pair, primitiveId: pattern.same-rank, params: { count: 2 } }\n  - { id: pair-c, primitiveId: pattern.compose, params: { shape: { \"rank.same\": { count: 2 } }, maxCards: 2 } }";
+    assert_gate(&base(&o), ErrorCode::RsSchemaInvalid, "patterns[1].params");
+}
+
+#[test]
+fn compose_wheel_steps_not_five_rejected() {
+    let mut o = Opts::four_seat();
+    o.patterns = "  - { id: st, primitiveId: pattern.compose, params: { shape: { \"rank.contiguous\": { steps: 4, step: 1 } }, wheel: true, maxCards: 4 } }";
+    assert_gate(
+        &base(&o),
+        ErrorCode::RsSchemaInvalid,
+        "patterns[0].params.wheel",
+    );
+}
+
+#[test]
+fn compose_wheel_step_not_one_rejected() {
+    let mut o = Opts::four_seat();
+    o.patterns = "  - { id: cp, primitiveId: pattern.compose, params: { shape: { \"rank.contiguous\": { steps: 5, step: 2 } }, wheel: true, maxCards: 10 } }";
+    assert_gate(
+        &base(&o),
+        ErrorCode::RsSchemaInvalid,
+        "patterns[0].params.wheel",
+    );
+}
+
+#[test]
+fn compose_out_of_closed_set_rejected_at_construction() {
+    let mut o = Opts::four_seat();
+    o.patterns = "  - { id: x, primitiveId: pattern.compose, params: { shape: { or: { rank: \"same\" } }, maxCards: 2 } }";
+    let err = from_yaml(&base(&o)).expect_err("闭集外判断器必须构造失败");
+    assert_eq!(err.code, ErrorCode::RsSchemaInvalid);
+}
+
+#[test]
+fn compose_max_cards_out_of_range_rejected() {
+    for mc in [1u8, 21] {
+        let mut o = Opts::four_seat();
+        let patterns = format!("  - {{ id: s, primitiveId: pattern.compose, params: {{ shape: {{ \"rank.same\": {{ count: 2 }} }}, maxCards: {mc} }} }}");
+        o.patterns = &patterns;
+        assert_gate(
+            &base(&o),
+            ErrorCode::RsSchemaInvalid,
+            "patterns[0].params.maxCards",
+        );
+    }
+}
+
+#[test]
+fn compose_max_cards_missing_rejected_at_construction() {
+    let mut o = Opts::four_seat();
+    o.patterns = "  - { id: s, primitiveId: pattern.compose, params: { shape: { \"rank.same\": { count: 2 } } } }";
+    let err = from_yaml(&base(&o)).expect_err("maxCards 必填");
+    assert_eq!(err.code, ErrorCode::RsSchemaInvalid);
+}

@@ -51,6 +51,22 @@ fn guandan_classic_passes_l1() {
 }
 
 #[test]
+fn guandan_compose_passes_l1() {
+    // 第三十三次变更：14 个预置形状逐条改写为 `pattern.compose`，L1 闸门（闭集 / 值域 /
+    // wheel 合法 / 形状去重 / 锚点识别）全部通过，且不产生 finding。
+    let src = read_fixture("guandan-compose/ruleset.yaml");
+    let body = from_yaml(&src).expect("guandan-compose 应构造成功");
+    let validation = validate(&body, &[Level::L1]);
+
+    assert!(validation.ran_levels.contains(&Level::L1));
+    assert!(
+        validation.findings.is_empty(),
+        "guandan-compose L1 不应有 finding: {:?}",
+        validation.findings
+    );
+}
+
+#[test]
 fn requested_unimplemented_level_is_not_recorded() {
     // L2–L4 本轮未实现：请求了未实现的级别不得记入 ran_levels（§5.4 第 578 行语义）。
     let src = read_fixture("m0-minimal/ruleset.yaml");
