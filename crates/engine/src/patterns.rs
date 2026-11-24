@@ -79,6 +79,9 @@ fn card_ref(r: &RuleSetBody, card: u16) -> CardRef {
 
 /// 点数键：`naturalOrder` 下标（不含级牌高位插入；见模块顶部 level-rank hold）。
 fn rank_key_of(r: &RuleSetBody, rank_idx: usize) -> u32 {
+    // TODO(M1-HOLD-level-rank)：§5.13 第 892 行「当前 levels[team] 对应的牌…按高于 A
+    // 参与比较」未落地——每队一个 levels、两队档位可能不同，跨队比较时同一张牌点力
+    // 不唯一，可比性口径待裁决；本批保持 naturalOrder，不按级牌高位重排。
     let rank_str = r.deck.ranks[rank_idx].as_str();
     r.natural_order
         .iter()
