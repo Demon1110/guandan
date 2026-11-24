@@ -37,6 +37,7 @@ fn classic_synthetic_ladder_matches_expected() {
             "single",
             "pair",
             "triple",
+            "triple-pair",
             "straight-5",
             "plate-3",
             "steel-2",

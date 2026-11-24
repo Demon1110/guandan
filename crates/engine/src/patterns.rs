@@ -217,22 +217,21 @@ fn primitive_of(params: &PrimitiveParams) -> &'static str {
         PrimitiveParams::Bomb { .. } => "pattern.bomb",
         PrimitiveParams::StraightFlush { .. } => "pattern.straight-flush",
         PrimitiveParams::JokerBomb => "pattern.joker-bomb",
+        PrimitiveParams::TriplePair => "pattern.triple-pair",
         _ => "reserved",
     }
 }
 
-/// 一札多解时的判定优先级：更具体的牌型优先（同花顺压过普通顺子、炸弹压过同点数散牌）。
-fn priority(params: &PrimitiveParams) -> u8 {
-    match params {
-        PrimitiveParams::JokerBomb => 0,
-        PrimitiveParams::Bomb { .. } => 1,
-        PrimitiveParams::StraightFlush { .. } => 2,
-        PrimitiveParams::ConsecutiveTriples { .. } => 3,
-        PrimitiveParams::ConsecutivePairs { .. } => 4,
-        PrimitiveParams::Straight { .. } => 5,
-        PrimitiveParams::SameRank { .. } => 6,
-        _ => 99,
-    }
+/// 同手多解消歧：取 `compare.ladder`（含 straight-flush 合成位次）中位次最高者。
+///
+/// 待追认：此消歧规则沿用现成 `synthetic_ladder` 位次，尚未经用户专门表态；
+/// 现状覆盖顺子 / 连对 / 钢板 / 三带二之间的同手多解。
+fn ladder_position(r: &RuleSetBody, def: &PatternDef) -> usize {
+    let ladder = synthetic_ladder(r);
+    ladder
+        .iter()
+        .position(|p| *p == def.id)
+        .unwrap_or(usize::MAX)
 }
 
 fn build_rec(def: &PatternDef, count_key: u32, rank_key: u32, cards: Vec<u16>) -> Recognized {
@@ -603,6 +602,79 @@ fn match_joker_bomb(
     Some(build_rec(def, 4, ctx.joker_key(r, true), cards))
 }
 
+/// 三带二（§5.13 第 930 行）：3 张同点主牌 + 1 对，共 5 张。
+///
+/// - `rankKey` 只取主牌三张的点数，对子不进 `rankKey`；主牌三张不得是王。
+/// - 对子可以是任意同点两张；双副牌下两张小王 / 两张大王成对亦可；两点数不同即非法。
+/// - 百搭可代主牌或对子任一张；主牌点数至少保留一张真牌（否则主牌点数无可锚定）。
+fn match_triple_pair(
+    r: &RuleSetBody,
+    ctx: &RankContext,
+    def: &PatternDef,
+    g: &Groups,
+) -> Option<Recognized> {
+    let substitute = substitute_set(r);
+    let mut best: Option<Sol> = None;
+
+    // 双王对子候选（两张小王或两张大王）；百搭不得代王。
+    let joker_pairs: Vec<Vec<u16>> = [&g.little, &g.big]
+        .iter()
+        .filter(|j| j.len() == 2)
+        .map(|j| j[..2].to_vec())
+        .collect();
+
+    for (&main, main_bucket) in &g.base {
+        if !substitute.contains(&main) {
+            continue;
+        }
+        let real_main = main_bucket.len();
+        if real_main > 3 {
+            continue;
+        }
+        let need_main = 3 - real_main;
+
+        // 真牌对子：另一点数取前两张，缺孔由百搭补。
+        for (&pair, pair_bucket) in &g.base {
+            if pair == main {
+                continue;
+            }
+            let take_pair = pair_bucket.len().min(2);
+            let need_pair = 2 - take_pair;
+            if need_main + need_pair > g.wild.len() {
+                continue;
+            }
+            let mut cards = main_bucket[..real_main].to_vec();
+            cards.extend_from_slice(&g.wild[..need_main]);
+            cards.extend_from_slice(&pair_bucket[..take_pair]);
+            cards.extend_from_slice(&g.wild[need_main..need_main + need_pair]);
+            let sol = Sol {
+                rank_key: ctx.rank_key(r, main),
+                true_combo: vec![main, pair],
+                cards,
+            };
+            replace_best(&mut best, sol);
+        }
+
+        // 双王对子。
+        for jp in &joker_pairs {
+            if need_main > g.wild.len() {
+                continue;
+            }
+            let mut cards = main_bucket[..real_main].to_vec();
+            cards.extend_from_slice(&g.wild[..need_main]);
+            cards.extend_from_slice(jp);
+            let sol = Sol {
+                rank_key: ctx.rank_key(r, main),
+                true_combo: vec![main],
+                cards,
+            };
+            replace_best(&mut best, sol);
+        }
+    }
+
+    best.map(|sol| build_rec(def, 5, sol.rank_key, sol.cards))
+}
+
 /// 提交牌总数必须与牌型张数一致（多余百搭 / 散牌不得被匹配器忽略）。
 fn submitted_len_ok(def: &PatternDef, g: &Groups) -> bool {
     let total =
@@ -615,6 +687,7 @@ fn submitted_len_ok(def: &PatternDef, g: &Groups) -> bool {
         PrimitiveParams::Bomb { count } => total == *count as usize,
         PrimitiveParams::StraightFlush { length } => total == *length as usize,
         PrimitiveParams::JokerBomb => total == 4,
+        PrimitiveParams::TriplePair => total == 5,
         _ => true,
     }
 }
@@ -640,6 +713,7 @@ fn match_def(
         PrimitiveParams::Bomb { count } => match_bomb(r, ctx, def, *count, g),
         PrimitiveParams::StraightFlush { length } => match_straight(r, ctx, def, *length, g, true),
         PrimitiveParams::JokerBomb => match_joker_bomb(r, ctx, def, g),
+        PrimitiveParams::TriplePair => match_triple_pair(r, ctx, def, g),
         // TODO(M1-HOLD-with-attachment)：v2 预留原语（§5.2 第 495/547 行、§5.13 第 890 行），
         // L1 已拒绝引用；运行期即便进入也不识别为任何牌型。
         PrimitiveParams::Reserved { .. } => None,
@@ -657,13 +731,15 @@ pub(crate) fn recognize(r: &RuleSetBody, ctx: &RankContext, cards: &[u16]) -> Op
         return None;
     }
     let groups = Groups::build(r, ctx, cards);
-    let mut defs: Vec<&PatternDef> = r
+    let mut defs: Vec<(&PatternDef, usize)> = r
         .patterns
         .iter()
-        .filter(|p| priority(&p.params) < 99)
+        .filter(|p| !matches!(p.params, PrimitiveParams::Reserved { .. }))
+        .map(|p| (p, ladder_position(r, p)))
         .collect();
-    defs.sort_by_key(|p| priority(&p.params));
-    for def in defs {
+    // 同手多解：ladder 位次最高者先匹配（§5.13 第 929 行）。
+    defs.sort_by_key(|(_, pos)| std::cmp::Reverse(*pos));
+    for (def, _) in defs {
         if let Some(rec) = match_def(r, ctx, def, &groups) {
             return Some(rec);
         }
@@ -793,14 +869,15 @@ pub(crate) fn enumerate(r: &RuleSetBody, ctx: &RankContext, hand: &[u16]) -> Vec
         }
     };
 
-    // 按识别优先级输出：更具体的牌型先占位，同一札多解时不被泛化牌型顶掉。
-    let mut defs: Vec<&PatternDef> = r
+    // 按 ladder 位次输出：更具体的牌型先占位，同一札多解时不被泛化牌型顶掉。
+    let mut defs: Vec<(&PatternDef, usize)> = r
         .patterns
         .iter()
-        .filter(|p| priority(&p.params) < 99)
+        .filter(|p| !matches!(p.params, PrimitiveParams::Reserved { .. }))
+        .map(|p| (p, ladder_position(r, p)))
         .collect();
-    defs.sort_by_key(|p| priority(&p.params));
-    for def in defs {
+    defs.sort_by_key(|(_, pos)| std::cmp::Reverse(*pos));
+    for (def, _) in defs {
         match &def.params {
             PrimitiveParams::SameRank { count } => {
                 let count = *count as usize;
@@ -900,6 +977,46 @@ pub(crate) fn enumerate(r: &RuleSetBody, ctx: &RankContext, hand: &[u16]) -> Vec
                     let cards = consecutive_cards(&g.base, &g.wild, &window, 3);
                     if let Some(rec) = recognize(r, ctx, &cards) {
                         push(rec);
+                    }
+                }
+            }
+            PrimitiveParams::TriplePair => {
+                // 主牌三张 + 对子（真牌点对 / 双王对），百搭按缺口分配。
+                let joker_pairs: Vec<Vec<u16>> = [&g.little, &g.big]
+                    .iter()
+                    .filter(|j| j.len() == 2)
+                    .map(|j| j[..2].to_vec())
+                    .collect();
+                for (&main, main_bucket) in &g.base {
+                    let real_main = main_bucket.len().min(3);
+                    let need_main = 3 - real_main;
+                    for (&pair, pair_bucket) in &g.base {
+                        if pair == main {
+                            continue;
+                        }
+                        let take_pair = pair_bucket.len().min(2);
+                        let need_pair = 2 - take_pair;
+                        if need_main + need_pair > g.wild.len() {
+                            continue;
+                        }
+                        let mut cards = main_bucket[..real_main].to_vec();
+                        cards.extend_from_slice(&g.wild[..need_main]);
+                        cards.extend_from_slice(&pair_bucket[..take_pair]);
+                        cards.extend_from_slice(&g.wild[need_main..need_main + need_pair]);
+                        if let Some(rec) = recognize(r, ctx, &cards) {
+                            push(rec);
+                        }
+                    }
+                    for jp in &joker_pairs {
+                        if need_main > g.wild.len() {
+                            continue;
+                        }
+                        let mut cards = main_bucket[..real_main].to_vec();
+                        cards.extend_from_slice(&g.wild[..need_main]);
+                        cards.extend_from_slice(jp);
+                        if let Some(rec) = recognize(r, ctx, &cards) {
+                            push(rec);
+                        }
                     }
                 }
             }

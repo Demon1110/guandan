@@ -79,6 +79,8 @@ pub enum PrimitiveParams {
         length: u8,
     },
     JokerBomb,
+    /// 三带二：3 张同点主牌 + 1 对，固定 5 张，无参（§5.13 第 930 行）。
+    TriplePair,
     // —— 比较 ——
     ByRank {
         direction: OrderDirection,
@@ -330,8 +332,9 @@ struct ShuffleRaw {
 }
 
 /// 无参原语：必须显式写空对象 `{}`，缺 `params` 键即拒绝（§5.1 第 392 行、§5.2 参数表）。
-const NO_PARAM_PRIMITIVES: [&str; 9] = [
+const NO_PARAM_PRIMITIVES: [&str; 10] = [
     "pattern.joker-bomb",
+    "pattern.triple-pair",
     "action.pass",
     "compare.by-ladder",
     "compare.bomb-order",
@@ -414,6 +417,10 @@ pub fn dispatch(
         "pattern.joker-bomb" => {
             let _: EmptyRaw = parse_raw(params, location, primitive_id)?;
             PrimitiveParams::JokerBomb
+        }
+        "pattern.triple-pair" => {
+            let _: EmptyRaw = parse_raw(params, location, primitive_id)?;
+            PrimitiveParams::TriplePair
         }
         "compare.by-rank" => {
             let r: DirectionRaw = parse_raw(params, location, primitive_id)?;

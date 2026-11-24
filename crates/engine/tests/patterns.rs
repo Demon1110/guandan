@@ -186,6 +186,175 @@ fn triple_rejects_mixed_ranks() {
     );
 }
 
+// ---------- 三带二（triple-pair） ----------
+
+#[test]
+fn triple_pair_recognized() {
+    let r = fixture_body();
+    // 主牌三张 3 + 对子 5；rankKey 只取主牌 3（合成序 key 1），对子不提升。
+    let cards = vec![
+        c(&r, 1, 0, 0),
+        c(&r, 1, 0, 1),
+        c(&r, 1, 2, 0),
+        c(&r, 3, 0, 0),
+        c(&r, 3, 2, 0),
+    ];
+    let engine = engine();
+    assert_played(
+        apply_play(&engine, cards.clone(), cards),
+        "triple-pair",
+        (5, 1),
+        "三带二 333+55",
+    );
+}
+
+#[test]
+fn triple_pair_rank_key_ignores_pair() {
+    let r = fixture_body();
+    // 主牌三张 A + 对子 2：rankKey 仍取 A（key 12），带级牌对子不抬高。
+    let cards = vec![
+        c(&r, 12, 0, 0),
+        c(&r, 12, 0, 1),
+        c(&r, 12, 2, 0),
+        c(&r, 0, 0, 0),
+        c(&r, 0, 2, 0),
+    ];
+    let engine = engine();
+    assert_played(
+        apply_play(&engine, cards.clone(), cards),
+        "triple-pair",
+        (5, 12),
+        "三带二 AAA+22 对子不进 rankKey",
+    );
+}
+
+#[test]
+fn triple_pair_accepts_joker_pair() {
+    let r = fixture_body();
+    // 主牌三张 3 + 两张小王成对亦可。
+    let cards = vec![
+        c(&r, 1, 0, 0),
+        c(&r, 1, 0, 1),
+        c(&r, 1, 2, 0),
+        joker_id(&r, false, 0),
+        joker_id(&r, false, 1),
+    ];
+    let engine = engine();
+    assert_played(
+        apply_play(&engine, cards.clone(), cards),
+        "triple-pair",
+        (5, 1),
+        "三带二 333+小王对",
+    );
+}
+
+#[test]
+fn triple_pair_wildcard_fills_main() {
+    let r = fixture_body();
+    // 真牌两张 3 + 百搭补主牌三张，对子为小王对（主牌点数无歧义，不取最大解分支）。
+    let cards = vec![
+        c(&r, 1, 0, 0),
+        c(&r, 1, 2, 0),
+        w(&r, 0),
+        joker_id(&r, false, 0),
+        joker_id(&r, false, 1),
+    ];
+    let engine = engine();
+    assert_played(
+        apply_play(&engine, cards.clone(), cards),
+        "triple-pair",
+        (5, 1),
+        "百搭补主牌的三带二",
+    );
+}
+
+#[test]
+fn triple_pair_wildcard_fills_pair() {
+    let r = fixture_body();
+    // 主牌三张 3 + 真牌一张 5 + 百搭补对子 55。
+    let cards = vec![
+        c(&r, 1, 0, 0),
+        c(&r, 1, 0, 1),
+        c(&r, 1, 2, 0),
+        c(&r, 3, 0, 0),
+        w(&r, 0),
+    ];
+    let engine = engine();
+    assert_played(
+        apply_play(&engine, cards.clone(), cards),
+        "triple-pair",
+        (5, 1),
+        "百搭补对子的三带二",
+    );
+}
+
+#[test]
+fn triple_pair_rejects_main_jokers() {
+    let r = fixture_body();
+    // 主牌三张不得是王：两小王 + 大王 + 一对 2 不构成三带二。
+    let cards = vec![
+        joker_id(&r, false, 0),
+        joker_id(&r, false, 1),
+        joker_id(&r, true, 0),
+        c(&r, 0, 0, 0),
+        c(&r, 0, 2, 0),
+    ];
+    let engine = engine();
+    assert_illegal(
+        apply_play(&engine, cards.clone(), cards),
+        "王不能当三带二主牌",
+    );
+}
+
+#[test]
+fn triple_pair_plain_cannot_beat_plain() {
+    let r = fixture_body();
+    let engine = engine();
+    let last = vec![
+        c(&r, 1, 0, 0),
+        c(&r, 1, 0, 1),
+        c(&r, 1, 2, 0),
+        c(&r, 3, 0, 0),
+        c(&r, 3, 2, 0),
+    ];
+    // 另一手普通顺子：非炸弹跨型不可压三带二。
+    let hand = vec![
+        c(&r, 1, 0, 0),
+        c(&r, 2, 1, 0),
+        c(&r, 3, 2, 0),
+        c(&r, 4, 3, 0),
+        c(&r, 5, 0, 0),
+    ];
+    let state = follow_state(&engine, hand, "triple-pair", (5, 1), last);
+    let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
+    assert!(
+        !legal.iter().any(|a| matches!(a, Action::Play { .. })),
+        "非炸弹跨型不可压三带二: {legal:?}"
+    );
+}
+
+#[test]
+fn bomb_beats_triple_pair() {
+    let r = fixture_body();
+    let engine = engine();
+    let last = vec![
+        c(&r, 1, 0, 0),
+        c(&r, 1, 0, 1),
+        c(&r, 1, 2, 0),
+        c(&r, 3, 0, 0),
+        c(&r, 3, 2, 0),
+    ];
+    let bomb2 = vec![
+        c(&r, 0, 0, 0),
+        c(&r, 0, 0, 1),
+        c(&r, 0, 2, 0),
+        c(&r, 0, 2, 1),
+    ];
+    let state = follow_state(&engine, bomb2.clone(), "triple-pair", (5, 1), last);
+    let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
+    assert!(plays_contain(&legal, &bomb2), "炸弹应能压三带二: {legal:?}");
+}
+
 // ---------- 顺子 ----------
 
 #[test]
@@ -580,18 +749,18 @@ fn steel_rejects_non_consecutive() {
 #[test]
 fn steel_rejects_wrong_grouping() {
     let r = fixture_body();
-    // 一组三张 2 + 一对 3（5 张），不构成两组三张连。
+    // 一组三张 2 + 两张不同点数单张 3/4（5 张），既不构成两组三张连，也不构成对子。
     let cards = vec![
         c(&r, 0, 0, 0),
         c(&r, 0, 0, 1),
         c(&r, 0, 2, 0),
         c(&r, 1, 0, 0),
-        c(&r, 1, 2, 0),
+        c(&r, 2, 0, 0),
     ];
     let engine = engine();
     assert_illegal(
         apply_play(&engine, cards.clone(), cards),
-        "三带两杂牌形冒充钢板",
+        "三张加两个单张冒充钢板/三带二",
     );
 }
 

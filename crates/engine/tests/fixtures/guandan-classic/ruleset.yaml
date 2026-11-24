@@ -19,6 +19,7 @@ patterns:
   - { id: single,           primitiveId: pattern.same-rank,           params: { count: 1 } }
   - { id: pair,             primitiveId: pattern.same-rank,           params: { count: 2 } }
   - { id: triple,          primitiveId: pattern.same-rank,           params: { count: 3 } }
+  - { id: triple-pair,    primitiveId: pattern.triple-pair,         params: {} }
   - { id: straight-5,      primitiveId: pattern.straight,            params: { length: 5 } }
   - { id: plate-3,         primitiveId: pattern.consecutive-pairs,   params: { pairs: 3 } }
   - { id: steel-2,         primitiveId: pattern.consecutive-triples, params: { triples: 2 } }
@@ -30,7 +31,7 @@ patterns:
   - { id: straight-flush-5, primitiveId: pattern.straight-flush,      params: { length: 5 } }
   - { id: joker-bomb,      primitiveId: pattern.joker-bomb,          params: {} }
 compare:
-  ladder: [single, pair, triple, straight-5, plate-3, steel-2, bomb-4, bomb-5, bomb-6, bomb-7, bomb-8, joker-bomb]
+  ladder: [single, pair, triple, triple-pair, straight-5, plate-3, steel-2, bomb-4, bomb-5, bomb-6, bomb-7, bomb-8, joker-bomb]
   bombOrder: count-then-rank
   flushRank: above-bomb-5      # 同花顺位次：below-bomb-5 / above-bomb-5 / above-bomb-6 / above-bomb-8（C2 争议项，改这一个值即可切换）
 tribute:

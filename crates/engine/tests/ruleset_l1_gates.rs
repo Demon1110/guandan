@@ -463,6 +463,22 @@ fn straight_flush_length_out_of_range_rejected() {
     );
 }
 
+#[test]
+fn triple_pair_rejects_any_param_key() {
+    let mut o = Opts::four_seat();
+    o.patterns = "  - { id: tp, primitiveId: pattern.triple-pair, params: { count: 3 } }";
+    let err = from_yaml(&base(&o)).expect_err("三带二不接受任何参数键");
+    assert_eq!(err.code, ErrorCode::RsSchemaInvalid);
+}
+
+#[test]
+fn triple_pair_requires_empty_params_object() {
+    let mut o = Opts::four_seat();
+    o.patterns = "  - { id: tp, primitiveId: pattern.triple-pair }";
+    let err = from_yaml(&base(&o)).expect_err("无参原语必须写 params: {}");
+    assert_eq!(err.code, ErrorCode::RsSchemaInvalid);
+}
+
 // ---------- tribute 必填性与 pairs 值域 ----------
 
 #[test]
