@@ -887,28 +887,202 @@ fn enumerates_plate_steel_bomb_candidates() {
     );
 }
 
+// ---------- 逢人配（§5.13 第 893 行、§5.10 第 773 行） ----------
+
+/// 逢人配源牌：红桃级牌（H 花色、`@level` → 初始级 2），即 rank 0 / suit 1 两张副本。
+fn w(r: &RuleSetBody, copy: u8) -> u16 {
+    c(r, 0, 1, copy)
+}
+
 #[test]
-fn wildcard_cards_produce_no_candidate() {
-    // TODO(M1-HOLD-wildcard)：逢人配源为红桃级牌（H 花色、初始级 2），即 id 26/27。
-    // 本批 wildcard 牌不进任何候选；提交含 wildcard 的出牌判非法。
+fn wildcard_single_own_rank() {
     let r = fixture_body();
     let engine = engine();
-    let wildcard = c(&r, 0, 1, 0); // 红桃 2
-    let other = c(&r, 1, 0, 0);
-    let state = state_with(&engine, vec![wildcard, other]);
-    let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
-    for action in &legal {
-        if let Action::Play { cards } = action {
-            assert!(
-                !cards.contains(&wildcard),
-                "wildcard 牌不得进候选: {cards:?}"
-            );
-        }
-    }
-    assert_illegal(
-        apply_play(&engine, vec![wildcard], vec![wildcard]),
-        "单独提交 wildcard 牌",
+    // 整手全百搭：按自身点数（级牌 2，下标 0）用，不走最大解。
+    let wild = w(&r, 0);
+    assert_played(
+        apply_play(&engine, vec![wild], vec![wild]),
+        "single",
+        (1, 0),
+        "百搭单独出按自身点数",
     );
+    let state = state_with(&engine, vec![wild]);
+    let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
+    assert!(
+        plays_contain(&legal, &[wild]),
+        "单张百搭应进枚举: {legal:?}"
+    );
+}
+
+#[test]
+fn wildcard_pair_mixed_fills_slot() {
+    let r = fixture_body();
+    let engine = engine();
+    // 真牌 3（下标 1）一张 + 百搭补成对子 3。
+    let cards = vec![c(&r, 1, 0, 0), w(&r, 0)];
+    assert_played(
+        apply_play(&engine, cards.clone(), cards),
+        "pair",
+        (2, 1),
+        "百搭补成对子 3",
+    );
+}
+
+#[test]
+fn wildcard_pair_all_wildcards() {
+    let r = fixture_body();
+    let engine = engine();
+    // 整手全百搭两张：按自身点数成对，rankKey 为级牌点数（2，下标 0）。
+    let cards = vec![w(&r, 0), w(&r, 1)];
+    assert_played(
+        apply_play(&engine, cards.clone(), cards),
+        "pair",
+        (2, 0),
+        "两张百搭成对按自身点数",
+    );
+}
+
+#[test]
+fn wildcard_triple_fills_slot() {
+    let r = fixture_body();
+    let engine = engine();
+    // 真牌 3 两张 + 百搭补成三张 3。
+    let cards = vec![c(&r, 1, 0, 0), c(&r, 1, 2, 0), w(&r, 0)];
+    assert_played(
+        apply_play(&engine, cards.clone(), cards),
+        "triple",
+        (3, 1),
+        "百搭补成三张 3",
+    );
+}
+
+#[test]
+fn wildcard_straight_single_gap() {
+    let r = fixture_body();
+    let engine = engine();
+    // 真牌 2-4-5-6（下标 0/2/3/4）+ 百搭补 3 → 顺子 2-3-4-5-6，高点 6 下标 4。
+    let cards = vec![
+        c(&r, 0, 0, 0),
+        c(&r, 2, 2, 0),
+        c(&r, 3, 3, 0),
+        c(&r, 4, 0, 0),
+        w(&r, 0),
+    ];
+    assert_played(
+        apply_play(&engine, cards.clone(), cards),
+        "straight-5",
+        (5, 4),
+        "百搭补顺子单孔",
+    );
+}
+
+#[test]
+fn wildcard_straight_multi_gap_picks_top_solution() {
+    let r = fixture_body();
+    let engine = engine();
+    // 真牌 3-4-5-6（下标 1/2/3/4）+ 百搭：可达解 2-3-4-5-6（高点 4）与 3-4-5-6-7
+    // （高点 5）；按「rankKey 最大者」取 3-4-5-6-7，高点 7 下标 5。
+    let cards = vec![
+        c(&r, 1, 0, 0),
+        c(&r, 2, 1, 0),
+        c(&r, 3, 2, 0),
+        c(&r, 4, 3, 0),
+        w(&r, 0),
+    ];
+    assert_played(
+        apply_play(&engine, cards.clone(), cards.clone()),
+        "straight-5",
+        (5, 5),
+        "多孔顺子取最大解 3-4-5-6-7",
+    );
+    let state = state_with(&engine, cards.clone());
+    let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
+    assert!(
+        plays_contain(&legal, &cards),
+        "最大解顺子应进枚举: {legal:?}"
+    );
+}
+
+#[test]
+fn wildcard_plate_fills_slot() {
+    let r = fixture_body();
+    let engine = engine();
+    // 2 一对、3 一对、4 一张 + 百搭补成三连对 2-3-4，高点 4 下标 2。
+    let cards = vec![
+        c(&r, 0, 0, 0),
+        c(&r, 0, 2, 0),
+        c(&r, 1, 0, 0),
+        c(&r, 1, 2, 0),
+        c(&r, 2, 0, 0),
+        w(&r, 0),
+    ];
+    assert_played(
+        apply_play(&engine, cards.clone(), cards),
+        "plate-3",
+        (6, 2),
+        "百搭补三连对",
+    );
+}
+
+#[test]
+fn wildcard_steel_fills_slot() {
+    let r = fixture_body();
+    let engine = engine();
+    // 2 三张、3 两张 + 百搭补成钢板 2-3，高点 3 下标 1。
+    let cards = vec![
+        c(&r, 0, 0, 0),
+        c(&r, 0, 0, 1),
+        c(&r, 0, 2, 0),
+        c(&r, 1, 0, 0),
+        c(&r, 1, 0, 1),
+        w(&r, 0),
+    ];
+    assert_played(
+        apply_play(&engine, cards.clone(), cards),
+        "steel-2",
+        (6, 1),
+        "百搭补钢板",
+    );
+}
+
+#[test]
+fn wildcard_bomb_fills_slot() {
+    let r = fixture_body();
+    let engine = engine();
+    // 真牌 2 三张 + 百搭补成 bomb-4，rankKey 2 下标 0。
+    let cards = vec![c(&r, 0, 0, 0), c(&r, 0, 0, 1), c(&r, 0, 2, 0), w(&r, 0)];
+    assert_played(
+        apply_play(&engine, cards.clone(), cards),
+        "bomb-4",
+        (4, 0),
+        "百搭补炸弹",
+    );
+}
+
+#[test]
+fn wildcard_cannot_substitute_joker() {
+    let r = fixture_body();
+    let engine = engine();
+    let little = joker_id(&r, false, 0);
+    // 百搭不得替代大小王：百搭 + 小王不成任何牌型。
+    let cards = vec![little, w(&r, 0)];
+    assert_illegal(apply_play(&engine, cards.clone(), cards), "百搭代小王");
+}
+
+#[test]
+fn joker_bomb_rejects_wildcard() {
+    let r = fixture_body();
+    let engine = engine();
+    let little0 = joker_id(&r, false, 0);
+    let little1 = joker_id(&r, false, 1);
+    let big0 = joker_id(&r, true, 0);
+    let big1 = joker_id(&r, true, 1);
+    // 4 王 + 百搭：王炸不接受百搭。
+    let five = vec![little0, little1, big0, big1, w(&r, 0)];
+    assert_illegal(apply_play(&engine, five.clone(), five), "4 王 + 百搭");
+    // 3 真王 + 百搭：不成王炸。
+    let four = vec![little0, little1, big0, w(&r, 0)];
+    assert_illegal(apply_play(&engine, four.clone(), four), "3 王 + 百搭");
 }
 
 // ---------- 跨型压制边界（§5.13 第 894/895 行：非同型非炸弹不能压） ----------
