@@ -71,6 +71,16 @@ pub fn mid_game_state() -> (M0Engine, State) {
     (engine, state)
 }
 
+/// 基准夹具：只 `deal`、不落子（`last_play = None`）的领出态。
+/// 领出态是候选峰值口径：手牌全部为合法候选，枚举 push 与四元组排序成本最高，
+/// 对应 gate「单次动作解释 <1ms」的最坏态。纯状态推进，不含时钟调用（§3.3）。
+pub fn lead_state() -> (M0Engine, State) {
+    let engine = build_engine().expect("构造引擎失败");
+    let state = engine.deal(M0_SEED).expect("发牌失败");
+    debug_assert!(state.last_play.is_none(), "领出态 last_play 应为 None");
+    (engine, state)
+}
+
 /// 固定策略：每步取 `legal_actions` 排序后的第一个（最小合法单张）；
 /// 跑到 `settle` 为止。策略固定即序列固定，日志可逐条复现。
 pub fn run_m0_golden() -> Result<GoldenOutcome, String> {
@@ -261,12 +271,28 @@ pub extern "C" fn gf_m0_golden_report() -> *mut u8 {
 }
 
 /// 基准批处理：对固定中局状态连续枚举 `batch` 次合法动作，返回累计候选条数
-/// （checksum，防止宿主侧优化删除）。计时由 Node 宿主 `process.hrtime` 完成，
-/// 本函数不含时钟调用（§3.3 豁免边界：计时只在 benches/host）。
+/// （checksum，防止宿主侧优化删除；宿主用 checksum/iterations 得每次候选数）。
+/// 计时由 Node 宿主 `process.hrtime` 完成，本函数不含时钟调用（§3.3 豁免边界）。
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn gf_bench_legal_actions(batch: u32) -> u64 {
     let (engine, state) = mid_game_state();
+    let mut checksum: u64 = 0;
+    for _ in 0..batch {
+        let legal = engine
+            .legal_actions(&state)
+            .expect("基准夹具枚举合法动作失败");
+        checksum = checksum.wrapping_add(legal.len() as u64);
+    }
+    checksum
+}
+
+/// 基准批处理：领出态（`last_play = None`，候选峰值口径）连续枚举 `batch` 次，
+/// 返回累计候选条数 checksum。本函数不含时钟调用（§3.3 豁免边界）。
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn gf_bench_legal_actions_lead(batch: u32) -> u64 {
+    let (engine, state) = lead_state();
     let mut checksum: u64 = 0;
     for _ in 0..batch {
         let legal = engine
