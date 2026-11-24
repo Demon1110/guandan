@@ -12,7 +12,7 @@
 use crate::contract::{Action, Engine, EngineError, PatternId, Seat, State, View, ZoneId};
 use crate::hash::{seed_digest, LastPlay, RngState, TributeState, ZoneEntry};
 use crate::patterns;
-use crate::ruleset::model::{AfterAllPass, Settle, TurnDirection, ZoneScope};
+use crate::ruleset::model::{AfterAllPass, LevelTable, Settle, TurnDirection, ZoneScope};
 use crate::ruleset::params::PrimitiveParams;
 use crate::ruleset::RuleSetBody;
 use crate::view::{encode_canonical, ViewData, ViewLastPlay};
@@ -861,7 +861,7 @@ impl M0Engine {
 
         // ④ 按 rank-combo 查 `upgrade[]` 取 step；查不到组合不报默认档，报 Internal。
         // score-only 局只跑第 ① 步，step 保持 None。
-        let step: Option<u8> = match &self.ruleset.settle {
+        let (table, step): (Option<&LevelTable>, Option<u8>) = match &self.ruleset.settle {
             Settle::LevelUp { .. } => {
                 let table =
                     self.ruleset
@@ -885,14 +885,26 @@ impl M0Engine {
                             "rankCombo {combo:?} 未在 levelTable.upgrade[] 枚举，不许猜默认档"
                         ),
                     })?;
-                Some(step)
+                (Some(table), Some(step))
             }
-            Settle::ScoreOnly => None,
+            Settle::ScoreOnly => (None, None),
         };
 
         state.winner_team = Some(winner_team);
         state.completed_team = Some(completed_team);
         state.settle_step = step;
+
+        // ④ 该队 `levels≠A`：按 step 推进 `levels`；跨 A 停在 A，超额升级数作废、不累积
+        // （§5.13 行 1004「升级跨 A 的处置」）。② 过 A 判定与 ③ aFailStreak 累计退回
+        // 随下一笔落地；在 A 上打的局本笔不动 levels。
+        if let Some(table) = table {
+            let a_index = table.ranks.len().saturating_sub(1) as u8;
+            let level = state.levels.get(winner_team as usize).copied().unwrap_or(0);
+            if level != a_index {
+                let step = step.unwrap_or(0);
+                state.levels[winner_team as usize] = level.saturating_add(step).min(a_index);
+            }
+        }
 
         // §5.13「决定首出」：settle 结束把 `attackingTeam` 置为头游所在队（下一局打谁的级牌）。
         state.attacking_team = winner_team;
@@ -1078,6 +1090,42 @@ mod tests {
         // 顺时针从头游 0 起：首遇未出完 seat1 = 末游（第 4 名），次遇 seat3 = 三游（第 3 名）。
         let ranks = engine.finalize_ranks(&state);
         assert_eq!(ranks, vec![0, 2, 3, 1]);
+    }
+
+    // ---------- levels 增量与封顶 A（§5.13 行 1004） ----------
+
+    /// 构造 classic 终局前状态：覆写 `finish_order` / `levels` / `aFailStreak`，
+    /// 供 settle 函数级用例（构造 State → 调 settle → 断言队级状态）。
+    fn classic_settle_state(
+        levels: Vec<u8>,
+        streak: Vec<u8>,
+        finish_order: Vec<u8>,
+    ) -> (M0Engine, State) {
+        let engine = crate::cases::classic_engine().expect("classic 构造失败");
+        let mut state = engine.deal(M0_SEED).expect("classic 发牌失败");
+        state.finish_order = finish_order;
+        state.levels = levels;
+        state.a_fail_streak = streak;
+        (engine, state)
+    }
+
+    #[test]
+    fn level_up_caps_at_a_with_excess_discarded() {
+        // 队 0 在 K（下标 11）打 1+3 → step=2；跨 A 停在 A（下标 12），超额 1 档作废、不累积。
+        let (engine, mut state) = classic_settle_state(vec![11, 0], vec![0, 0], vec![0, 1, 2, 3]);
+        engine.settle(&mut state).expect("settle 失败");
+        assert_eq!(state.levels, vec![12, 0], "到达 A 即停，超额升级数作废");
+        assert_eq!(state.settle_step, Some(2));
+        assert_eq!(state.a_fail_streak, vec![0, 0]);
+    }
+
+    #[test]
+    fn level_up_steps_from_initial_within_table() {
+        // 基线对照：initial（下标 0）打 1+3 → +2，落到下标 2；未触 A，streak 不动。
+        let (engine, mut state) = classic_settle_state(vec![0, 0], vec![0, 0], vec![0, 1, 2, 3]);
+        engine.settle(&mut state).expect("settle 失败");
+        assert_eq!(state.levels, vec![2, 0]);
+        assert_eq!(state.a_fail_streak, vec![0, 0]);
     }
 
     // ---------- N17：settle 期视图屏蔽 lastPlay ----------
