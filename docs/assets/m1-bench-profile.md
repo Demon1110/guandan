@@ -1,0 +1,143 @@
+# M1 `guandan-classic` 领出态 profile 拆账（只测量，不改码）
+
+> 2026-11-24 · 基线 HEAD `e2df967` · 锚点 `stateHash=ec38692f…820f24` / steps 148 / phase 3 / `[3,1,0,2]`
+>
+> 用途：按用户裁定 C，对 native 领出态 `legal_actions`（P99 上一批 1216.6 µs）做分段拆账，回答「剩余是常数因子还是枚举策略」。**本批未改任何判定 / 枚举语义**；临时 feature-gated 埋点与 harness 测量后已全部删除，交付树干净。
+>
+> 测量条件：release / bench 档（opt-level 3）；夹具 `guandan-classic`（13 牌型全上）；固定 seed `0x0D15EA5E…01`、流 0；机器 i7-13700KF（16 物理 / 24 逻辑核，非独占，max 离群由系统负载产生，判据用 P50/P99）。native 分段采样 20,000 次；wasm 逐次采样 20,000 次、批均值 1000×100。
+>
+> 复跑前提：临时 harness 已删除；要复现需按附录重建 `bench-profile` feature 埋点。默认构建不含任何 profile 代码。
+
+---
+
+## 1. 输入规模（领出态，`last_play = None`）
+
+| 口径 | 条数 | 说明 |
+| --- | --- | --- |
+| `enumerate` 原始条目 | **78** | 枚举侧 `emitted` HashSet 按精确牌 id 序列去重后的发出数 |
+| 按 `(patternId, patternKey)` 去重后 | **44** | `legal_actions_impl` 的 `groups` BTreeMap 键数；34 条被同型同键规范代表合并 |
+| 最终返回动作 | **44** | 领出态无 Pass；与上一批 bench「lead 候选/次 = 44」对得上 |
+
+两次独立运行计数完全一致（78 / 44 / 44）。
+
+## 2. 分段耗时
+
+两段运行：run 1 为主，run 2 为噪声对照。单位 µs/次（分段累加值 ÷ 次数）；次数为「每调用次数」。
+
+| 分段 | run 1 | run 2 | 调用次数/次 | 备注 |
+| --- | ---: | ---: | ---: | --- |
+| 外部总计时（avg） | 948.199 | 1085.081 | 1 | P50 915.4 / 1047.3；P90 1012.0 / 1190.3；**P99 1513.0 / 1583.1**；max 3786.9 / 4141.9 |
+| `hand.clone()` | 0.066 | 0.190 | 1 | 54 B/次（27 张 × 2 B） |
+| `wildcard_ids` 集合构建 | 10.780 | 11.204 | **157** | 元素合计 314/次（每集合 2 张 H 级牌） |
+| `enumerate` 合计 | 923.932 | 1046.571 | 1 | 含内部分组、逐候选 recognize、 emitted 去重 |
+| ├ `HandGroups::build`（枚举侧手牌分组） | 3.272 | 3.649 | 1 | 每次 legal 调用只建一次 |
+| ├ `recognize` 合计 | 883.288 | 1003.833 | **78** | 每候选一次整手判定 |
+| │　├ `Groups::build`（识别侧提交牌分组） | 18.427 | 18.841 | 78 | 单次 236.2 / 241.6 ns |
+| │　├ `ladder_position` → `synthetic_ladder` | **519.663** | **579.598** | **1106** | 单次 498.0 / 505.3 ns（独立实测） |
+| │　├ `synth_order`（rankKey 合成序重建） | 5.080 | 5.025 | 76 | 单次 66.8 / 66.1 ns |
+| │　└ `make_sol` | — | — | 77 | 解内真牌分组 + 百搭计数 |
+| └ enumerate 余项（窗口构造 / emitted HashSet） | 37.37 | 39.09 | — | 上两项之差 |
+| Entry 构造（filter / 克隆 / BTreeMap 占位） | 11.088 | 12.084 | 78 | 克隆 1008 B/次；String 分配 **156** 次/次 |
+| 去重代表选择 + 最终收集排序 | 3.755 | 12.406 | 44 | BTreeMap 键 `(String,u32,u32)` + `sort_by` |
+
+**对账**：分段合计 949.622 / 1082.455 µs/次，外部总计时 948.199 / 1085.081；未归集差值 **−1.422 / +2.626 µs/次**（计时器自身开销与调度噪声，量级 ≤0.3%，没有对不上的大段）。
+
+### 2.1 独立原子成本（10 万次实测，推算因子用）
+
+| 原子操作 | run 1 单次 | run 2 单次 |
+| --- | ---: | ---: |
+| `synthetic_ladder` 重建 | 497.964 ns | 505.349 ns |
+| `Vec<u16>`（27 张）clone | 21.474 ns | 21.314 ns |
+| 小 `String` clone | 22.823 ns | 22.552 ns |
+
+### 2.2 调用次数分解（1106 次 ladder / 157 次 wildcard 的来历）
+
+- `ladder_position`：enumerate 排 defs 时 14 次 + 78 次 recognize × 每次遍历 14 个 def = 1092 次，合计 **1106**。
+- `wildcard_ids`：`legal_actions_impl` 1 + `HandGroups::build` 1 + 78 次 `Groups::build` + 77 次 `make_sol` = **157**。
+
+## 3. 每段可消除量（实测与推算分列）
+
+| 候选优化 | 实测可消除 | 推算（次数 × 单次成本） | 因子来源 |
+| --- | --- | --- | --- |
+| **E1 缓存阶梯**：`synthetic_ladder` 载入期算一次冻结 | 519.7 / 579.6 µs/次（占 recognize 58.8% / 57.7%） | 1106 次 × 498.0 / 505.3 ns = **550.7 / 558.9 µs** | 次数见 §2.2；单次成本 §2.1 |
+| **E2 缓存识别侧 Groups**：每候选 `Groups::build` 复用 | 18.43 / 18.84 µs/次 | 78 次 × 236.2 / 241.6 ns = 18.4 / 18.8 µs（与实测吻合） | 候选是手牌子集，与 `HandGroups` 共享程度需设计确认；保守只算 `Groups::build` 段 |
+| **E3 去掉每候选克隆** | 未单列（含在 Entry 段 11.09 / 12.08 µs 内） | String：156 次 × 22.823 / 22.552 ns = **3.560 / 3.518 µs**；Vec：1008 B/次（504 元素 / 78 候选 ≈ 6.5 张/候选），按 27 张 clone 单价折算 ≈ **0.8–1.0 µs**（粗估） | Vec 另有 enumerate 内 emitted HashSet 每候选 1 次 cards clone，未计入 1008 B |
+| **E4 wildcard 预扫一次**：按 rank context 缓存 HashSet | 10.78 / 11.20 µs/次 | 去掉 156 次重复：156 × 68.66 / 71.36 ns = **10.71 / 11.13 µs** | 单次成本为上下文内均值；集合依赖级牌上下文，不能做成进程期永久常量 |
+| **E5 规范代表改 O(n) 归并** | 上界 = 实测 dedup_sort **3.76 / 12.41 µs/次** | 不给推算下限：BTreeMap 占位与字符串比较的单次原语成本未独立测量 | 现状为 BTreeMap 逐候选占位 + 最终全量排序 |
+
+> Entry 段里除克隆外，还含 `true_cards` 过滤（`wild_ids.contains` 线性扫）、排序与 BTreeMap 占位；这部分不随 E3 消失。
+
+## 4. 乐观单点上限（假设零额外开销叠加）
+
+| 量 | run 1 | run 2 |
+| --- | ---: | ---: |
+| 可消除合计（E1+E2+E3+E4+E5） | ≈ 557.0 µs/次 | ≈ 626.4 µs/次 |
+| 乐观地板 **avg** | **392.1 µs/次** | **459.6 µs/次** |
+| 乐观地板 **P99**（按 avg/P99 比例折算） | **625.6 µs** | **670.5 µs** |
+| 仍剩余、缓存/克隆消不掉的部分 | ≈ 388 µs/次 | ≈ 459 µs/次 |
+
+剩余部分构成：recognize 匹配器 / `feasible_windows` / substitute 集 / 选解（run 1 ≈ 340 µs）+ enumerate 窗口构造 ≈ 37 µs + `HandGroups` 3.3 µs + Entry 非克隆部分 ≈ 7 µs。
+
+**判据对照**：叠加后 P99 地板 620–670 µs，能进 <1ms 延迟门禁；但 avg 地板 392–460 µs，容量见 §5，仍远低于 1500 房间。
+
+## 5. 容量换算口径
+
+### 5.1 公式与计入项（沿用 §10.5 行 1499 与 `classic_bench.rs`）
+
+```
+avg_action  = (legal@lead avg + apply avg) / 2
+rooms       = 1_000_000 / (20 × avg_action)
+```
+
+- **20 动作/秒/房间** = 10Hz tick × 2（每个动作 1 次 `legal_actions` + 1 次 `apply`）。
+- 计入：lead legal 均值、apply 均值（上一批 apply avg **7.515 µs**）。
+- **未计入**：mid 态 legal（公式按 lead 最坏态覆盖每一次 legal 调用，未做 lead/mid 比例加权；mid 上一批 avg 650.4 µs）、idle tick CPU（`idle_1500` 实测 0.803 ns/room·tick，地板值）、网络 IO、定时器内核开销、view 编码、断线快照恢复。
+- 领出态与跟牌态比例：公式未区分，一律按 lead 峰值保守取值。
+
+### 5.2 换算点（apply avg 固定 7.515 µs）
+
+| lead legal 取值 X | avg_action | 推算房间数 |
+| --- | ---: | ---: |
+| 1216.6 µs（上一批 lead P99 当最坏 legal） | 612.06 µs | **≈ 82** |
+| 600 µs | 303.76 µs | **≈ 165** |
+| 150 µs | 78.76 µs | **≈ 635** |
+| 乐观地板 392.1 µs（run 1） | 199.80 µs | **≈ 250** |
+| 乐观地板 459.6 µs（run 2） | 233.56 µs | **≈ 214** |
+| 门槛反推：1500 房间 | ≤ 33.33 µs | lead legal 必须 **≤ 59.15 µs** |
+
+本次实测容量：run 1 ≈ **105** 房间，run 2 ≈ **92** 房间；上一批 102 房间。乐观地板 214–250 房间，距 1500 差约 6 倍。
+
+## 6. wasm 与 native 口径差（已跑数，不只讲道理）
+
+同一 classic 领出态、同一份 wasm 产物，两种计时口径：
+
+| 口径 | avg | P50 | P90 | P99 | max | 样本 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 批均值（1000/批 × 100 批，分位取批均值） | 723.319 | 722.732 | 727.533 | 731.904 | 734.628 | 100,000 |
+| 逐次（单次调用单独 hrtime） | 723.367 | 699.900 | 782.800 | **1087.100** | 3739.400 | 20,000 |
+
+- **avg 几乎一致**（差 0.048 µs）：JS↔wasm 单次调用边界开销可忽略。
+- **P99 不可直接对照**：批均值 P99 731.9 ≈ 逐次 P90 782.8 一档；批均值把尾部压平了。native 侧是逐次分位，wasm 旧宿主的批均值 P99 不能拿来说「wasm 过了 1ms」。
+- 解析关系（iid 近似）：批均值方差 = σ²/1000；批 P99 = μ + 1.282σ/√1000，逐次 P99 = μ + 1.282σ。实测尾部余量：逐次 363.7 µs、批 8.59 µs，比值 42.3（√1000 = 31.6，余差来自非 iid 与系统噪声）。
+- 同口径对照：native 逐次 lead P99 1513.0 / 1583.1 µs；wasm 逐次 P99 **1087.1 µs**（过 1ms）。
+
+## 7. 结论与建议排期
+
+**一句话**：缓存 / 克隆类常数因子能把 P99 压到 620–670 µs（过 1ms 延迟门禁），但乐观地板容量只有 214–250 房间，距 1500 房间差约 6 倍——**容量缺口判定为枚举策略问题（回 EGM 审 `legal_actions` 全量语义）**；常数优化只解决延迟门禁，不解决容量。
+
+### 建议排期
+
+1. **A · 独立优化小批（确定性低垂果实，不改语义）**：载入期冻结 `synthetic_ladder`；`wildcard_ids` 按 rank context 缓存；评估识别侧 `Groups` 复用；`patternId` 字符串 intern / 消除每候选 Vec 克隆。预期延迟收益 ≈ 557–626 µs/次。改完须按基准纪律重算锚点并重跑双产物基准留档对照。
+2. **B · 回 EGM 审枚举全量语义（容量门禁必须）**：主成本是 78 个原始候选 × 14 个 defs 重复识别、每候选重建分组与阶梯；需评估剪枝、按需枚举、解空间收缩等全量语义调整，单独立项，不在本批热路径上顺手改。
+
+### 本批纪律核对
+
+- 未改夹具、未改 seed、未改基准口径；跑不平的段如实报差值（§2 对账 ±2.6 µs）。
+- 临时埋点全部 `#[cfg(feature = "bench-profile")]`、默认关闭；测量后已删除全部临时文件，`git status` 干净，无新增实现提交。
+- 验收：`cargo test --workspace` **190 passed / 0 failed**；`fmt --check` exit 0；`clippy --workspace --all-targets` 0 告警；native↔wasm 双端锚点逐字段一致（`ec38692f…820f24` / 148 / phase 3 / `[3,1,0,2]`）。
+
+## 附录：复跑命令（harness 已删，需先重建）
+
+- native：重建临时 `bench-profile` feature 与 `benches/profile_bench.rs` 后，`cargo bench --bench profile_bench --features bench-profile`。
+- wasm：`cargo build -p gf-engine --target wasm32-unknown-unknown --release`（注意：不要 build workspace，prost 缺 protoc）；Node 逐次宿主加载 `target/wasm32-unknown-unknown/release/gf_engine.wasm`，单次调用 `legal_actions` 计时。
+- 全量回归：`cargo test --workspace`；golden 双端复核：`pwsh -File crates/engine/tests/wasm/verify_m0_golden.ps1`。
