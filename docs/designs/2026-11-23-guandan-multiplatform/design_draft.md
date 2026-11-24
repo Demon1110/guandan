@@ -798,6 +798,39 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 
 `ai.features` 的合法取值就是上表"特征集合"里出现过的字符串，未知取值在 L1 拒绝。
 
+**组牌推荐（`recommend`，第二十次变更，2026-11-24 用户裁定）**
+
+用途：服务端「一键推荐组牌」与「是否有同花顺」提示。用户可自由组牌，推荐只是建议，**不影响判定**。
+
+- **接口**：`recommend(&State, Seat) -> Result<Layout, EngineError>`。纯函数、只读、确定性（同输入同输出），
+  **不进 `stateHash`、不改 `legal_actions`、不进双端比对的判定链**；native 与 wasm 必须同解，CI 单列一条比对。
+- **`Layout` 形状**：`{groups: [{patternId: String, patternKey: (u32,u32), cards: [u16]}], score: i64, singleCount: u8,
+  straightFlushCandidates: [[u16]], hasStraightFlush: bool, disabled: bool}`；`groups` 按 `(patternId 字典序升, patternKey 降, cards 升)` 排序；
+  `straightFlushCandidates` 是当前手牌里所有可组同花顺的候选（含百搭方案，百搭代牌规则同 §5.13），按 `cards` 升序去重；
+  它**独立于最优拆分**——最优拆分里没走同花顺也要照样列出候选，`hasStraightFlush` 即候选非空。
+- **评分公式（全整数，禁止浮点）**：`score = Σ groupScore`，其中
+  - 炸弹：`bomb4..bomb8` 各取对应权重；王炸取 `jokerBomb`；
+  - 同花顺：`straightFlush`；
+  - 顺子：`straightBase + rankBonus(straightRankBonus)`；三带二：`triplePairBase + rankBonus(triplePairRankBonus)`；
+    三连对：`plate3Base + rankBonus(plate3RankBonus)`；钢板：`steel2Base + rankBonus(steel2RankBonus)`；
+  - 对子：`pair`；单张：每张 `single`（负值即扣分）。
+  - `rankBonus(bonus)` = `⌊ bonus × (rankKey − 1) / (N − 1) ⌋`，`N` = 当前合成牌力序里**非王牌点数的个数**（掼蛋 13），
+    `rankKey` 为该牌组原语给出的点数权重；轮子顺的 `rankKey = 0`（§5.13）按 0 分处理，即不拿加分。
+- **默认权重（省略 `weights` 时即此表，用户 2026-11-24 给定取向）**：
+  `bomb4=4, bomb5=5, bomb6=6, bomb7=7, bomb8=8, jokerBomb=9, straightFlush=6,
+  straightBase=4, straightRankBonus=2, triplePairBase=3, triplePairRankBonus=2,
+  plate3Base=3, plate3RankBonus=1, steel2Base=4, steel2RankBonus=1, pair=0, single=−1`。
+  已知取舍：`straightFlush=6` 与 `bomb6=6` 同分，靠下面的 tie-break 决定先后（不靠改权重）。
+- **tie-break（固定、双端必须同序）**：`score` 高者胜 → `singleCount` 少者胜 → 炸弹组（含王炸、同花顺）总张数多者胜 →
+  `groups` 序列按 `(ladder 位次降, patternKey 降, cards 升)` 字典序小者胜。仍相等则取枚举顺序最先者，**不存在随机**。
+- **搜索策略**：精确最优是指数级，采用**确定性束搜索**——`beamWidth = 64`（固定常数，写死在引擎、不进 RuleSet），
+  候选组按 `(patternId 字典序, patternKey 降, cards 升)` 枚举，逐层贪心扩展 + 剪枝（同 `cards` 集合的不同拆法只保留 tie-break 最优的一条）。
+  同输入必同输出；束宽变更视为 `recommend` 口径变更（需重录推荐黄金向量，但**不影响 `stateHash`**）。
+- **预算**：`guandan-classic` 满手 27 张单次 ≤ 2ms（P99）；超预算记 `recommend_cpu_overrun_total`（P2），
+  **不判错、不影响合法性、不作回滚条件**（与 §6.7 的 CPU 口径同一条原则：机器快慢不改变规则结论）。
+- **L1 校验**：`weights` 未知键拒绝、类型非整数拒绝、值域 `i16`；`enabled=false` 时 `weights` 可整段省略；
+  `ai.recommend` 整段省略 = 默认权重全上。
+
 ### 5.12 状态摘要：`stateHash` 与 `viewHash`
 
 三个哈希各管一件事，混用会让"双端一致"这条判据失效：
@@ -1603,6 +1636,7 @@ P0 之外不做自动干预，只有两项自动动作：`canary` 指标超标�
 | 第十七次变更（轮子顺恒最小：B5 裁决） | 2026-11-24，M1 实现期 B5（`A-2-3-4-5` 的 `rankKey` 取 5 还是 A）一直 hold。用户裁决两句：①「选 a」——沿用「`rankKey` = 该顺子按 `naturalOrder`（含级牌插入）的最高一张」，不做另一套原始序；②「12345 非同花不管包不包含级牌都是最小牌不用特殊处理」——即 `straight-5` 的结构为 `A-2-3-4-5`（轮子）时，无论是否含级牌、是否由百搭补位，都恒为杂顺最小。据此落：**`straight-5` 的轮子 `rankKey` 恒取保留值 `0`**（小于任何其它顺子、不受 `levelInsert` 提升；`0` 为保留值，真实点数不得映射到 `0`，其它牌型不得取 `0`）；**`straight-flush-5` 的 `A-2-3-4-5` 不适用**，同花顺族内仍按 `naturalOrder` + `levelInsert` 顶牌取 `rankKey`，与炸弹的位次只由 `flushRank` 决定。**未动**：顺子结构规则（A 可前接 2、不可绕回、王不入顺）、`levelInsert` 合成算法、`flushRank` 与阶梯、`bombOrder`、逢人配取解规则 | §5.13（顺子边界行）；§12.2 |
 | 第十八次变更（三带二进 v1：B2 裁决） | 2026-11-24，M1 实现期 B2 一直是**文档内部打架**：§5.2 把带牌类能力（`pattern.with-attachment`）标为 v2 预留、RuleSet 一引用即 L1 拒，而 `docs/开发计划.md` 的 M1 行又列着三带二。用户裁定："三带二进进 v1，掼蛋有三带二，大小判断为 3 张的那张大小同单张一样，跟带的二是什么没关系"。据此：①**三带二进 v1**，新增固定形状原语 `pattern.triple-pair`（无参，只能为空对象 `{}`，固定 3 张同点 + 1 对共 5 张）；`pattern.with-attachment` **仍留 v2**，只服务"带牌数与主牌数都可配"的玩法（三带一、四带二）；②牌型 id 取 **`triple-pair`**，加入 §5.13 牌型行与 §5.1 示例 YAML 的 `patterns`、`ladder`（位次在 `triple` 之后、`straight-5` 之前）；③比较口径：`countKey = 5`、`rankKey` = **主牌三张的点数**（按 `naturalOrder` + `levelInsert`，级牌做主牌时同样高于 A），**所带的对子不进 `rankKey`**、带哪一对都不改强弱；与其它非炸弹非插入型牌型互不可压，只有炸弹与同花顺按阶梯可压它；④带的对子允许任意同点数两张（双副牌下王成对亦可），不得是两张不同点数；⑤百搭可代主牌或对子任一张，取解沿用逢人配的"`rankKey` 最大、再真牌字典序最小"；⑥新增识别消歧通用规则：**同一手牌同时可判成多个牌型（含百搭多解）时，取 `compare.ladder` 位次最高者**；⑦§5.10 冻结表相应行由「单张/对/三/顺子/三连对/二连三」扩为含三带二，**其余 15 行取值逐字未动**。**未动**：顺子结构、`flushRank` 与阶梯、`bombOrder`、逢人配张数与取解、`countKey`/`rankKey` 的既有定义 | §5.1（示例 YAML 的 `patterns` 与 `compare.ladder`）；§5.2（分类表、v2 预留说明、参数表新增行）；§5.10（牌型行）；§5.13（牌型行、新增三带二行、逢人配行）；§12.2 |
 | 第十九次变更（`legal_actions` 规范子集：B6 裁决） | 2026-11-24，M1 实现期 B6 一直 hold：`legal_actions` 现在每个点数只发一条规范子集，但"只发一条"这件事本身没有写进设计稿，实现侧无法判定合法与否。用户选 **B（只列规范子集）**，并要求另配一套「组牌规范」做整手推荐。本条只落前者：**同一 `patternId` 与同一 `patternKey` 只列一条**，规范代表的选定序为①可达解中 `rankKey` 最大 → ②百搭用量最少 → ③真牌牌 id 升序字典序最小；客户端可用任意结构等价的真牌／百搭组合出牌，`apply` 按结构复检、不受规范子集约束；跨端只保证每种牌型有可提交候选、不保证覆盖全部组合。**组牌推荐（整手拆分 + 同花顺提示）**：用户当日给出评分取向——炸弹越大分越高（4→4…8→8、王炸 9）、顺子与三带二越大分越高、对子不得分、单张扣分，按此求"最优推荐"、允许用户自由组牌；具体目标函数形式与常数尚未拍板，**本条不落其规格**，待下一条变更。**未动**：排序键四元组、4096 峰值闸门、基准表 | §5.12（规范子集段、`State` 段数表述）；§12.2 |
+| 第二十次变更（组牌推荐进 DSL：B6 后半） | 2026-11-24，B6 裁决「只列规范子集」之后用户补一条需求："最好定义一套组排规范，让服务端一键推荐组牌、提示是否有同花顺等……按照这个逻辑组一套最有牌推荐，用户不同意可以自己自由组牌"，并选定 **C（权重写进 DSL）**、"但 DSL 里默认用 A 的规则"（即默认权重 = 用户给定的评分取向：炸弹 4→4…8→8、王炸 9、顺子与三带二越大分越高、对子 0 分、单张扣分）。据此落：①§5.1 `ai` 段扩为 `{features[], hint, recommend}`，`recommend = {enabled, weights}`，`weights` 全整数（禁浮点）；②新增只读接口 `recommend(&State, Seat) -> Result<Layout, EngineError>`（§2.4/§5.11），纯函数、不进 `stateHash`、不改 `legal_actions`；③`Layout` 形状与 `straightFlushCandidates`（含百搭方案、独立于最优拆分、`hasStraightFlush` 即候选非空）；④评分公式全整数：炸弹按张数权重、王炸 9、同花顺 6、顺子/三带二/三连对/钢板 = 基础分 + `⌊bonus ×(rankKey−1)/(N−1)⌋` 位次加分、对子 0、单张 −1；⑤默认权重表逐项写入（用户取向原样），已知 `straightFlush=6` 与 `bomb6=6` 同分、由 tie-break 决定先后；⑥tie-break 固定五级（分数 → 散张少 → 炸弹组总张数多 → ladder 位次降的字典序 → 枚举序最先），无随机；⑦搜索用确定性束搜索 `beamWidth = 64`（写死引擎、不进 RuleSet），束宽变更只影响推荐向量、不影响 `stateHash`；⑧预算 ≤2ms P99，超预算只记 P2 指标、不判错。**未动**：`stateHash` 段集与段数、`legal_actions` 排序键与规范子集、§5.10 冻结表全部取值 | §2.4（接口清单）；§5.1（`ai` 行与示例 YAML 可省略）；§5.11（新增「组牌推荐」段）；§12.2 |
 
 **留痕的意义**：评审时若发现"为什么一个棋牌项目要 40～44 周"，答案在 12.2 而不是在某一节的数字里；若未来要缩范围，也按 12.2 的变更顺序倒着砍。
 

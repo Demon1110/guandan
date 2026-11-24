@@ -692,6 +692,21 @@
 - **未落**：组牌推荐（整手拆分 + 同花顺提示）的目标函数与常数。用户给的取向：炸弹越大分越高（4→4 … 8→8、王炸 9）、顺子与三带二越大分越高、对子 0 分、单张扣分；求"最优推荐"、允许自由组牌。**待下一条变更定稿**。
 - **代价**：实现只需把"取规范解"的既有逻辑写成显式规则并补一条用例（同一 `rankKey` 下百搭用量最少优先）；协议面零改动。
 
+## 第二十次变更：组牌推荐进 DSL（B6 后半，2026-11-24）
+
+- **用户原话**：「选C吧，但是dsl里默认用a的规则」（前置原话：「最好定义一套组排规范，让服务端一键推荐组牌、提示是否有同花顺等；规则可以参考（炸弹越大得分越高【456789】，顺子、三代二越大得分越高，对子不得分，单张扣分）按照这个逻辑组一套最有牌推荐，用户不同意可以自己自由组牌」）。
+- **落码**：
+  - `ai` 段扩为 `{features[], hint, recommend}`；`recommend = {enabled（默认 true）, weights（全整数 i16，禁浮点）}`，整段省略即默认权重。
+  - 新增只读接口 `recommend(&State, Seat) -> Result<Layout, EngineError>`；纯函数、不进 `stateHash`、不改 `legal_actions`、不进判定链，但 native/wasm 必须同解（CI 单列比对）。
+  - `Layout = {groups[], score, singleCount, straightFlushCandidates[], hasStraightFlush, disabled}`；同花顺候选独立于最优拆分、含百搭方案。
+  - 评分全整数；位次加分 `⌊bonus ×(rankKey−1)/(N−1)⌋`（N = 非王牌点数个数 13；轮子 `rankKey=0` 不拿加分）。
+  - 默认权重：`bomb4..8 = 4/5/6/7/8`、`jokerBomb=9`、`straightFlush=6`、`straightBase=4 + bonus2`、`triplePairBase=3 + bonus2`、`plate3Base=3 + bonus1`、`steel2Base=4 + bonus1`、`pair=0`、`single=−1`。
+  - tie-break：分数 → 散张少 → 炸弹组总张数多 → `(ladder 位次降, patternKey 降, cards 升)` 字典序 → 枚举序；无随机。
+  - 束搜索 `beamWidth=64` 写死引擎；改束宽只重录推荐向量，不影响 `stateHash`。
+  - 预算 ≤2ms P99，超预算记 `recommend_cpu_overrun_total`（P2），不判错。
+- **已知取舍**：`straightFlush=6` 与 `bomb6=6` 同分，先后由 tie-break（炸弹组总张数多者胜）决定——若你希望同花顺明确高于 6 张炸，把 `straightFlush` 调成 7 即可，不用改算法。
+- **未动**：`stateHash` 段集、`legal_actions` 排序键与规范子集、§5.10 冻结表全部取值。
+
 ## 未决问题（等用户拍板）
 
 | # | 问题 | 需要谁决定 | 状态 |
