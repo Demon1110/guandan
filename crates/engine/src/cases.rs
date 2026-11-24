@@ -51,6 +51,10 @@ pub struct GoldenOutcome {
     /// （§5.12 第 8 项字段集不含）。1+4 形态下是头游队，与 `completed_team`
     /// 不是同一概念，不许互相替代。
     pub winner_team: Option<u8>,
+    /// 按名次 1→n 排列的 seat 数组（与 `SettleResult.result.ranks` 同口径）。
+    pub ranks: Vec<u8>,
+    /// 本局升级档 `step`：level-up 局按 rankCombo 查 `upgrade[]`；score-only 局为 `None`。
+    pub settle_step: Option<u8>,
     /// settle 转移发生次数，正常应恰为 1。
     pub settle_count: u32,
     /// 弃牌区累计牌数。
@@ -129,6 +133,16 @@ pub fn classic_mid_state() -> (M0Engine, State) {
 /// 跑到 `settle` 为止。策略固定即序列固定，日志可逐条复现。
 pub fn run_m0_golden() -> Result<GoldenOutcome, String> {
     let engine = build_engine()?;
+    run_golden(engine, 120)
+}
+
+/// `guandan-classic` 首局固定策略跑到 settle；level-up 局，产出 `step`/`ranks` 断言载体。
+pub fn run_classic_golden() -> Result<GoldenOutcome, String> {
+    let engine = classic_engine()?;
+    run_golden(engine, 1)
+}
+
+fn run_golden(engine: M0Engine, min_steps: usize) -> Result<GoldenOutcome, String> {
     let mut state = engine.deal(M0_SEED).map_err(|e| e.to_string())?;
     let mut actions = Vec::new();
     let mut steps = 0usize;
@@ -169,7 +183,7 @@ pub fn run_m0_golden() -> Result<GoldenOutcome, String> {
         actions.push(log);
         steps += 1;
         if steps > 10_000 {
-            return Err("m0 golden 超出安全步数上限，疑似死循环".to_owned());
+            return Err("golden 超出安全步数上限，疑似死循环".to_owned());
         }
     }
 
@@ -189,45 +203,6 @@ pub fn run_m0_golden() -> Result<GoldenOutcome, String> {
         .and_then(|i| state.zones.iter().find(|z| z.zone_id == i))
         .map(|z| z.cards.len())
         .unwrap_or(0);
-    // 终局触发（§5.13 第 902 行「局终止与名次」）：一局在某队全部队员均已出完时结束。
-    // 三种收尾形态（四人两队基线）：双下 1+2（该队占 1、2 名）、1+3（夹进对家一人）、
-    // 1+4（对家两人先出完而本队头游在前）。
-    // completed_team = 最先全员出完的队伍：队员全部进入 finish_order 的队伍中，
-    // 「最晚名次」（在 finish_order 中的最大下标）最小者；并列按队伍下标小者。
-    // winner_team = 头游（finish_order[0]）所在队，供升级用。1+4 形态下
-    // completed_team 是对家队、winner_team 是头游队，两者不是同一概念，不许互相替代。
-    let completed_team = engine
-        .ruleset
-        .seats
-        .teams
-        .iter()
-        .enumerate()
-        .filter(|(_, team)| team.iter().all(|s| state.finish_order.contains(s)))
-        .map(|(i, team)| {
-            let last_rank = team
-                .iter()
-                .map(|s| {
-                    state
-                        .finish_order
-                        .iter()
-                        .position(|&x| x == *s)
-                        .expect("队员应已进入名次")
-                })
-                .max()
-                .expect("队伍非空");
-            (i, last_rank)
-        })
-        .min_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)))
-        .map(|(i, _)| i as u8);
-    let winner_team = state.finish_order.first().and_then(|&head| {
-        engine
-            .ruleset
-            .seats
-            .teams
-            .iter()
-            .position(|team| team.contains(&head))
-            .map(|i| i as u8)
-    });
 
     if state.phase != PHASE_SETTLE {
         return Err(format!(
@@ -252,13 +227,13 @@ pub fn run_m0_golden() -> Result<GoldenOutcome, String> {
             state.finish_order
         ));
     }
-    let Some(completed) = completed_team else {
+    let Some(completed) = state.completed_team else {
         return Err(format!(
             "终局没有队伍全员进入名次：finishOrder={:?}",
             state.finish_order
         ));
     };
-    let Some(winner) = winner_team else {
+    let Some(winner) = state.winner_team else {
         return Err(format!(
             "头游座位未归属任何队伍：finishOrder={:?}",
             state.finish_order
@@ -275,10 +250,10 @@ pub fn run_m0_golden() -> Result<GoldenOutcome, String> {
         ));
     }
     // 旧 bug：102 步提前退出、finish_order=[1]；下界 120 不允许退回那种位置
-    // （当前种子实测 150 步）。
-    if steps < 120 {
+    // （当前种子实测 150 步）。classic 固定策略步数口径不同，下界由参数传入。
+    if steps < min_steps {
         return Err(format!(
-            "步数 {steps} 低于下界 120，疑似提前退出（旧 bug 为 102 步）"
+            "步数 {steps} 低于下界 {min_steps}，疑似提前退出（旧 bug 为 102 步）"
         ));
     }
     if discard_count + hands_total != 108 {
@@ -298,6 +273,8 @@ pub fn run_m0_golden() -> Result<GoldenOutcome, String> {
     let state_hash = state_hash(&canonical);
     Ok(GoldenOutcome {
         finish_order: state.finish_order.clone(),
+        ranks: state.ranks.clone(),
+        settle_step: state.settle_step,
         state,
         state_hash,
         actions,

@@ -12,7 +12,7 @@
 use crate::contract::{Action, Engine, EngineError, PatternId, Seat, State, View, ZoneId};
 use crate::hash::{seed_digest, LastPlay, RngState, TributeState, ZoneEntry};
 use crate::patterns;
-use crate::ruleset::model::{AfterAllPass, TurnDirection, ZoneScope};
+use crate::ruleset::model::{AfterAllPass, Settle, TurnDirection, ZoneScope};
 use crate::ruleset::params::PrimitiveParams;
 use crate::ruleset::RuleSetBody;
 use crate::view::{encode_canonical, ViewData, ViewLastPlay};
@@ -327,6 +327,10 @@ impl M0Engine {
             finish_order: Vec::new(),
             seed,
             passes_since_last_play: 0,
+            winner_team: None,
+            completed_team: None,
+            ranks: Vec::new(),
+            settle_step: None,
             // TODO(M0-GAP-SEQ-CROSS-ROUND)：跨局序号连续待 ⑧ 落地；首局占位 0，不进哈希。
             round_no: 0,
         };
@@ -772,31 +776,131 @@ impl M0Engine {
         Ok(state)
     }
 
-    /// score-only 结算：只记名次、不升级（§5.1 第 393 行、§5.13「局终止与名次」）。
-    fn settle(&self, state: &mut State) -> Result<(), EngineError> {
-        // §6.3：`play → settle`，经相位机校验，表外跳转报错不静默接受。
-        self.transition(state, PHASE_SETTLE)?;
-        // 已出完按 finish_order；未出完座位的名次分配（双下按座位方向倒排）属 ⑥ 结算批次，
-        // 本批不落地。第二十六次变更已作废「按剩余手牌张数升序、同数按座位号」：张数不进
-        // 判定链，这里只按座位号中性补位到 4 座，方向口径待 ⑥ 第一批接线。
-        // TODO(M0-GAP-rank-direction)：双下名次从头游起沿 direction 倒排。
-        let mut unfinished: Vec<u8> = state
+    /// 名次落定（§5.13「局终止与名次」、第二十六次变更）：已出完按 `finish_order`；
+    /// 未出完座位——只剩一个直接取末名次；全部同属一队（双下）时，从头游起沿
+    /// `flow.turn.direction` 依次倒排：第一个遇到的未出完座位记末游，第二个记倒数第二。
+    /// **禁止用剩余手牌张数排名次**；张数不进判定链。
+    fn finalize_ranks(&self, state: &State) -> Vec<u8> {
+        let mut ranks = state.finish_order.clone();
+        let unfinished: Vec<u8> = state
             .seats
             .iter()
             .copied()
-            .filter(|s| !state.finish_order.contains(s))
+            .filter(|s| !ranks.contains(s))
             .collect();
-        unfinished.sort_unstable();
-        for seat in unfinished {
-            state.finish_order.push(seat);
+        if unfinished.is_empty() {
+            return ranks;
         }
-        // G4：score-only 不挂等级表，levels 保持空序列；aFailStreak 不推进。
-        // TODO(M0-GAP-N17)：局终口径文档未定义——settle 时 `lastPlay` 应清空为 None 还是保留
-        // 最后一墩；§5.12 第 819 行只规定「本回合无人出过牌时该键不出现」，未写局终快照口径。
-        // 现取清空，待裁决，本批不改行为。
+        let count = self.ruleset.seats.count;
+        let step = match self.turn_direction() {
+            TurnDirection::Clockwise => 1i32,
+            TurnDirection::Counterclockwise => -1,
+        };
+        let mut along: Vec<u8> = Vec::new();
+        let mut cur = ranks[0];
+        for _ in 0..count {
+            if unfinished.contains(&cur) {
+                along.push(cur);
+            }
+            cur = ((cur as i32 + step).rem_euclid(count as i32)) as u8;
+        }
+        // along 首遇 = 末游；倒序追加（倒数第二 → 末游）到名次序列。
+        along.reverse();
+        ranks.extend(along);
+        ranks
+    }
+
+    /// score-only 结算：只定名次；level-up 本批只查 `step`，不落 `levels`（跨 A / 过 A /
+    /// aFailStreak 属第二批，见 §5.13 结算四步 ②③）。
+    fn settle(&self, state: &mut State) -> Result<(), EngineError> {
+        // §6.3：`play → settle`，经相位机校验，表外跳转报错不静默接受。
+        self.transition(state, PHASE_SETTLE)?;
+
+        // 终止判定用：先于名次补位，按终局瞬间的 finish_order 找全员已出完的队
+        // （补位后两队都会进名次序列，不能事后再筛）。
+        let completed_team = self
+            .ruleset
+            .seats
+            .teams
+            .iter()
+            .enumerate()
+            .find(|(_, team)| team.iter().all(|s| state.finish_order.contains(s)))
+            .map(|(i, _)| i as u8)
+            .ok_or_else(|| EngineError::Internal {
+                message: "终局没有队伍全员进入名次".to_owned(),
+            })?;
+
+        // ① 定名次（第二十六次变更口径，不按手牌张数）。
+        let ranks = self.finalize_ranks(state);
+        state.finish_order = ranks.clone();
+        state.ranks = ranks.clone();
+
+        let head = *ranks.first().ok_or_else(|| EngineError::Internal {
+            message: "终局名次序列为空".to_owned(),
+        })?;
+        let winner_team = self
+            .ruleset
+            .seats
+            .teams
+            .iter()
+            .position(|t| t.contains(&head))
+            .map(|i| i as u8)
+            .ok_or_else(|| EngineError::Internal {
+                message: format!("头游座位 {head} 未归属任何队伍"),
+            })?;
+
+        // rankCombo = 胜方队各名次升序；名次分配不影响 step（第二十六次变更 ⑤）。
+        let mut combo: Vec<u8> = self.ruleset.seats.teams[winner_team as usize]
+            .iter()
+            .map(|&s| ranks.iter().position(|&x| x == s).map(|p| p as u8 + 1))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| EngineError::Internal {
+                message: "胜方队成员未全部进入名次序列".to_owned(),
+            })?;
+        combo.sort_unstable();
+
+        // ④ 按 rank-combo 查 `upgrade[]` 取 step；查不到组合不报默认档，报 Internal。
+        // score-only 局只跑第 ① 步，step 保持 None。
+        let step: Option<u8> = match &self.ruleset.settle {
+            Settle::LevelUp { .. } => {
+                let table =
+                    self.ruleset
+                        .level_table
+                        .as_ref()
+                        .ok_or_else(|| EngineError::Internal {
+                            message: "level-up 结算缺少 levelTable".to_owned(),
+                        })?;
+                let upgrade = table
+                    .upgrade
+                    .as_ref()
+                    .ok_or_else(|| EngineError::Internal {
+                        message: "level-up 结算缺少 upgrade[]".to_owned(),
+                    })?;
+                let step = upgrade
+                    .iter()
+                    .find(|row| row.team_ranks == combo)
+                    .map(|row| row.step)
+                    .ok_or_else(|| EngineError::Internal {
+                        message: format!(
+                            "rankCombo {combo:?} 未在 levelTable.upgrade[] 枚举，不许猜默认档"
+                        ),
+                    })?;
+                Some(step)
+            }
+            Settle::ScoreOnly => None,
+        };
+
+        state.winner_team = Some(winner_team);
+        state.completed_team = Some(completed_team);
+        state.settle_step = step;
+
+        // §5.13「决定首出」：settle 结束把 `attackingTeam` 置为头游所在队（下一局打谁的级牌）。
+        state.attacking_team = winner_team;
+
+        // N17（第三十五次变更）：转移成立那一刻清空 `lastPlay`，settle 全段保持 None；
+        // 结算四步不读它。下一局 deal 后按新局重新累积。
         state.last_play = None;
-        // TODO(M0-GAP-ATTACK-TEAM-NEXT)：settle 应把 `attacking_team` 置为头游（finish_order[0]）
-        // 所在队属，属用户明确推迟的 ⑥ 四步那一批；本笔只开局抽牌定首出，结算不改队属。
+        state.passes_since_last_play = 0;
         Ok(())
     }
 
@@ -821,12 +925,16 @@ impl M0Engine {
             data.round_level = state.levels.get(state.attacking_team as usize).copied();
             data.round_attacking_team = Some(state.attacking_team);
         }
-        if let Some(last) = &state.last_play {
-            data.last_play = Some(ViewLastPlay {
-                seat: last.seat,
-                pattern_id: last.pattern_id.clone(),
-                cards: last.cards.clone(),
-            });
+        // N17（第三十五次变更）：本局已终局（phase=settle）与「本回合无人出过牌」同一
+        // 条件，`lastPlay` 键都不出现；结算四步不读 lastPlay。
+        if state.phase != PHASE_SETTLE {
+            if let Some(last) = &state.last_play {
+                data.last_play = Some(ViewLastPlay {
+                    seat: last.seat,
+                    pattern_id: last.pattern_id.clone(),
+                    cards: last.cards.clone(),
+                });
+            }
         }
         let bytes = encode_canonical(&fields, &data);
         View { bytes }
@@ -957,6 +1065,41 @@ mod tests {
             .position(|t| t.contains(&state.turn_seat))
             .expect("先手座位应归属某一队");
         assert_eq!(state.attacking_team, team as u8);
+    }
+
+    // ---------- 名次方向（第二十六次变更 ④） ----------
+
+    #[test]
+    fn double_loss_ranks_follow_direction_from_head() {
+        let engine = engine();
+        let mut state = engine.deal(M0_SEED).expect("发牌失败");
+        // 队 0（座位 0、2）双下：0 头游、2 二游；未出完为队 1 的 seat1、seat3。
+        state.finish_order = vec![0, 2];
+        // 顺时针从头游 0 起：首遇未出完 seat1 = 末游（第 4 名），次遇 seat3 = 三游（第 3 名）。
+        let ranks = engine.finalize_ranks(&state);
+        assert_eq!(ranks, vec![0, 2, 3, 1]);
+    }
+
+    // ---------- N17：settle 期视图屏蔽 lastPlay ----------
+
+    #[test]
+    fn settle_view_omits_last_play_key() {
+        let engine = engine();
+        let mut state = engine.deal(M0_SEED).expect("发牌失败");
+        // 人为摆成终局相位、last_play 仍带值（模拟转移成立那一刻）；视图必须屏蔽该键。
+        state.phase = PHASE_SETTLE;
+        state.last_play = Some(LastPlay {
+            seat: 0,
+            pattern_id: "single".to_owned(),
+            pattern_key: (1, 0),
+            cards: vec![1],
+        });
+        let view = engine.view(&state, Seat(0));
+        assert!(
+            !view.bytes.windows(9).any(|w| w == b"lastPlay\""),
+            "phase=settle 期间 lastPlay 键不出现：{}",
+            String::from_utf8_lossy(&view.bytes)
+        );
     }
 
     // ---------- 第一笔：轮转方向 / skipFinished / 全过后领出 / 接风 ----------

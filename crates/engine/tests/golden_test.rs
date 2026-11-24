@@ -2,15 +2,19 @@
 //!
 //! 期望哈希先由 native 用例跑出、确认动作日志合法后再写死（不许先写期望再凑实现）。
 
-use gf_engine::cases::{build_engine, run_m0_golden, M0_SEED};
+use gf_engine::cases::{build_engine, run_classic_golden, run_m0_golden, M0_SEED};
 use gf_engine::contract::{Action, Engine, State};
 use gf_engine::engine::{M0Engine, PHASE_SETTLE};
 use gf_engine::hash::{canonical_bytes, state_hash, CanonicalState};
+use gf_engine::settlement::{valid_ruleset_version, Settlement};
 
 /// native 用例跑出并核对过动作日志后的 32 字节 stateHash（双端逐字节比对锚点）。
 /// 第二十六次变更（接风 / 全过判定顺序订正）后轨迹漂移，锚点已按最终口径重算。
+/// 本批 `settle-single-round`：① N17（第三十五次变更）第 5 段 `lastPlay=None` 由单 presence
+/// 字节改为完整占位段（seat=0xFF / 空串 / (0,0) / 空数组）；② settle 结束 `attackingTeam`
+/// 交接头游所在队（旧 = 开局抽牌队 0，新 = 头游队 1，第 11 段）。两项均按实测写期望。
 const EXPECTED_STATE_HASH: &str =
-    "9b2ff28b384e8d125f925005fdef659fb8abddd45cbf270e58e2d984d0907ab0";
+    "f65cfb2f9c598fe096a7142053647184a8041eb03310710431b46d0b7af1037d";
 
 #[test]
 fn golden_reaches_settle_and_matches_recorded_hash() {
@@ -76,9 +80,30 @@ fn golden_reaches_settle_and_matches_recorded_hash() {
         vec![1, 3, 0, 2],
         "收尾名次应与实测 1+3 形态一致"
     );
+    // ranks 与 finish_order 同口径（名次 1→n 的 seat 数组）；score-only 局无升级档，step 为 None。
+    assert_eq!(outcome.ranks, vec![1, 3, 0, 2], "ranks 应按名次 1→n 列座位");
+    assert_eq!(
+        outcome.settle_step, None,
+        "score-only 局不查 upgrade[]，step 应为 None"
+    );
+    // result bytes：canonical JSON，键序固定 winner_team, ranks, points，单行无空白。
+    let m0_result = Settlement {
+        winner_team: outcome.winner_team.unwrap(),
+        ranks: outcome.ranks.clone(),
+        points: 0,
+    };
+    assert_eq!(
+        m0_result.encode_result_bytes(),
+        br#"{"winner_team":1,"ranks":[1,3,0,2],"points":0}"#
+    );
     assert_eq!(
         outcome.completed_team, outcome.winner_team,
         "1+3 形态下 completed_team 与 winner_team 同为头游队"
+    );
+    // N17：settle 全段 lastPlay 保持 None，视图键不出现；stateHash 第 5 段走占位编码。
+    assert!(
+        outcome.state.last_play.is_none(),
+        "settle 阶段 lastPlay 必须清空为 None"
     );
     let hex: String = outcome
         .state_hash
@@ -86,6 +111,44 @@ fn golden_reaches_settle_and_matches_recorded_hash() {
         .map(|b| format!("{b:02x}"))
         .collect();
     assert_eq!(hex, EXPECTED_STATE_HASH, "native 用例哈希与记录锚点不一致");
+}
+
+#[test]
+fn classic_first_round_settles_with_concrete_step_and_teams() {
+    // `guandan-classic` level-up 首局固定策略跑到 settle；数值按实测写死，不许只断言非空。
+    // 实测轨迹：ranks=[2,1,0,3]，头游 seat2 属队 0，队友 seat0 占第 3 名 → rankCombo [1,3]
+    // 查 upgrade[] 得 step=2；completed_team=0（队 0 先全员出完），winner_team=0（头游队）。
+    let outcome = run_classic_golden().expect("classic golden 运行失败");
+    assert_eq!(outcome.state.phase, PHASE_SETTLE, "classic 必须跑到 settle");
+    assert_eq!(outcome.settle_count, 1, "settle 转移应恰为一次");
+    assert_eq!(outcome.ranks, vec![2, 1, 0, 3], "ranks 应按名次 1→n 列座位");
+    assert_eq!(outcome.finish_order, vec![2, 1, 0, 3]);
+    assert_eq!(outcome.winner_team, Some(0), "头游 seat2 属队 0");
+    assert_eq!(outcome.completed_team, Some(0), "先全员出完的是队 0");
+    assert_eq!(
+        outcome.settle_step,
+        Some(2),
+        "rankCombo [1,3] 升级档应为 +2"
+    );
+    // §5.13「决定首出」：settle 结束 attackingTeam 交接头游所在队。
+    assert_eq!(
+        outcome.state.attacking_team, 0,
+        "attackingTeam 应为头游队 0"
+    );
+    // N17：settle 阶段 lastPlay 清空，结算输出与它无关。
+    assert!(outcome.state.last_play.is_none());
+    assert_eq!(outcome.discard_count + outcome.hands_total, 108, "牌数守恒");
+    // result bytes 与 SettleResult 载体：正常结算 reason 缺省；rulesetVersion 仅作身份键。
+    let settlement = Settlement {
+        winner_team: 0,
+        ranks: outcome.ranks.clone(),
+        points: 0,
+    };
+    assert_eq!(
+        settlement.encode_result_bytes(),
+        br#"{"winner_team":0,"ranks":[2,1,0,3],"points":0}"#
+    );
+    assert!(valid_ruleset_version("guandan-classic-1.0.0"));
 }
 
 #[test]
