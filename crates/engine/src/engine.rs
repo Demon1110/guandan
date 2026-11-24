@@ -16,6 +16,7 @@ use crate::ruleset::model::{AfterAllPass, TurnDirection, ZoneScope};
 use crate::ruleset::params::PrimitiveParams;
 use crate::ruleset::RuleSetBody;
 use crate::view::{encode_canonical, ViewData, ViewLastPlay};
+use std::collections::BTreeMap;
 
 /// phase 枚举序号（与 `model::Phase` 声明序一致：deal=0, tribute=1, play=2, settle=3）。
 pub const PHASE_DEAL: u16 = 0;
@@ -469,10 +470,26 @@ impl M0Engine {
         };
         let hand = hand.clone();
 
-        // 候选四元组：(countKey, rankKey, cards 牌 id 序列, primitiveId)，全序（§5.12 第 842 行）。
+        // 候选四元组：(countKey, rankKey, cards 牌 id 序列, patternId)，全序（§5.12 第 842 行）。
         let force = self.require_legal_params().0;
         let ctx = self.rank_context(state);
-        let mut candidates: Vec<(u32, u32, Vec<u16>, String, Action)> = Vec::new();
+        let wild_ids = patterns::wildcard_ids(&self.ruleset, &ctx);
+
+        // §5.13 第 899 行：`legal_actions` 只列规范子集——同 patternId + patternKey
+        // 只出一条；代表选定序 ① rankKey 最大 ② 百搭用量最少 ③ 真牌牌 id 升序
+        // 字典序最小（按牌 id 序列比，不按点数组合比）。客户端仍可提交任意结构等价
+        // 组合，`apply` 按结构复检，不受本子集约束。
+        struct Entry {
+            count_key: u32,
+            rank_key: u32,
+            wild_count: usize,
+            true_cards: Vec<u16>,
+            cards: Vec<u16>,
+            pattern_id: String,
+            action: Action,
+        }
+        let mut groups: BTreeMap<(String, u32, u32), Entry> = BTreeMap::new();
+
         for rec in patterns::enumerate(&self.ruleset, &ctx, &hand) {
             // 领出（lastPlay 为空）任意成型牌型合法；跟牌时：force=true 只保留能压过
             // lastPlay 的候选，force=false 只校牌型合法、不要求压过（§5.2 第 524 行）。
@@ -481,16 +498,49 @@ impl M0Engine {
                 Some(last) if force => patterns::beats(&self.ruleset, &rec, last),
                 Some(_) => true,
             };
-            if legal {
-                candidates.push((
-                    rec.pattern_key.0,
-                    rec.pattern_key.1,
-                    rec.cards.clone(),
-                    rec.pattern_id.clone(),
-                    Action::Play { cards: rec.cards },
-                ));
+            if !legal {
+                continue;
+            }
+            let mut true_cards: Vec<u16> = rec
+                .cards
+                .iter()
+                .copied()
+                .filter(|c| !wild_ids.contains(c))
+                .collect();
+            true_cards.sort_unstable();
+            let wild_count = rec.cards.len() - true_cards.len();
+            let key = (rec.pattern_id.clone(), rec.pattern_key.0, rec.pattern_key.1);
+            let entry = Entry {
+                count_key: rec.pattern_key.0,
+                rank_key: rec.pattern_key.1,
+                wild_count,
+                true_cards,
+                cards: rec.cards.clone(),
+                pattern_id: rec.pattern_id.clone(),
+                action: Action::Play { cards: rec.cards },
+            };
+            match groups.entry(key) {
+                std::collections::btree_map::Entry::Occupied(mut slot) => {
+                    let cur = slot.get();
+                    let take = entry.rank_key > cur.rank_key
+                        || (entry.rank_key == cur.rank_key && entry.wild_count < cur.wild_count)
+                        || (entry.rank_key == cur.rank_key
+                            && entry.wild_count == cur.wild_count
+                            && entry.true_cards < cur.true_cards);
+                    if take {
+                        *slot.get_mut() = entry;
+                    }
+                }
+                std::collections::btree_map::Entry::Vacant(slot) => {
+                    slot.insert(entry);
+                }
             }
         }
+
+        let mut candidates: Vec<(u32, u32, Vec<u16>, String, Action)> = groups
+            .into_values()
+            .map(|e| (e.count_key, e.rank_key, e.cards, e.pattern_id, e.action))
+            .collect();
 
         candidates.sort_by(|a, b| (&a.0, &a.1, &a.2, &a.3).cmp(&(&b.0, &b.1, &b.2, &b.3)));
         for candidate in candidates {

@@ -146,7 +146,7 @@ impl RankContext {
 // ---------- 逢人配定位 ----------
 
 /// 逢人配牌 id 集合（源花色 + 源点数）。
-fn wildcard_ids(r: &RuleSetBody, ctx: &RankContext) -> HashSet<u16> {
+pub(crate) fn wildcard_ids(r: &RuleSetBody, ctx: &RankContext) -> HashSet<u16> {
     let mut out = HashSet::new();
     let Some(w) = &r.wildcard else { return out };
     let Some(rank_idx) = wildcard_own_rank(r, ctx) else {
@@ -248,17 +248,41 @@ fn build_rec(def: &PatternDef, count_key: u32, rank_key: u32, cards: Vec<u16>) -
 /// 一个可行解：解析后的高点位 `rank_key`、真牌点数组合（tiebreak）、提交牌原 id。
 struct Sol {
     rank_key: u32,
-    true_combo: Vec<usize>,
+    /// 解中百搭张数（第二档：越少越规范）。
+    wild_count: usize,
+    /// 真牌牌 id 升序序列（第三档：字典序最小）。
+    true_cards: Vec<u16>,
     cards: Vec<u16>,
 }
 
-/// 选解：`rankKey` 最大者胜；相同则真牌点数组合 `naturalOrder` 字典序最小者胜。
+fn make_sol(r: &RuleSetBody, ctx: &RankContext, rank_key: u32, cards: Vec<u16>) -> Sol {
+    let wild = wildcard_ids(r, ctx);
+    let mut true_cards: Vec<u16> = cards
+        .iter()
+        .copied()
+        .filter(|c| !wild.contains(c))
+        .collect();
+    true_cards.sort_unstable();
+    let wild_count = cards.len() - true_cards.len();
+    Sol {
+        rank_key,
+        wild_count,
+        true_cards,
+        cards,
+    }
+}
+
+/// 选解三档序（§5.13 第 899 行）：① `rankKey` 最大 ② 百搭用量最少 ③ 真牌牌
+/// id 升序字典序最小（按牌 id 序列比，不按点数组合比）。
 fn replace_best(best: &mut Option<Sol>, candidate: Sol) {
     let take = match best.as_ref() {
         None => true,
         Some(cur) => {
             candidate.rank_key > cur.rank_key
-                || (candidate.rank_key == cur.rank_key && candidate.true_combo < cur.true_combo)
+                || (candidate.rank_key == cur.rank_key
+                    && (candidate.wild_count < cur.wild_count
+                        || (candidate.wild_count == cur.wild_count
+                            && candidate.true_cards < cur.true_cards)))
         }
     };
     if take {
@@ -412,11 +436,7 @@ fn match_same_rank(
             }
             let mut cards = bucket.clone();
             cards.extend_from_slice(&g.wild[..need]);
-            let sol = Sol {
-                rank_key: ctx.rank_key(r, rank),
-                true_combo: vec![rank],
-                cards,
-            };
+            let sol = make_sol(r, ctx, ctx.rank_key(r, rank), cards);
             replace_best(&mut best, sol);
         }
     }
@@ -427,11 +447,7 @@ fn match_same_rank(
             return best.map(|sol| build_rec(def, k as u32, sol.rank_key, sol.cards));
         };
         let cards = g.wild[..k].to_vec();
-        let sol = Sol {
-            rank_key: ctx.rank_key(r, own),
-            true_combo: Vec::new(),
-            cards,
-        };
+        let sol = make_sol(r, ctx, ctx.rank_key(r, own), cards);
         replace_best(&mut best, sol);
     }
 
@@ -518,13 +534,7 @@ fn match_straight(
             }
         }
         cards.extend_from_slice(&g.wild[..missing.len()]);
-        let mut true_combo: Vec<usize> = present.iter().copied().collect();
-        true_combo.sort_unstable();
-        let sol = Sol {
-            rank_key,
-            true_combo,
-            cards,
-        };
+        let sol = make_sol(r, ctx, rank_key, cards);
         replace_best(&mut best, sol);
     }
     best.map(|sol| build_rec(def, length as u32, sol.rank_key, sol.cards))
@@ -574,13 +584,7 @@ fn match_consecutive(
             cards.extend_from_slice(&g.wild[used_wild..used_wild + need]);
             used_wild += need;
         }
-        let mut true_combo: Vec<usize> = present.iter().copied().collect();
-        true_combo.sort_unstable();
-        let sol = Sol {
-            rank_key: ctx.rank_key(r, top),
-            true_combo,
-            cards,
-        };
+        let sol = make_sol(r, ctx, ctx.rank_key(r, top), cards);
         replace_best(&mut best, sol);
     }
     best.map(|sol| build_rec(def, (groups * per_group) as u32, sol.rank_key, sol.cards))
@@ -647,11 +651,7 @@ fn match_triple_pair(
             cards.extend_from_slice(&g.wild[..need_main]);
             cards.extend_from_slice(&pair_bucket[..take_pair]);
             cards.extend_from_slice(&g.wild[need_main..need_main + need_pair]);
-            let sol = Sol {
-                rank_key: ctx.rank_key(r, main),
-                true_combo: vec![main, pair],
-                cards,
-            };
+            let sol = make_sol(r, ctx, ctx.rank_key(r, main), cards);
             replace_best(&mut best, sol);
         }
 
@@ -663,11 +663,7 @@ fn match_triple_pair(
             let mut cards = main_bucket[..real_main].to_vec();
             cards.extend_from_slice(&g.wild[..need_main]);
             cards.extend_from_slice(jp);
-            let sol = Sol {
-                rank_key: ctx.rank_key(r, main),
-                true_combo: vec![main],
-                cards,
-            };
+            let sol = make_sol(r, ctx, ctx.rank_key(r, main), cards);
             replace_best(&mut best, sol);
         }
     }

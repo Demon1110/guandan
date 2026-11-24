@@ -1197,6 +1197,60 @@ fn enumerates_plate_steel_bomb_candidates() {
     );
 }
 
+#[test]
+fn legal_actions_prefers_real_pair_over_wildcard() {
+    let r = fixture_body();
+    let engine = engine();
+    // 两张真牌 3 + 一张百搭：对子 3 的规范代表取纯真牌解（第二档：百搭用量最少），
+    // 不输出带百搭的等价组合。
+    let hand = vec![c(&r, 1, 0, 0), c(&r, 1, 2, 0), w(&r, 0)];
+    let state = state_with(&engine, hand);
+    let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
+    let wild = w(&r, 0);
+    let pair_plays: Vec<&Vec<u16>> = legal
+        .iter()
+        .filter_map(|a| match a {
+            Action::Play { cards } if cards.len() == 2 => Some(cards),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !pair_plays.iter().any(|p| p.contains(&wild)),
+        "对子规范代表不得带百搭: {pair_plays:?}"
+    );
+    assert!(
+        plays_contain(&legal, &[c(&r, 1, 0, 0), c(&r, 1, 2, 0)]),
+        "应输出纯真牌对子: {legal:?}"
+    );
+}
+
+#[test]
+fn legal_actions_pair_lex_min_by_card_id() {
+    let r = fixture_body();
+    let engine = engine();
+    // 三张 3（S copy0 / S copy1 / D copy0）：成对解按真牌牌 id 升序字典序取最小 [S0,S1]。
+    let hand = vec![c(&r, 1, 0, 0), c(&r, 1, 0, 1), c(&r, 1, 2, 0)];
+    let state = state_with(&engine, hand);
+    let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
+    let mut plays: Vec<Vec<u16>> = legal
+        .iter()
+        .filter_map(|a| match a {
+            Action::Play { cards } => Some(cards.clone()),
+            Action::Pass => None,
+        })
+        .collect();
+    for p in plays.iter_mut() {
+        p.sort_unstable();
+    }
+    let pair = plays.iter().find(|p| p.len() == 2).expect("应有对子候选");
+    let mut expected = vec![c(&r, 1, 0, 0), c(&r, 1, 0, 1)];
+    expected.sort_unstable();
+    assert_eq!(
+        *pair, expected,
+        "真牌牌 id 字典序最小者应作为规范代表: {plays:?}"
+    );
+}
+
 // ---------- 逢人配（§5.13 第 893 行、§5.10 第 773 行） ----------
 
 /// 逢人配源牌：红桃级牌（H 花色、`@level` → 初始级 2），即 rank 0 / suit 1 两张副本。
