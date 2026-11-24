@@ -141,3 +141,69 @@ rooms       = 1_000_000 / (20 × avg_action)
 - native：重建临时 `bench-profile` feature 与 `benches/profile_bench.rs` 后，`cargo bench --bench profile_bench --features bench-profile`。
 - wasm：`cargo build -p gf-engine --target wasm32-unknown-unknown --release`（注意：不要 build workspace，prost 缺 protoc）；Node 逐次宿主加载 `target/wasm32-unknown-unknown/release/gf_engine.wasm`，单次调用 `legal_actions` 计时。
 - 全量回归：`cargo test --workspace`；golden 双端复核：`pwsh -File crates/engine/tests/wasm/verify_m0_golden.ps1`。
+
+---
+
+## 8. `enum-path-rewrite` 重构前后对照（2026-11-24，HEAD `73d621e`）
+
+> 门禁批次 `enum-path-rewrite`：候选生成改按牌型解析构造（同点数型按 rank 直取、连续型按合法窗口滑动、含百搭按孔位定向补齐，构造后单次结构校验）；附带保留 A 项唯一优化——载入期缓存 `synthetic_ladder` 与 `RankContext` 合成序位置表。`Groups` 缓存未做（构造式下无意义）；识别侧 `recognize` 结构复检保留不动。
+>
+> 旧实现原样收入 `patterns::legacy_ref`（仅 `#[cfg(test)]` 编译，不进发布产物），与生产路径走同一 `actions_from_records` 归并，逐条比对最终 `Vec<Action>`（含顺序）。
+>
+> 测量条件与 §1 一致：release、各 10 万次逐次计时、固定 `M0_SEED`、i7-13700KF 非独占；下列新数字为本批收口轮，机器噪声下 native lead P99 另两轮分别 277.4 / 296.7 µs（均 <1ms）。
+
+### 8.1 差分测试覆盖（本批核心验收）
+
+| 类别 | 规模 | 通过 |
+| --- | ---: | ---: |
+| 随机手牌 × 4 座位 × 领出/跟牌 | 200 手牌 × 4 × 2 = **1600** | 1600 |
+| 边界手牌集（classic，满 8 同点 / 级牌入组牌型 2-3-4-5-6 / 百搭多孔 / triple-pair 补主补对 / 同花顺多解 / 剩 1 张 / 剩 2 张） | 7 组 × 4 座位 × 2 上下文 = **56** | 56 |
+| 整手全百搭 1 / 2 / 3 / 5 / 8 张（copies=8 变体） | 5 档 × 4 座位领出 = **20** | 20 |
+| **合计** | **1676** | **1676，0 不一致** |
+
+### 8.2 native 对照（µs，逐次口径）
+
+| 路径 | 口径 | avg | P50 | P90 | P99 | max | 候选/次 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `legal@mid` | 旧 `e74827d` | 650.216 | 635.800 | 678.800 | 875.200 | 2997.800 | 4 |
+| `legal@mid` | **新** | 116.525 | 112.500 | 120.500 | 200.100 | 1015.600 | 4 |
+| `legal@lead` | 旧 `e74827d` | 972.919 | 955.300 | 1010.600 | 1265.900 | 4306.400 | 44 |
+| `legal@lead` | **新** | 188.113 | 184.300 | 193.700 | **251.300** | 2357.000 | 44 |
+| `apply` | 旧 `e74827d` | 8.895 | 11.400 | 12.400 | 21.500 | 156.500 | — |
+| `apply` | **新** | 1.504 | 1.800 | 2.200 | 3.500 | 117.000 | — |
+
+- lead avg 提速 **5.17×**，lead P99 提速 **5.04×**；`legal@lead` P99 **251.3 µs < 1ms**，延迟门禁过线。
+- 常驻堆 **698.8 B/room** 与旧批一致（1500 房间 1,048,243 B，峰值 1,048,459 B）；RSS 增量受 Windows WorkingSet 调度噪声影响（另两轮 357.7 / 868.4 B/room），不作为能力口径。
+
+### 8.3 wasm 对照（µs，逐次口径；批均值 P99 不与逐次 P99 直比，见 §6）
+
+| 路径 | 口径 | avg | P50 | P90 | P99 | max |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `legal@mid` | 旧 `e74827d` | 459.953 | 452.700 | 478.700 | 613.700 | 25064.700 |
+| `legal@mid` | **新** | 117.388 | 113.000 | 124.100 | 204.200 | 16086.900 |
+| `legal@lead` | 旧 `e74827d` | 732.025 | 702.000 | 794.400 | 1165.100 | 7387.300 |
+| `legal@lead` | **新** | 197.973 | 188.300 | 212.900 | **350.000** | 3294.000 |
+| `apply` | 旧 `e74827d` | 6.775 | 8.500 | 9.700 | 15.400 | 328.700 |
+| `apply` | **新** | 1.669 | 1.900 | 2.500 | 4.100 | 126.900 |
+
+- wasm lead avg 提速 **3.70×**，lead P99 提速 **3.33×**；wasm 内存 **1,376,256 B** 与旧批一致。
+
+### 8.4 容量两点换算（公式与假设沿用 §5.1）
+
+```
+avg_action  = (legal@lead avg + apply avg) / 2
+rooms       = 1_000_000 / (20 × avg_action)
+```
+
+| 端 | lead avg | apply avg | avg_action | 推算房间数 | 旧批房间数 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| native | 188.113 µs | 1.504 µs | 94.808 µs | **≈ 527** | ≈ 102 |
+| wasm | 197.973 µs | 1.669 µs | 99.821 µs | **≈ 501** | ≈ 135 |
+
+- 假设不变：10Hz × 2 动作/秒/房间；只计领出 legal + apply，未计跟牌 legal、idle tick、网络 IO、view 编码、快照恢复。
+- **容量仍未过 1500 房间线**（native 527 / wasm 501）；未改口径凑线。距门槛反推：lead legal 必须 ≤ 59.15 µs、avg_action ≤ 33.33 µs（§5.2），当前仍差约 3.2 倍。
+
+### 8.5 锚点与回归
+
+- `stateHash = 9b2ff28b384e8d125f925005fdef659fb8abddd45cbf270e58e2d984d0907ab0`、`steps=148`、`phase=3`、`finishOrder=[1,3,0,2]`、`completedTeam=1`、`winnerTeam=1`、`discardCount=104`、`handsTotal=4`：native ↔ wasm 双端逐字段一致，**锚点未漂移**。
+- 测试：`cargo test --workspace` **197 passed / 0 failed**（基线 195 + 本批 2 条差分用例）；`fmt --check` exit 0；`clippy --workspace --all-targets` 0 告警；测试只增不减。
