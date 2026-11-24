@@ -853,6 +853,8 @@ mod tests {
     use crate::cases::M0_SEED;
     use crate::contract::{Engine, ErrorCode, Level};
     use crate::ruleset::{from_yaml, validate};
+    use std::fs;
+    use std::path::PathBuf;
 
     fn engine() -> M0Engine {
         crate::cases::build_engine().expect("m0-minimal 夹具构造失败")
@@ -1443,6 +1445,200 @@ mod tests {
                 .transition(&mut staged, to)
                 .expect_err("表外相位跳转必须报错");
             assert!(matches!(err, EngineError::Internal { .. }));
+        }
+    }
+
+    // ---------- enum-path-rewrite 差分测试：新旧枚举逐条相等（含顺序） ----------
+
+    fn classic_engine() -> M0Engine {
+        let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        p.push("tests/fixtures/guandan-classic/ruleset.yaml");
+        let src = fs::read_to_string(p).expect("classic 夹具读取失败");
+        let body = from_yaml(&src).expect("classic 夹具构造失败");
+        M0Engine::new(body)
+    }
+
+    fn classic_engine_copies(copies: u8) -> M0Engine {
+        let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        p.push("tests/fixtures/guandan-classic/ruleset.yaml");
+        let src = fs::read_to_string(p).expect("classic 夹具读取失败");
+        let total = (13 * 4 + 2) * copies as usize;
+        let per_seat = total / 4;
+        let src = src
+            .replace("copies: 2", &format!("copies: {copies}"))
+            .replace("perSeat: 27", &format!("perSeat: {per_seat}"))
+            .replace("cardCount: 108", &format!("cardCount: {total}"));
+        let body = from_yaml(&src).expect("变体夹具构造失败");
+        M0Engine::new(body)
+    }
+
+    fn diff_card(r: &RuleSetBody, rank: usize, suit: usize, copy: u8) -> u16 {
+        patterns::card_id(r, rank, suit, copy)
+    }
+
+    fn diff_wild(r: &RuleSetBody, copy: u8) -> u16 {
+        diff_card(r, 0, 1, copy)
+    }
+
+    fn diff_state_with(
+        engine: &M0Engine,
+        seat: u8,
+        hand: Vec<u16>,
+        last: Option<LastPlay>,
+    ) -> State {
+        let mut state = engine.deal(M0_SEED).expect("发牌失败");
+        let idx = engine.hand_zone_index();
+        for z in state.zones.iter_mut() {
+            if z.seat == seat && z.zone_id == idx {
+                z.cards = hand.clone();
+            }
+        }
+        state.turn_seat = seat;
+        state.last_play = last;
+        state.passes_since_last_play = 0;
+        state
+    }
+
+    /// 生产枚举与参照枚举走同一归并路径，最终 `Vec<Action>`（含顺序）逐条比对。
+    fn assert_enum_equivalent(engine: &M0Engine, state: &State, hand: &[u16]) {
+        let new_actions = engine
+            .legal_actions(state)
+            .expect("生产路径 legal_actions 应成功");
+        let ctx = engine.rank_context(state);
+        let ladder = engine.cached_ladder();
+        let wild_ids = patterns::wildcard_ids(&engine.ruleset, &ctx);
+        let force = engine.require_legal_params().0;
+        let legacy = patterns::legacy_ref::enumerate_legacy(&engine.ruleset, &ctx, hand);
+        let legacy_actions = engine.actions_from_records(legacy, state, force, &wild_ids, ladder);
+        assert_eq!(
+            new_actions, legacy_actions,
+            "新旧枚举不一致: hand={hand:?} last={:?}",
+            state.last_play
+        );
+    }
+
+    struct DiffRng(u64);
+
+    impl DiffRng {
+        fn next(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            self.0
+        }
+    }
+
+    #[test]
+    fn differential_random_hands_four_seats_two_contexts() {
+        let engine = classic_engine();
+        let r = &engine.ruleset;
+        let mut deck: Vec<u16> = (0..13usize)
+            .flat_map(|rank| {
+                (0..4usize)
+                    .flat_map(move |suit| (0..2u8).map(move |copy| diff_card(r, rank, suit, copy)))
+            })
+            .collect();
+        deck.push(patterns::joker_id(r, false, 0));
+        deck.push(patterns::joker_id(r, false, 1));
+        deck.push(patterns::joker_id(r, true, 0));
+        deck.push(patterns::joker_id(r, true, 1));
+
+        /// 抽样规模：200 手牌 × 4 座位 × 领出/跟牌两种上下文。
+        const SAMPLES: usize = 200;
+        let mut rng = DiffRng(M0_SEED);
+        let mut checked = 0usize;
+        for _ in 0..SAMPLES {
+            let k = 1 + (rng.next() % 27) as usize;
+            for i in 0..deck.len() {
+                let j = (rng.next() as usize) % deck.len();
+                deck.swap(i, j);
+            }
+            let hand: Vec<u16> = deck[..k].to_vec();
+            for seat in 0..4u8 {
+                let lead = diff_state_with(&engine, seat, hand.clone(), None);
+                assert_enum_equivalent(&engine, &lead, &hand);
+                checked += 1;
+                let last = LastPlay {
+                    seat: (seat + 3) % 4,
+                    pattern_id: "single".to_owned(),
+                    pattern_key: (1, 1),
+                    cards: vec![hand[0]],
+                };
+                let mid = diff_state_with(&engine, seat, hand.clone(), Some(last));
+                assert_enum_equivalent(&engine, &mid, &hand);
+                checked += 1;
+            }
+        }
+        eprintln!("差分随机抽样: {checked} 个 (手牌×4 座位×领出/跟牌) 全部一致");
+        assert_eq!(checked, SAMPLES * 4 * 2);
+    }
+
+    #[test]
+    fn differential_boundary_hands() {
+        let engine = classic_engine();
+        let r = &engine.ruleset;
+        // 边界手牌集：满 8 张同点 / 级牌入组牌型 / 百搭多孔 / triple-pair / 同花顺多解 / 剩 1–2 张。
+        let hands: Vec<Vec<u16>> = vec![
+            // 同点数满 8 张（bomb-8，两副四花色两副本）。
+            (0..4usize)
+                .flat_map(|s| [diff_card(r, 0, s, 0), diff_card(r, 0, s, 1)])
+                .collect(),
+            // 级牌入组牌型 2-3-4-5-6（级牌 = 2，rank 0..4）。
+            (0..5usize).map(|i| diff_card(r, i, i % 4, 0)).collect(),
+            // 百搭多孔：真牌 3、5 各一张 + 两张百搭，竞争多个顺子窗口。
+            vec![
+                diff_card(r, 1, 0, 0),
+                diff_card(r, 3, 1, 0),
+                diff_wild(r, 0),
+                diff_wild(r, 1),
+            ],
+            // triple-pair：主牌两张真 + 百搭补主；对子一张真 + 百搭补对。
+            vec![
+                diff_card(r, 0, 0, 0),
+                diff_card(r, 0, 0, 1),
+                diff_wild(r, 0),
+                diff_card(r, 2, 1, 0),
+                diff_wild(r, 1),
+            ],
+            // 同花顺多解：同花 4 张 + 百搭补第五孔。
+            vec![
+                diff_card(r, 1, 0, 0),
+                diff_card(r, 2, 0, 0),
+                diff_card(r, 3, 0, 0),
+                diff_card(r, 4, 0, 0),
+                diff_wild(r, 0),
+            ],
+            // 剩 1 张。
+            vec![diff_card(r, 5, 2, 0)],
+            // 剩 2 张。
+            vec![diff_card(r, 5, 2, 0), diff_card(r, 6, 2, 0)],
+        ];
+
+        for hand in &hands {
+            for seat in 0..4u8 {
+                let lead = diff_state_with(&engine, seat, hand.clone(), None);
+                assert_enum_equivalent(&engine, &lead, hand);
+                let last = LastPlay {
+                    seat: (seat + 3) % 4,
+                    pattern_id: "single".to_owned(),
+                    pattern_key: (1, 1),
+                    cards: vec![hand[0]],
+                };
+                let mid = diff_state_with(&engine, seat, hand.clone(), Some(last));
+                assert_enum_equivalent(&engine, &mid, hand);
+            }
+        }
+
+        // 整手全百搭 1/2/3/5/8 张（copies=8 变体，凑得齐 8 张百搭）。
+        let eng8 = classic_engine_copies(8);
+        let r8 = &eng8.ruleset;
+        for n in [1usize, 2, 3, 5, 8] {
+            let hand: Vec<u16> = (0..n).map(|c| diff_wild(r8, c as u8)).collect();
+            for seat in 0..4u8 {
+                let lead = diff_state_with(&eng8, seat, hand.clone(), None);
+                assert_enum_equivalent(&eng8, &lead, &hand);
+            }
         }
     }
 }
