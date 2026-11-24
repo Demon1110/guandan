@@ -3,7 +3,7 @@
 //! - `m0-minimal` 与 `guandan-classic`：构造成功，L1 跑完且 findings 为空；
 //! - 三份非法 RuleSet：构造失败，错误码 `RS_SCHEMA_INVALID`，打印实际 location。
 
-use gf_engine::contract::{ErrorCode, Level};
+use gf_engine::contract::{ErrorCode, Level, Severity};
 use gf_engine::ruleset::{from_yaml, validate};
 use std::fs;
 use std::path::PathBuf;
@@ -246,4 +246,79 @@ view: { schemaVersion: 1, fields: [hand, lastPlay] }
 "#;
     let err = from_yaml(src).expect_err("数字 RankKey 应构造失败");
     assert_eq!(err.code, ErrorCode::RsSchemaInvalid);
+}
+
+// ---------- flushRank 锚点缺失 / 位次冲突反证（§5.1 第 389 行、§5.7 第 635–636 行） ----------
+
+#[test]
+fn flush_anchor_missing_reported_as_blocker() {
+    let src = read_fixture("invalid/flush-anchor-missing/ruleset.yaml");
+    let body = from_yaml(&src).expect("锚点缺失夹具应构造成功，交由 L1 报 finding");
+    let validation = validate(&body, &[Level::L1]);
+
+    let finding = validation
+        .findings
+        .iter()
+        .find(|f| f.code == ErrorCode::RsFlushAnchorMissing)
+        .expect("应报 RS_FLUSH_ANCHOR_MISSING");
+    println!(
+        "[flush-anchor-missing] code={} severity={:?} location={} message={}",
+        finding.code.code_str(),
+        finding.severity,
+        finding.location,
+        finding.message
+    );
+    assert_eq!(finding.severity, Severity::Blocker);
+    assert!(finding.location.contains("compare.ladder"));
+    assert!(
+        finding.message.contains("5"),
+        "message 应含期望锚点张数 5: {}",
+        finding.message
+    );
+    assert!(
+        finding.message.contains("4") && finding.message.contains("6"),
+        "message 应列出 ladder 现有炸弹张数: {}",
+        finding.message
+    );
+    // 两码分开报：锚点缺失只报 MISSING，锚点存在才可能报 CONFLICT。
+    assert!(
+        validation
+            .findings
+            .iter()
+            .all(|f| f.code != ErrorCode::RsLadderConflict),
+        "锚点缺失夹具不应同时报 RS_LADDER_CONFLICT: {:?}",
+        validation.findings
+    );
+}
+
+#[test]
+fn ladder_conflict_reported_as_blocker() {
+    let src = read_fixture("invalid/ladder-conflict/ruleset.yaml");
+    let body = from_yaml(&src).expect("位次冲突夹具应构造成功，交由 L1 报 finding");
+    let validation = validate(&body, &[Level::L1]);
+
+    let finding = validation
+        .findings
+        .iter()
+        .find(|f| f.code == ErrorCode::RsLadderConflict)
+        .expect("应报 RS_LADDER_CONFLICT");
+    println!(
+        "[ladder-conflict] code={} severity={:?} location={} message={}",
+        finding.code.code_str(),
+        finding.severity,
+        finding.location,
+        finding.message
+    );
+    assert_eq!(finding.severity, Severity::Blocker);
+    assert!(finding.location.contains("compare.flushRank"));
+    assert!(
+        finding.message.contains("straight-flush-5"),
+        "message 应含冲突牌型 straight-flush-5: {}",
+        finding.message
+    );
+    assert!(
+        finding.message.contains("straight-flush-6"),
+        "message 应含冲突牌型 straight-flush-6: {}",
+        finding.message
+    );
 }

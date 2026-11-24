@@ -1,0 +1,58 @@
+rulesetId: ladder-conflict
+interpreter: ">=1.2,<2"
+seats: { count: 4, teams: [[0,2],[1,3]] }
+deck: { copies: 2, ranks: ["2","3","4","5","6","7","8","9","10","J","Q","K","A"], suits: [S,H,D,C], jokers: 2, exclude: [] }
+zones:
+  - { id: hand,    scope: private, capacity: 27 }
+  - { id: discard, scope: shared,  capacity: -1 }
+levelTable:
+  id: guandan-level
+  initial: "2"
+  ranks: ["2","3","4","5","6","7","8","9","10","J","Q","K","A"]
+  upgrade: [ { teamRanks: [1,2], step: 3 },
+             { teamRanks: [1,3], step: 2 },
+             { teamRanks: [1,4], step: 1 } ]
+naturalOrder: ["2","3","4","5","6","7","8","9","10","J","Q","K","A",little-joker,big-joker]
+levelInsert: above-A
+wildcard: { source: { suit: H, rank: "@level" }, substitute: ["2","3","4","5","6","7","8","9","10","J","Q","K","A"], inStraightFlush: false }
+patterns:
+  - { id: single,           primitiveId: pattern.same-rank,           params: { count: 1 } }
+  - { id: pair,             primitiveId: pattern.same-rank,           params: { count: 2 } }
+  - { id: triple,          primitiveId: pattern.same-rank,           params: { count: 3 } }
+  - { id: straight-5,      primitiveId: pattern.straight,            params: { length: 5 } }
+  - { id: plate-3,         primitiveId: pattern.consecutive-pairs,   params: { pairs: 3 } }
+  - { id: steel-2,         primitiveId: pattern.consecutive-triples, params: { triples: 2 } }
+  - { id: bomb-4,          primitiveId: pattern.bomb,                params: { count: 4 } }
+  - { id: bomb-5,          primitiveId: pattern.bomb,                params: { count: 5 } }
+  - { id: bomb-6,          primitiveId: pattern.bomb,                params: { count: 6 } }
+  - { id: bomb-7,          primitiveId: pattern.bomb,                params: { count: 7 } }
+  - { id: bomb-8,          primitiveId: pattern.bomb,                params: { count: 8 } }
+  - { id: straight-flush-5, primitiveId: pattern.straight-flush,      params: { length: 5 } }
+  - { id: straight-flush-6, primitiveId: pattern.straight-flush,     params: { length: 6 } }
+  - { id: joker-bomb,      primitiveId: pattern.joker-bomb,          params: {} }
+compare:
+  ladder: [single, pair, triple, straight-5, plate-3, steel-2, bomb-4, bomb-5, bomb-6, bomb-7, bomb-8, joker-bomb]
+  bombOrder: count-then-rank
+  flushRank: above-bomb-5
+tribute:
+  enabled: true
+  trigger: last-round-rank
+  pairs:
+    - { payer: fourth,       receiver: first,  when: single-loss }
+    - { payer: fourth,       receiver: first,  when: double-loss }
+    - { payer: third,        receiver: second, when: double-loss }
+  return: { ceiling: under-ten, count: 1, fallback: smallest }
+  resist: two-big-jokers
+lifecycle: [deal, tribute, play, settle]
+actions:
+  - { kind: play,    primitive: action.require-legal, legalFrom: patterns, params: { force: true, consume: hand } }
+  - { kind: pass,    primitive: action.pass,         legalFrom: play,     params: {} }
+flow:
+  deal:   { zone: hand, perSeat: 27, reveal: false }
+  turn:   { direction: clockwise, skipFinished: true, partnerLead: true, afterAllPass: last-player }
+  score:  { dimension: team }
+  rng:    { stream: 0 }
+  assert: { minPlayers: 4, cardCount: 108 }
+matchCap: { rounds: 12 }
+settle: { algorithm: level-up, levelTableRef: guandan-level }
+view: { schemaVersion: 1, fields: [hand, seat.levels, discard, lastPlay] }
