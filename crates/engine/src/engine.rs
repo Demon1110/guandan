@@ -94,9 +94,9 @@ impl M0Engine {
         self.base_total() + self.joker_total()
     }
 
-    // ---------- RNG（N7：算法文档未定义，取 BLAKE3(seed‖counter) 前 8 字节） ----------
+    // ---------- RNG（§5.2 第 551–563 行：20 字节 BLAKE3 + 拒绝采样） ----------
 
-    // ---------- 发牌（N8 Fisher–Yates；N9 按座位升序连续切分） ----------
+    // ---------- 发牌（Fisher–Yates 降序；按座位升序连续切分） ----------
 
     /// 由固定种子开局：洗牌并发到各座位私有区，相位进入 `play`（夹具省略 tribute，G6）。
     pub fn deal(&self, seed: u64) -> Result<State, EngineError> {
@@ -126,13 +126,15 @@ impl M0Engine {
         // 同一基础牌的副本占相邻 id；王排在序尾。
         let mut deck: Vec<u16> = (0..total as u16).collect();
 
+        let stream = self.rng_stream();
         let mut rng = RngState {
             counter: 0,
             seed_digest: seed_digest(seed),
         };
-        // N8：Fisher–Yates 从尾向头；j = rng.pick(i+1)。
+        // Fisher–Yates 降序：`for i in (1..n).rev() { j = bounded(i+1); swap(a[i], a[j]) }`，
+        // j ∈ 0..=i（§5.2 第 558 行）。
         for i in (1..deck.len()).rev() {
-            let j = self.rng_pick_seed(&mut rng, seed, i as u64 + 1) as usize;
+            let j = Self::bounded(&mut rng, seed, stream, i as u64 + 1) as usize;
             deck.swap(i, j);
         }
 
@@ -183,20 +185,44 @@ impl M0Engine {
         })
     }
 
-    /// N7 变体：发牌期需要 seed 原值进 BLAKE3 输入（`rng_pick` 的通用形式见上）。
-    fn rng_pick_seed(&self, rng: &mut RngState, seed: u64, n: u64) -> u64 {
-        let mut msg = Vec::with_capacity(16);
-        msg.extend_from_slice(&seed.to_le_bytes());
-        msg.extend_from_slice(&rng.counter.to_le_bytes());
+    /// `flow.rng.stream`（0–3，默认 0）；同一局内 `deal.shuffle` 与 `rng.pick` 共用同一条
+    /// `(seed, stream, counter)` 序列，各自不从 0 重来（§5.2 第 560 行）。
+    fn rng_stream(&self) -> u32 {
+        self.ruleset
+            .flow
+            .as_ref()
+            .and_then(|f| f.rng.as_ref())
+            .and_then(|r| r.stream)
+            .unwrap_or(0)
+    }
+
+    /// 取下一个随机字：`BLAKE3-256(seed_le64 ‖ stream_le32 ‖ counter_le64)` 前 8 字节按
+    /// little-endian 解成 u64；输入是 20 字节定长拼接，不含其它字段（§5.2 第 555 行）。
+    /// 每消耗一个随机字（含被拒绝的那次）`counter += 1`，单调不跳号；禁止批量预取、
+    /// 禁止并行预取（§5.2 第 556 行）。
+    fn next_word(rng: &mut RngState, seed: u64, stream: u32) -> u64 {
+        let mut msg = [0u8; 20];
+        msg[0..8].copy_from_slice(&seed.to_le_bytes());
+        msg[8..12].copy_from_slice(&stream.to_le_bytes());
+        msg[12..20].copy_from_slice(&rng.counter.to_le_bytes());
         let digest = blake3::hash(&msg);
         let mut bytes = [0u8; 8];
         bytes.copy_from_slice(&digest.as_bytes()[..8]);
         rng.counter += 1;
-        let v = u64::from_le_bytes(bytes);
-        if n == 0 {
-            0
-        } else {
-            v % n
+        u64::from_le_bytes(bytes)
+    }
+
+    /// 有界取值 `bounded(n)`（n ≥ 1）：`limit = ⌊2^64 / n⌋ * n`，随机字 `< limit` 才返回
+    /// `word % n`，否则 `counter += 1` 取下一个字重试（拒绝采样，循环到取到为止；
+    /// §5.2 第 557 行）；禁止直接用 `word % n` 回避模偏。
+    fn bounded(rng: &mut RngState, seed: u64, stream: u32, n: u64) -> u64 {
+        debug_assert!(n >= 1);
+        let limit = ((1u128 << 64) / n as u128) * n as u128;
+        loop {
+            let word = Self::next_word(rng, seed, stream);
+            if (word as u128) < limit {
+                return word % n;
+            }
         }
     }
 
