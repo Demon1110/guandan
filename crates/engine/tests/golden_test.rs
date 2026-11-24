@@ -21,6 +21,15 @@ fn golden_reaches_settle_and_matches_recorded_hash() {
         outcome.state.finish_order,
         outcome.actions.len()
     );
+    assert_eq!(outcome.settle_count, 1, "settle 转移应恰为一次");
+    assert_eq!(outcome.finish_order.len(), 4, "名次应补位到 4 个座位");
+    assert!(outcome.steps >= 120, "步数不得退回 102 那种提前退出位置");
+    assert_eq!(
+        outcome.discard_count + outcome.hands_total,
+        108,
+        "终局牌数必须守恒"
+    );
+    assert!(outcome.terminal_team.is_some(), "终局应有同队两人先出完");
     let hex: String = outcome
         .state_hash
         .iter()

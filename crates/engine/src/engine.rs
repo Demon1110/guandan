@@ -56,12 +56,12 @@ impl M0Engine {
             .unwrap_or_else(|| ZoneId("hand".to_owned()))
     }
 
-    fn hand_zone_index(&self) -> u16 {
+    pub(crate) fn hand_zone_index(&self) -> u16 {
         self.zone_index(&self.hand_zone()).unwrap_or(0)
     }
 
     /// 公共弃牌区：声明序第一个 shared 区。
-    fn discard_zone_index(&self) -> Option<u16> {
+    pub(crate) fn discard_zone_index(&self) -> Option<u16> {
         self.ruleset
             .zones
             .iter()
