@@ -21,6 +21,8 @@ struct Opts<'a> {
     /// `tribute` 段内联体；空串表示整段省略。
     tribute: &'a str,
     score_dim: &'a str,
+    /// `ai` 段内联体；空串表示整段省略。
+    ai: &'a str,
 }
 
 impl<'a> Opts<'a> {
@@ -35,6 +37,7 @@ impl<'a> Opts<'a> {
             actions: DEFAULT_ACTIONS,
             tribute: "enabled: false",
             score_dim: "team",
+            ai: "",
         }
     }
 }
@@ -50,6 +53,16 @@ fn base(o: &Opts) -> String {
             .collect::<Vec<_>>()
             .join("\n");
         format!("tribute:\n{body}")
+    };
+    let ai_line = if o.ai.is_empty() {
+        String::new()
+    } else {
+        let body =
+            o.ai.lines()
+                .map(|l| format!("  {}", l.trim_start()))
+                .collect::<Vec<_>>()
+                .join("\n");
+        format!("ai:\n{body}")
     };
     format!(
         r#"rulesetId: test
@@ -70,6 +83,7 @@ compare:
   bombOrder: count-then-rank
   flushRank: above-bomb-5
 {tribute_line}
+{ai_line}
 actions:
 {actions}
 lifecycle: [deal, tribute, play, settle]
@@ -90,6 +104,7 @@ view: {{ schemaVersion: 1, fields: [hand, lastPlay] }}
         patterns = o.patterns,
         actions = o.actions,
         tribute_line = tribute_line,
+        ai_line = ai_line,
         score_dim = o.score_dim,
     )
 }
@@ -833,4 +848,63 @@ fn compose_max_cards_missing_rejected_at_construction() {
     o.patterns = "  - { id: s, primitiveId: pattern.compose, params: { shape: { \"rank.same\": { count: 2 } } } }";
     let err = from_yaml(&base(&o)).expect_err("maxCards 必填");
     assert_eq!(err.code, ErrorCode::RsSchemaInvalid);
+}
+
+// ---------- ai.recommend：权重键集 / 整数类型 / 全键必填（§5.11 第 864–865 行） ----------
+
+/// 全键自定义权重（第二十八次变更 ⑤：作者自定义必须显式给全所有键）。
+const FULL_WEIGHTS: &str = "{ bomb4: 40, bomb5: 50, bomb6: 60, bomb7: 70, bomb8: 80, jokerBomb: 90, straightFlush: 55, straightBase: 40, straightRankBonus: 20, triplePairBase: 30, triplePairRankBonus: 20, plate3Base: 30, plate3RankBonus: 10, steel2Base: 40, steel2RankBonus: 10, pair: 0, single: -10 }";
+
+#[test]
+fn recommend_float_weight_rejected_at_construction() {
+    let mut o = Opts::four_seat();
+    o.ai = "recommend: { enabled: true, weights: { bomb4: 40.5, bomb5: 50, bomb6: 60, bomb7: 70, bomb8: 80, jokerBomb: 90, straightFlush: 55, straightBase: 40, straightRankBonus: 20, triplePairBase: 30, triplePairRankBonus: 20, plate3Base: 30, plate3RankBonus: 10, steel2Base: 40, steel2RankBonus: 10, pair: 0, single: -10 } }";
+    let err = from_yaml(&base(&o)).expect_err("权重非整数（浮点）必须在构造期拒绝");
+    assert_eq!(err.code, ErrorCode::RsSchemaInvalid);
+}
+
+#[test]
+fn recommend_unknown_weight_key_rejected_at_construction() {
+    let mut o = Opts::four_seat();
+    o.ai = "recommend: { enabled: true, weights: { bomb4: 40, bogus: 1 } }";
+    let err = from_yaml(&base(&o)).expect_err("weights 未知键必须拒绝");
+    assert_eq!(err.code, ErrorCode::RsSchemaInvalid);
+}
+
+#[test]
+fn recommend_partial_weights_rejected_at_construction() {
+    let mut o = Opts::four_seat();
+    o.ai = "recommend: { enabled: true, weights: { bomb4: 40 } }";
+    let err = from_yaml(&base(&o)).expect_err("自定义权重只写一半必须拒绝（全键必填）");
+    assert_eq!(err.code, ErrorCode::RsSchemaInvalid);
+}
+
+#[test]
+fn recommend_full_custom_weights_accepted() {
+    let mut o = Opts::four_seat();
+    let ai = format!("recommend: {{ enabled: true, weights: {FULL_WEIGHTS} }}");
+    o.ai = &ai;
+    assert_clean(&base(&o));
+}
+
+#[test]
+fn recommend_disabled_without_weights_accepted() {
+    let mut o = Opts::four_seat();
+    o.ai = "recommend: { enabled: false }";
+    assert_clean(&base(&o));
+}
+
+#[test]
+fn recommend_unknown_ai_key_rejected_at_construction() {
+    let mut o = Opts::four_seat();
+    o.ai = "hint: true, bogus: 1";
+    let err = from_yaml(&base(&o)).expect_err("ai 段未知键必须拒绝");
+    assert_eq!(err.code, ErrorCode::RsSchemaInvalid);
+}
+
+#[test]
+fn recommend_omitted_takes_default_weights() {
+    // ai 整段省略：recommend 默认启用、权重全上默认表（§5.11 第 865 行）。
+    let o = Opts::four_seat();
+    assert_clean(&base(&o));
 }

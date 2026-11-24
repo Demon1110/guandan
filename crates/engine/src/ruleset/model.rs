@@ -759,14 +759,98 @@ pub struct Timing {
     pub offline_all_sec: u16,
 }
 
-/// `ai`：AI 特征与提示开关（§5.1 / §5.11）。
+/// `ai.recommend.weights`（§5.11 第 848–851 行，刻度 10，整数 `i16`，禁浮点）。
 ///
-/// G5（待裁决）：`hint` 类型文档未写；本轮按 `bool` 落位。
+/// 表内数字是「基准分 ×10」，引擎按原值直接比较、不再换算；自定义权重时必须显式
+/// 给全所有键（第二十八次变更 ⑤），不允许只写一半、其余隐式按默认。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecommendWeights {
+    pub bomb4: i16,
+    pub bomb5: i16,
+    pub bomb6: i16,
+    pub bomb7: i16,
+    pub bomb8: i16,
+    #[serde(rename = "jokerBomb")]
+    pub joker_bomb: i16,
+    #[serde(rename = "straightFlush")]
+    pub straight_flush: i16,
+    #[serde(rename = "straightBase")]
+    pub straight_base: i16,
+    #[serde(rename = "straightRankBonus")]
+    pub straight_rank_bonus: i16,
+    #[serde(rename = "triplePairBase")]
+    pub triple_pair_base: i16,
+    #[serde(rename = "triplePairRankBonus")]
+    pub triple_pair_rank_bonus: i16,
+    #[serde(rename = "plate3Base")]
+    pub plate3_base: i16,
+    #[serde(rename = "plate3RankBonus")]
+    pub plate3_rank_bonus: i16,
+    #[serde(rename = "steel2Base")]
+    pub steel2_base: i16,
+    #[serde(rename = "steel2RankBonus")]
+    pub steel2_rank_bonus: i16,
+    pub pair: i16,
+    pub single: i16,
+}
+
+/// 默认权重表（§5.11 第 848–851 行，刻度 10；`weights` 省略即全上此表）。
+///
+/// `straightFlush = 55` 严格落在 `bomb5 = 50` 与 `bomb6 = 60` 之间（第二十八次
+/// 变更 ③），这是刻意取舍，不得改动。
+impl Default for RecommendWeights {
+    fn default() -> Self {
+        Self {
+            bomb4: 40,
+            bomb5: 50,
+            bomb6: 60,
+            bomb7: 70,
+            bomb8: 80,
+            joker_bomb: 90,
+            straight_flush: 55,
+            straight_base: 40,
+            straight_rank_bonus: 20,
+            triple_pair_base: 30,
+            triple_pair_rank_bonus: 20,
+            plate3_base: 30,
+            plate3_rank_bonus: 10,
+            steel2_base: 40,
+            steel2_rank_bonus: 10,
+            pair: 0,
+            single: -10,
+        }
+    }
+}
+
+/// `ai.recommend`：组牌推荐开关与权重（§5.11「组牌推荐」段、第二十/二十八次变更）。
+///
+/// `enabled` 默认 `true`；`enabled=false` 时 `weights` 可整段省略。`weights` 省略 =
+/// 默认权重全上。
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecommendConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    pub weights: Option<RecommendWeights>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// `ai`：AI 特征、提示开关与组牌推荐（§5.1 / §5.11）。
+///
+/// `hint` 默认 `false`：只表示「该规则集允许开提示」，客户端自行调 `recommend`，
+/// 服务端不主动下发、不加帧不加字段（第二十九次变更）。
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AiConfig {
+    #[serde(default)]
     pub features: Vec<AiFeature>,
+    #[serde(default)]
     pub hint: bool,
+    pub recommend: Option<RecommendConfig>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
