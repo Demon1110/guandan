@@ -142,7 +142,9 @@ fn delta_replay_within_buffer_recovers_byte_identical_hash() {
 /// → 统一入口先丢弃本地状态（副本与水位清空，记账 `discarded`）→ 接受全量快照 →
 /// 恢复后哈希与服务端当前哈希 32 字节全等。
 ///
-/// 单局约 153 步房间事件凑不满 200 条；本用例在**同一房间**连打第二局：`settle`
+/// 单局实测 148 条房间事件（m0-minimal golden `steps=148`，实测于提交 `50236cd`；
+/// guandan-classic 探针同口径参照，若后续 steps 漂移，以最新 `run_m0_golden` 实测值为准
+/// 并在此注明实测提交），凑不满 200 条缓冲；本用例在**同一房间**连打第二局：`settle`
 /// 后重新 `deal`，`roomSeq` 连续递增、`seatSeq` 按座位各自继续递增（跨局不归零，
 /// 见 `M0-GAP-SEQ-CROSS-ROUND` 注释），让断线跨度真的越过缓冲起点。
 #[test]

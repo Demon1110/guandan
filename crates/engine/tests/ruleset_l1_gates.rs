@@ -603,12 +603,25 @@ fn consume_cards_count_out_of_range_rejected() {
 }
 
 #[test]
-fn consume_cards_count_boundaries_accepted() {
-    for count in [0u8, 8] {
+fn consume_cards_count_only_zero_accepted() {
+    // 第二十七次变更：v1 count 只允许 0（按本次出牌张数）；count>0 标 v2 预留。
+    let mut o = Opts::four_seat();
+    let actions = "  - { kind: pass, primitive: action.consume-cards, legalFrom: patterns, params: { zone: hand, count: 0 } }";
+    o.actions = actions;
+    assert_clean(&base(&o));
+}
+
+#[test]
+fn consume_cards_count_positive_rejected_at_l1() {
+    for count in [1u8, 8] {
         let mut o = Opts::four_seat();
         let actions = format!("  - {{ kind: pass, primitive: action.consume-cards, legalFrom: patterns, params: {{ zone: hand, count: {count} }} }}");
         o.actions = &actions;
-        assert_clean(&base(&o));
+        assert_gate(
+            &base(&o),
+            ErrorCode::RsSchemaInvalid,
+            "actions[0].params.count",
+        );
     }
 }
 

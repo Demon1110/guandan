@@ -78,7 +78,18 @@ fn gate_primitive_params(
         }
         PrimitiveParams::Shuffle { .. } => {}
         PrimitiveParams::ConsumeCards { count, .. } => {
-            u8_range("count", *count, 0, 8, "consume-cards count")
+            // 第二十七次变更：v1 的 `consume-cards.count` 只允许 0（按本次出牌张数消耗）；
+            // count>0 的「固定消耗 N 张」整段标 v2 预留（哪几张 + legal_actions 候选形态
+            // 届时一起定），载入期即 RS_SCHEMA_INVALID，不进运行期。
+            if *count != 0 {
+                push(
+                    ErrorCode::RsSchemaInvalid,
+                    &format!("{loc_prefix}.count"),
+                    format!(
+                        "action.consume-cards count={count}：v1 只允许 0，固定消耗 N 张属 v2 预留",
+                    ),
+                );
+            }
         }
         PrimitiveParams::RngPick { stream } => {
             if *stream > 3 {

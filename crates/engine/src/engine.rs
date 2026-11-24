@@ -101,32 +101,23 @@ impl M0Engine {
             .unwrap_or((true, ZoneId("hand".to_owned())))
     }
 
-    /// `action.consume-cards` 参数（§5.2 第 525 行）：`zone` 扣牌区，`count` 扣牌张数，
-    /// `count=0` 表按本次出牌张数；规则集未声明该动作时返回 `None`。
-    fn consume_cards_params(&self) -> Option<(ZoneId, u8)> {
+    /// `action.consume-cards` 参数（§5.2 第 525 行）：`zone` 扣牌区；`count` 在 v1
+    /// 只允许 0（L1 闸门，count>0 标 v2 预留），运行期只取扣牌区。规则集未声明该动作时返回 `None`。
+    fn consume_cards_zone(&self) -> Option<ZoneId> {
         self.ruleset
             .actions
             .iter()
             .find(|a| a.primitive == "action.consume-cards")
             .and_then(|a| match &a.params {
-                PrimitiveParams::ConsumeCards { zone, count } => Some((zone.clone(), *count)),
+                PrimitiveParams::ConsumeCards { zone, .. } => Some(zone.clone()),
                 _ => None,
             })
     }
 
     /// 本次出牌的扣牌区：显式 `action.consume-cards` 优先，否则取 `require-legal.consume`。
-    /// `count>0` 时「具体扣哪几张」文档未定义——取 `IllegalAction` 而非 `Internal`：
-    /// 这是当前规则集配置下不被允许的运行期动作（选牌规则缺失），不是引擎不变量
-    /// 破坏；拒绝时不做任何状态变更。TODO(M0-GAP-consume-count)：选牌口径待裁决。
+    /// `count>0` 在 v1 由 L1 载入期拒绝（第二十七次变更，v2 预留），运行期不再兜。
     fn resolve_consume_zone(&self) -> Result<ZoneId, EngineError> {
-        if let Some((zone, count)) = self.consume_cards_params() {
-            if count > 0 {
-                return Err(EngineError::IllegalAction {
-                    reason: format!(
-                        "action.consume-cards count={count}>0：扣牌张数大于本次出牌张数时具体取哪几张文档未定义，本批拒绝执行（待裁决）"
-                    ),
-                });
-            }
+        if let Some(zone) = self.consume_cards_zone() {
             return Ok(zone);
         }
         Ok(self.require_legal_params().1)
@@ -829,8 +820,8 @@ impl Engine for M0Engine {
 mod tests {
     use super::*;
     use crate::cases::M0_SEED;
-    use crate::contract::Engine;
-    use crate::ruleset::from_yaml;
+    use crate::contract::{Engine, ErrorCode, Level};
+    use crate::ruleset::{from_yaml, validate};
 
     fn engine() -> M0Engine {
         crate::cases::build_engine().expect("m0-minimal 夹具构造失败")
@@ -1353,23 +1344,22 @@ mod tests {
     }
 
     #[test]
-    fn consume_cards_count_positive_is_rejected_conservatively() {
-        // count>0 时「具体扣哪几张」文档未定义：保守报 IllegalAction，不发明取牌规则。
+    fn consume_cards_count_positive_rejected_at_l1() {
+        // 第二十七次变更：v1 `consume-cards.count` 只允许 0；count>0 在载入期即
+        // RS_SCHEMA_INVALID，不进运行期。固定消耗 N 张（哪几张 + 候选形态）属 v2 预留。
         let yaml = m0_yaml().replace(
             "  - { kind: pass, primitive: action.pass, legalFrom: play, params: {} }",
             "  - { kind: pass, primitive: action.pass, legalFrom: play, params: {} }\n  - { kind: play, primitive: action.consume-cards, legalFrom: play, params: { zone: hand, count: 1 } }",
         );
-        let engine = engine_from(&yaml);
-        let state = engine.deal(M0_SEED).expect("发牌失败");
-        let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
-        let action = legal.into_iter().next().expect("领出态应有候选");
-        let err = engine
-            .apply(state, action)
-            .expect_err("count>0 选牌规则未定义，应保守拒绝");
-        match err {
-            EngineError::IllegalAction { .. } => {}
-            other => panic!("应为 IllegalAction，实际 {other:?}"),
-        }
+        let body = from_yaml(&yaml).expect("YAML 反序列化应成功，交由 L1 闸门判定");
+        let findings = validate(&body, &[Level::L1]).findings;
+        let hit = findings
+            .iter()
+            .any(|f| f.code == ErrorCode::RsSchemaInvalid && f.location.contains("count"));
+        assert!(
+            hit,
+            "count>0 应在 L1 载入期报 RS_SCHEMA_INVALID，不进运行期: {findings:?}"
+        );
     }
 
     #[test]

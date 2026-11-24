@@ -239,10 +239,10 @@ fn primitive_of(params: &PrimitiveParams) -> &'static str {
     }
 }
 
-/// 同手多解消歧：取 `compare.ladder`（含 straight-flush 合成位次）中位次最高者。
-///
-/// 待追认：此消歧规则沿用现成 `synthetic_ladder` 位次，尚未经用户专门表态；
-/// 现状覆盖顺子 / 连对 / 钢板 / 三带二之间的同手多解。
+/// 同手多解消歧（§5.13，`fa13b2a` 追认裁定，非推导）：同一手牌可判成多个牌型时，
+/// 取 `compare.ladder`（含 straight-flush 合成位次）中位次最高者。
+/// 边界：不引入客户端显式声明牌型；也不取位次最低者。现状覆盖顺子 / 连对 / 钢板 / 三带二
+/// 之间的同手多解。
 fn ladder_position(r: &RuleSetBody, def: &PatternDef) -> usize {
     let ladder = synthetic_ladder(r);
     ladder
