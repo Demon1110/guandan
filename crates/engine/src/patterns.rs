@@ -614,29 +614,57 @@ fn primitive_by_id(r: &RuleSetBody, pattern_id: &str) -> Option<&'static str> {
         .map(|p| primitive_of(&p.params))
 }
 
-/// `candidate` 能否压过 `last`（§5.13 第 894 行）。
+/// 炸弹族：可压任意非炸弹牌型；族内按 ladder 位次比较（`straight-flush` /
+/// `joker-bomb` 与 `bomb` 同属一族，§5.10 第 775 行阶梯）。
+fn is_bomb_class(primitive: &str) -> bool {
+    matches!(
+        primitive,
+        "pattern.bomb" | "pattern.straight-flush" | "pattern.joker-bomb"
+    )
+}
+
+/// `candidate` 能否压过 `last`（§5.13 第 894、895 行）。
 ///
-/// - 同牌型：比 `patternKey = (countKey, rankKey)`，张数优先、再点数；
-/// - 炸弹对炸弹：`bombOrder: count-then-rank`（先张数、同张数比点数）；
-/// - 跨牌型：按载入期 `synthetic_ladder` 定位次（含 `flushRank` 合成的同花顺位次）。
+/// 跟牌只在三种情形合法：
+/// 1. 同 `pattern_id`：比 `patternKey = (countKey, rankKey)`，张数优先、再点数；
+/// 2. 两者都属炸弹族：按 `synthetic_ladder` 位次比较；`bomb` 对 `bomb` 仍走
+///    `bombOrder: count-then-rank`（先张数、同张数比点数）；
+/// 3. 候选属炸弹族、上家不属：炸弹压任意非炸弹。
+///
+/// 其余（两个非同型的非炸弹牌型）一律不能压。`compare.ladder` 只是牌型位次表
+/// （AI 排序 + flushRank 锚点插入位），不是跨型可压的合法性表。
 pub(crate) fn beats(r: &RuleSetBody, candidate: &Recognized, last: &LastPlay) -> bool {
-    let last_primitive = primitive_by_id(r, &last.pattern_id);
-    let both_bombs =
-        candidate.primitive == "pattern.bomb" && last_primitive == Some("pattern.bomb");
-    if both_bombs {
-        return candidate.pattern_key.0 > last.pattern_key.0
-            || (candidate.pattern_key.0 == last.pattern_key.0
-                && candidate.pattern_key.1 > last.pattern_key.1);
-    }
+    let last_primitive = primitive_by_id(r, &last.pattern_id).unwrap_or("");
+    let candidate_bomb = is_bomb_class(candidate.primitive);
+    let last_bomb = is_bomb_class(last_primitive);
+
+    // 1. 同牌型：比 patternKey。
     if candidate.pattern_id == last.pattern_id {
         return candidate.pattern_key.0 > last.pattern_key.0
             || (candidate.pattern_key.0 == last.pattern_key.0
                 && candidate.pattern_key.1 > last.pattern_key.1);
     }
-    let ladder = synthetic_ladder(r);
-    let pos = |id: &str| ladder.iter().position(|p| p.0 == id);
-    match (pos(&candidate.pattern_id), pos(&last.pattern_id)) {
-        (Some(a), Some(b)) => a > b,
-        _ => false,
+
+    // 2. 炸弹族对炸弹族：ladder 位次；bomb 对 bomb 走 bombOrder。
+    if candidate_bomb && last_bomb {
+        if candidate.primitive == "pattern.bomb" && last_primitive == "pattern.bomb" {
+            return candidate.pattern_key.0 > last.pattern_key.0
+                || (candidate.pattern_key.0 == last.pattern_key.0
+                    && candidate.pattern_key.1 > last.pattern_key.1);
+        }
+        let ladder = synthetic_ladder(r);
+        let pos = |id: &str| ladder.iter().position(|p| p.0 == id);
+        return match (pos(&candidate.pattern_id), pos(last.pattern_id.as_str())) {
+            (Some(a), Some(b)) => a > b,
+            _ => false,
+        };
     }
+
+    // 3. 炸弹压任意非炸弹。
+    if candidate_bomb {
+        return true;
+    }
+
+    // 4. 非同型非炸弹：不能压。
+    false
 }

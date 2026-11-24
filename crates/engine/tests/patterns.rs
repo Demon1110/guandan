@@ -910,3 +910,265 @@ fn wildcard_cards_produce_no_candidate() {
         "单独提交 wildcard 牌",
     );
 }
+
+// ---------- 跨型压制边界（§5.13 第 894/895 行：非同型非炸弹不能压） ----------
+
+fn plays_contain(legal: &[Action], cards: &[u16]) -> bool {
+    let mut target = cards.to_vec();
+    target.sort_unstable();
+    legal.iter().any(|a| match a {
+        Action::Play { cards: cc } => {
+            let mut cc = cc.clone();
+            cc.sort_unstable();
+            cc == target
+        }
+        Action::Pass => false,
+    })
+}
+
+#[test]
+fn pair_cannot_beat_single() {
+    let r = fixture_body();
+    let engine = engine();
+    let pair = vec![c(&r, 0, 0, 0), c(&r, 0, 2, 0)];
+    let state = follow_state(
+        &engine,
+        pair.clone(),
+        "single",
+        (1, 0),
+        vec![c(&r, 0, 0, 1)],
+    );
+    let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
+    assert!(!plays_contain(&legal, &pair), "对子不得压单张: {legal:?}");
+    assert_illegal(
+        engine.apply(state, Action::Play { cards: pair }),
+        "对子压单张",
+    );
+}
+
+#[test]
+fn triple_cannot_beat_pair() {
+    let r = fixture_body();
+    let engine = engine();
+    let triple = vec![c(&r, 0, 0, 0), c(&r, 0, 0, 1), c(&r, 0, 2, 0)];
+    let pair = vec![c(&r, 0, 0, 0), c(&r, 0, 2, 0)];
+    let state = follow_state(&engine, triple.clone(), "pair", (2, 0), pair);
+    let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
+    assert!(!plays_contain(&legal, &triple), "三张不得压对子: {legal:?}");
+    assert_illegal(
+        engine.apply(state, Action::Play { cards: triple }),
+        "三张压对子",
+    );
+}
+
+#[test]
+fn plate_cannot_beat_straight() {
+    let r = fixture_body();
+    let engine = engine();
+    let plate = vec![
+        c(&r, 0, 0, 0),
+        c(&r, 0, 2, 0),
+        c(&r, 1, 0, 0),
+        c(&r, 1, 2, 0),
+        c(&r, 2, 0, 0),
+        c(&r, 2, 2, 0),
+    ];
+    let straight = vec![
+        c(&r, 0, 0, 0),
+        c(&r, 1, 1, 0),
+        c(&r, 2, 2, 0),
+        c(&r, 3, 3, 0),
+        c(&r, 4, 0, 0),
+    ];
+    let state = follow_state(&engine, plate.clone(), "straight-5", (5, 4), straight);
+    let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
+    assert!(
+        !plays_contain(&legal, &plate),
+        "3 连对不得压顺子: {legal:?}"
+    );
+    assert_illegal(
+        engine.apply(state, Action::Play { cards: plate }),
+        "3 连对压顺子",
+    );
+}
+
+#[test]
+fn steel_cannot_beat_plate() {
+    let r = fixture_body();
+    let engine = engine();
+    let steel = vec![
+        c(&r, 0, 0, 0),
+        c(&r, 0, 0, 1),
+        c(&r, 0, 2, 0),
+        c(&r, 1, 0, 0),
+        c(&r, 1, 0, 1),
+        c(&r, 1, 2, 0),
+    ];
+    let plate = vec![
+        c(&r, 0, 0, 0),
+        c(&r, 0, 2, 0),
+        c(&r, 1, 0, 0),
+        c(&r, 1, 2, 0),
+        c(&r, 2, 0, 0),
+        c(&r, 2, 2, 0),
+    ];
+    let state = follow_state(&engine, steel.clone(), "plate-3", (6, 2), plate);
+    let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
+    assert!(
+        !plays_contain(&legal, &steel),
+        "钢板不得压 3 连对: {legal:?}"
+    );
+    assert_illegal(
+        engine.apply(state, Action::Play { cards: steel }),
+        "钢板压 3 连对",
+    );
+}
+
+#[test]
+fn bomb4_beats_straight() {
+    let r = fixture_body();
+    let engine = engine();
+    let bomb = vec![
+        c(&r, 0, 0, 0),
+        c(&r, 0, 0, 1),
+        c(&r, 0, 2, 0),
+        c(&r, 0, 2, 1),
+    ];
+    let straight = vec![
+        c(&r, 0, 0, 0),
+        c(&r, 1, 1, 0),
+        c(&r, 2, 2, 0),
+        c(&r, 3, 3, 0),
+        c(&r, 4, 0, 0),
+    ];
+    let state = follow_state(&engine, bomb.clone(), "straight-5", (5, 4), straight);
+    let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
+    assert!(plays_contain(&legal, &bomb), "bomb-4 应能压顺子: {legal:?}");
+    let after = engine
+        .apply(
+            state,
+            Action::Play {
+                cards: bomb.clone(),
+            },
+        )
+        .expect("炸弹压顺子应落子成功");
+    let last = after.last_play.as_ref().expect("应有 last_play");
+    assert_eq!(last.pattern_id, "bomb-4");
+    assert_eq!(last.pattern_key, (4, 0));
+}
+
+#[test]
+fn bomb4_beats_pair() {
+    let r = fixture_body();
+    let engine = engine();
+    let bomb = vec![
+        c(&r, 0, 0, 0),
+        c(&r, 0, 0, 1),
+        c(&r, 0, 2, 0),
+        c(&r, 0, 2, 1),
+    ];
+    let pair = vec![c(&r, 1, 0, 0), c(&r, 1, 2, 0)];
+    let state = follow_state(&engine, bomb.clone(), "pair", (2, 1), pair);
+    let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
+    assert!(plays_contain(&legal, &bomb), "bomb-4 应能压对子: {legal:?}");
+    let after = engine
+        .apply(state, Action::Play { cards: bomb })
+        .expect("炸弹压对子应落子成功");
+    let last = after.last_play.as_ref().expect("应有 last_play");
+    assert_eq!(last.pattern_id, "bomb-4");
+    assert_eq!(last.pattern_key, (4, 0));
+}
+
+#[test]
+fn straight_flush_beats_non_bomb() {
+    let r = fixture_body();
+    let engine = engine();
+    let flush = vec![
+        c(&r, 0, 0, 0),
+        c(&r, 1, 0, 0),
+        c(&r, 2, 0, 0),
+        c(&r, 3, 0, 0),
+        c(&r, 4, 0, 0),
+    ];
+    let single = vec![c(&r, 0, 0, 1)];
+    let state = follow_state(&engine, flush.clone(), "single", (1, 0), single);
+    let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
+    assert!(plays_contain(&legal, &flush), "同花顺应能压单张: {legal:?}");
+    let after = engine
+        .apply(state, Action::Play { cards: flush })
+        .expect("同花顺压单张应落子成功");
+    let last = after.last_play.as_ref().expect("应有 last_play");
+    assert_eq!(last.pattern_id, "straight-flush-5");
+    assert_eq!(last.pattern_key, (5, 4));
+}
+
+#[test]
+fn same_pattern_follow_compares_key() {
+    let r = fixture_body();
+    let engine = engine();
+    // 对子：对子 3（rankKey 1）压对子 2（rankKey 0）。
+    let pair_low = vec![c(&r, 0, 0, 0), c(&r, 0, 2, 0)];
+    let pair_high = vec![c(&r, 1, 0, 0), c(&r, 1, 2, 0)];
+    let state = follow_state(&engine, pair_high.clone(), "pair", (2, 0), pair_low);
+    let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
+    assert!(
+        plays_contain(&legal, &pair_high),
+        "对子 3 应压对子 2: {legal:?}"
+    );
+
+    // 顺子：3-4-5-6-7（高点 7 下标 5）压 2-3-4-5-6（高点 6 下标 4）；反向不成立。
+    let straight_low = vec![
+        c(&r, 0, 0, 0),
+        c(&r, 1, 1, 0),
+        c(&r, 2, 2, 0),
+        c(&r, 3, 3, 0),
+        c(&r, 4, 0, 0),
+    ];
+    let straight_high = vec![
+        c(&r, 1, 0, 0),
+        c(&r, 2, 1, 0),
+        c(&r, 3, 2, 0),
+        c(&r, 4, 3, 0),
+        c(&r, 5, 0, 0),
+    ];
+    let state = follow_state(
+        &engine,
+        straight_high.clone(),
+        "straight-5",
+        (5, 4),
+        straight_low.clone(),
+    );
+    let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
+    assert!(
+        plays_contain(&legal, &straight_high),
+        "高顺子应压低顺子: {legal:?}"
+    );
+    let after = engine
+        .apply(
+            state,
+            Action::Play {
+                cards: straight_high.clone(),
+            },
+        )
+        .expect("高顺子应落子成功");
+    let last = after.last_play.as_ref().expect("应有 last_play");
+    assert_eq!(last.pattern_id, "straight-5");
+    assert_eq!(last.pattern_key, (5, 5));
+
+    let state = follow_state(
+        &engine,
+        straight_low.clone(),
+        "straight-5",
+        (5, 5),
+        straight_high.clone(),
+    );
+    assert_illegal(
+        engine.apply(
+            state,
+            Action::Play {
+                cards: straight_low,
+            },
+        ),
+        "低顺子压高顺子",
+    );
+}
