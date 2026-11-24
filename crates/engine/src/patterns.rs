@@ -19,8 +19,8 @@
 //! - TODO(M1-HOLD-with-attachment)：三带二之外的 `pattern.with-attachment`。
 //!   §5.2 第 547 行定为 v2 预留、引用即 L1 拒；本批不识别。
 
+use crate::contract::PatternId;
 use crate::hash::LastPlay;
-use crate::ruleset::ladder::synthetic_ladder;
 use crate::ruleset::model::{LevelInsert, PatternDef, RankKey, RuleSetBody, WildcardRank};
 use crate::ruleset::params::PrimitiveParams;
 use std::collections::{BTreeMap, HashSet};
@@ -83,14 +83,28 @@ fn card_ref(r: &RuleSetBody, card: u16) -> CardRef {
 /// 牌力序全场唯一一份，由 `levels[attackingTeam]` 的级牌 + `levelInsert` 合成
 /// （§5.13 第 911、932 行）；`None` 表示 score-only 局无 `levelTable`，合成序
 /// 退回 `naturalOrder`。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RankContext {
     level_rank: Option<usize>,
+    /// 合成序位置表：`deck.ranks` 下标 → `synth_order` 下标。载入一次，避免每次
+    /// `rankKey` 查询都重建 `naturalOrder + levelInsert` 序列（§5.13 第 911、932 行）。
+    synth_pos: Vec<usize>,
 }
 
 impl RankContext {
-    pub(crate) fn new(level_rank: Option<usize>) -> Self {
-        Self { level_rank }
+    pub(crate) fn new(r: &RuleSetBody, level_rank: Option<usize>) -> Self {
+        let order = Self::synth_order(r, level_rank);
+        let synth_pos = r
+            .deck
+            .ranks
+            .iter()
+            .enumerate()
+            .map(|(idx, key)| order.iter().position(|k| **k == *key).unwrap_or(idx))
+            .collect();
+        Self {
+            level_rank,
+            synth_pos,
+        }
     }
 
     /// 级牌在 `deck.ranks` 中的下标（逢人配按自身点数使用时取这一份）。
@@ -100,9 +114,9 @@ impl RankContext {
 
     /// 载入期合成牌力序：`naturalOrder` 去掉级牌，按 `levelInsert` 插回
     /// `above-A`（A 之后、小王之前）或 `below-2`（2 之前）。
-    fn synth_order<'a>(&self, r: &'a RuleSetBody) -> Vec<&'a RankKey> {
+    fn synth_order(r: &RuleSetBody, level_rank: Option<usize>) -> Vec<&RankKey> {
         let mut order: Vec<&RankKey> = r.natural_order.iter().collect();
-        let Some(lr) = self.level_rank else {
+        let Some(lr) = level_rank else {
             return order;
         };
         let level_key = &r.deck.ranks[lr];
@@ -128,11 +142,8 @@ impl RankContext {
     /// 真实点数的 `rankKey`：合成序下标 +1；`0` 是保留值（轮子特例），真实点数与
     /// 大小王不得映射到 `0`（§5.13 第 931 行）。散牌型（单张 / 对 / 三张 / 三带二主牌）
     /// 与炸弹走这套合成序。
-    fn rank_key(&self, r: &RuleSetBody, rank_idx: usize) -> u32 {
-        let key = &r.deck.ranks[rank_idx];
-        let order = self.synth_order(r);
-        let pos = order.iter().position(|k| **k == *key).unwrap_or(rank_idx);
-        let k = pos as u32 + 1;
+    fn rank_key(&self, _r: &RuleSetBody, rank_idx: usize) -> u32 {
+        let k = self.synth_pos[rank_idx] as u32 + 1;
         debug_assert!(k >= 1, "真实点数 rankKey 不得取保留值 0");
         k
     }
@@ -243,8 +254,7 @@ fn primitive_of(params: &PrimitiveParams) -> &'static str {
 /// 取 `compare.ladder`（含 straight-flush 合成位次）中位次最高者。
 /// 边界：不引入客户端显式声明牌型；也不取位次最低者。现状覆盖顺子 / 连对 / 钢板 / 三带二
 /// 之间的同手多解。
-fn ladder_position(r: &RuleSetBody, def: &PatternDef) -> usize {
-    let ladder = synthetic_ladder(r);
+fn ladder_position(ladder: &[PatternId], def: &PatternDef) -> usize {
     ladder
         .iter()
         .position(|p| *p == def.id)
@@ -742,7 +752,14 @@ fn recognize_all_wildcard(r: &RuleSetBody, ctx: &RankContext, wild: &[u16]) -> O
 }
 
 /// 按提交牌结构判定牌型；不匹配任何已声明牌型返回 `None`（§5.9：`patternId` 服务端判定）。
-pub(crate) fn recognize(r: &RuleSetBody, ctx: &RankContext, cards: &[u16]) -> Option<Recognized> {
+///
+/// `ladder` 由引擎载入期缓存传入（`synthetic_ladder` 结果），识别侧不再每次重建。
+pub(crate) fn recognize(
+    ladder: &[PatternId],
+    r: &RuleSetBody,
+    ctx: &RankContext,
+    cards: &[u16],
+) -> Option<Recognized> {
     if cards.is_empty() {
         return None;
     }
@@ -763,7 +780,7 @@ pub(crate) fn recognize(r: &RuleSetBody, ctx: &RankContext, cards: &[u16]) -> Op
         .patterns
         .iter()
         .filter(|p| !matches!(p.params, PrimitiveParams::Reserved { .. }))
-        .map(|p| (p, ladder_position(r, p)))
+        .map(|p| (p, ladder_position(ladder, p)))
         .collect();
     // 同手多解：ladder 位次最高者先匹配（§5.13 第 929 行）。
     defs.sort_by_key(|(_, pos)| std::cmp::Reverse(*pos));
@@ -886,7 +903,15 @@ fn all_windows(rank_count: usize, length: usize) -> Vec<Vec<usize>> {
 ///
 /// 枚举走「孔位填充 + 剪枝」：百搭不做全排列，孔位由窗口 / 目标点数唯一确定，
 /// 百搭副本不可区分时只取规范前缀；同一 (牌型, 解) 只发一条。
-pub(crate) fn enumerate(r: &RuleSetBody, ctx: &RankContext, hand: &[u16]) -> Vec<Recognized> {
+///
+/// 构造按牌型解析直取：同点数型按 `rank` 取桶、连续型按合法窗口滑动、含百搭按孔位
+/// 定向补齐；构造完成后只经一次结构校验（[`recognize`]），`ladder` 由引擎载入期缓存传入。
+pub(crate) fn enumerate(
+    ladder: &[PatternId],
+    r: &RuleSetBody,
+    ctx: &RankContext,
+    hand: &[u16],
+) -> Vec<Recognized> {
     let g = HandGroups::build(r, ctx, hand);
     let mut out: Vec<Recognized> = Vec::new();
     let mut emitted: HashSet<Vec<u16>> = HashSet::new();
@@ -901,7 +926,7 @@ pub(crate) fn enumerate(r: &RuleSetBody, ctx: &RankContext, hand: &[u16]) -> Vec
     if g.base.is_empty() && g.little.is_empty() && g.big.is_empty() && !g.wild.is_empty() {
         for n in 1..=g.wild.len() {
             let cards = g.wild[..n].to_vec();
-            if let Some(rec) = recognize(r, ctx, &cards) {
+            if let Some(rec) = recognize(ladder, r, ctx, &cards) {
                 push(rec);
             }
         }
@@ -913,7 +938,7 @@ pub(crate) fn enumerate(r: &RuleSetBody, ctx: &RankContext, hand: &[u16]) -> Vec
         .patterns
         .iter()
         .filter(|p| !matches!(p.params, PrimitiveParams::Reserved { .. }))
-        .map(|p| (p, ladder_position(r, p)))
+        .map(|p| (p, ladder_position(ladder, p)))
         .collect();
     defs.sort_by_key(|(_, pos)| std::cmp::Reverse(*pos));
     for (def, _) in defs {
@@ -923,23 +948,23 @@ pub(crate) fn enumerate(r: &RuleSetBody, ctx: &RankContext, hand: &[u16]) -> Vec
                 if count == 1 {
                     for bucket in g.base.values() {
                         for &card in bucket {
-                            if let Some(rec) = recognize(r, ctx, &[card]) {
+                            if let Some(rec) = recognize(ladder, r, ctx, &[card]) {
                                 push(rec);
                             }
                         }
                     }
                     for &card in &g.little {
-                        if let Some(rec) = recognize(r, ctx, &[card]) {
+                        if let Some(rec) = recognize(ladder, r, ctx, &[card]) {
                             push(rec);
                         }
                     }
                     for &card in &g.big {
-                        if let Some(rec) = recognize(r, ctx, &[card]) {
+                        if let Some(rec) = recognize(ladder, r, ctx, &[card]) {
                             push(rec);
                         }
                     }
                     for &card in &g.wild {
-                        if let Some(rec) = recognize(r, ctx, &[card]) {
+                        if let Some(rec) = recognize(ladder, r, ctx, &[card]) {
                             push(rec);
                         }
                     }
@@ -950,7 +975,7 @@ pub(crate) fn enumerate(r: &RuleSetBody, ctx: &RankContext, hand: &[u16]) -> Vec
                             let take = count.min(bucket.len());
                             let mut cards = bucket[..take].to_vec();
                             cards.extend_from_slice(&g.wild[..need]);
-                            if let Some(rec) = recognize(r, ctx, &cards) {
+                            if let Some(rec) = recognize(ladder, r, ctx, &cards) {
                                 push(rec);
                             }
                         }
@@ -965,7 +990,7 @@ pub(crate) fn enumerate(r: &RuleSetBody, ctx: &RankContext, hand: &[u16]) -> Vec
                         let take = count.min(bucket.len());
                         let mut cards = bucket[..take].to_vec();
                         cards.extend_from_slice(&g.wild[..need]);
-                        if let Some(rec) = recognize(r, ctx, &cards) {
+                        if let Some(rec) = recognize(ladder, r, ctx, &cards) {
                             push(rec);
                         }
                     }
@@ -983,7 +1008,7 @@ pub(crate) fn enumerate(r: &RuleSetBody, ctx: &RankContext, hand: &[u16]) -> Vec
                     }
                     let mut cards = pick_one_per_rank(&g.base, &window);
                     cards.extend_from_slice(&g.wild[..missing.len()]);
-                    if let Some(rec) = recognize(r, ctx, &cards) {
+                    if let Some(rec) = recognize(ladder, r, ctx, &cards) {
                         push(rec);
                     }
                 }
@@ -995,7 +1020,7 @@ pub(crate) fn enumerate(r: &RuleSetBody, ctx: &RankContext, hand: &[u16]) -> Vec
                         continue;
                     }
                     let cards = consecutive_cards(&g.base, &g.wild, &window, 2);
-                    if let Some(rec) = recognize(r, ctx, &cards) {
+                    if let Some(rec) = recognize(ladder, r, ctx, &cards) {
                         push(rec);
                     }
                 }
@@ -1007,7 +1032,7 @@ pub(crate) fn enumerate(r: &RuleSetBody, ctx: &RankContext, hand: &[u16]) -> Vec
                         continue;
                     }
                     let cards = consecutive_cards(&g.base, &g.wild, &window, 3);
-                    if let Some(rec) = recognize(r, ctx, &cards) {
+                    if let Some(rec) = recognize(ladder, r, ctx, &cards) {
                         push(rec);
                     }
                 }
@@ -1035,7 +1060,7 @@ pub(crate) fn enumerate(r: &RuleSetBody, ctx: &RankContext, hand: &[u16]) -> Vec
                         cards.extend_from_slice(&g.wild[..need_main]);
                         cards.extend_from_slice(&pair_bucket[..take_pair]);
                         cards.extend_from_slice(&g.wild[need_main..need_main + need_pair]);
-                        if let Some(rec) = recognize(r, ctx, &cards) {
+                        if let Some(rec) = recognize(ladder, r, ctx, &cards) {
                             push(rec);
                         }
                     }
@@ -1046,7 +1071,7 @@ pub(crate) fn enumerate(r: &RuleSetBody, ctx: &RankContext, hand: &[u16]) -> Vec
                         let mut cards = main_bucket[..real_main].to_vec();
                         cards.extend_from_slice(&g.wild[..need_main]);
                         cards.extend_from_slice(jp);
-                        if let Some(rec) = recognize(r, ctx, &cards) {
+                        if let Some(rec) = recognize(ladder, r, ctx, &cards) {
                             push(rec);
                         }
                     }
@@ -1071,7 +1096,7 @@ pub(crate) fn enumerate(r: &RuleSetBody, ctx: &RankContext, hand: &[u16]) -> Vec
                         }
                         let mut cards = pick_one_per_rank(suit_buckets, &window);
                         cards.extend_from_slice(&g.wild[..missing.len()]);
-                        if let Some(rec) = recognize(r, ctx, &cards) {
+                        if let Some(rec) = recognize(ladder, r, ctx, &cards) {
                             push(rec);
                         }
                     }
@@ -1081,7 +1106,7 @@ pub(crate) fn enumerate(r: &RuleSetBody, ctx: &RankContext, hand: &[u16]) -> Vec
                 let mut cards = Vec::new();
                 cards.extend_from_slice(&g.little[..2]);
                 cards.extend_from_slice(&g.big[..2]);
-                if let Some(rec) = recognize(r, ctx, &cards) {
+                if let Some(rec) = recognize(ladder, r, ctx, &cards) {
                     push(rec);
                 }
             }
@@ -1135,7 +1160,12 @@ fn is_bomb_class(primitive: &str) -> bool {
 ///
 /// 其余（两个非同型的非炸弹牌型）一律不能压。`compare.ladder` 只是牌型位次表
 /// （AI 排序 + flushRank 锚点插入位），不是跨型可压的合法性表。
-pub(crate) fn beats(r: &RuleSetBody, candidate: &Recognized, last: &LastPlay) -> bool {
+pub(crate) fn beats(
+    ladder: &[PatternId],
+    r: &RuleSetBody,
+    candidate: &Recognized,
+    last: &LastPlay,
+) -> bool {
     let last_primitive = primitive_by_id(r, &last.pattern_id).unwrap_or("");
     let candidate_bomb = is_bomb_class(candidate.primitive);
     let last_bomb = is_bomb_class(last_primitive);
@@ -1154,7 +1184,6 @@ pub(crate) fn beats(r: &RuleSetBody, candidate: &Recognized, last: &LastPlay) ->
                 || (candidate.pattern_key.0 == last.pattern_key.0
                     && candidate.pattern_key.1 > last.pattern_key.1);
         }
-        let ladder = synthetic_ladder(r);
         let pos = |id: &str| ladder.iter().position(|p| p.0 == id);
         return match (pos(&candidate.pattern_id), pos(last.pattern_id.as_str())) {
             (Some(a), Some(b)) => a > b,

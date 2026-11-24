@@ -65,7 +65,7 @@ pub fn m0_ruleset_yaml() -> &'static str {
 
 pub fn build_engine() -> Result<M0Engine, String> {
     let body = from_yaml(M0_RULESET_YAML).map_err(|e| e.to_string())?;
-    Ok(M0Engine { ruleset: body })
+    Ok(M0Engine::new(body))
 }
 
 /// 基准夹具：固定策略走 12 步到中局（手牌约 27、已有 lastPlay）。
@@ -97,7 +97,7 @@ pub fn lead_state() -> (M0Engine, State) {
 /// `guandan-classic` 引擎（满牌型基准，§10.5 第 1505 行）。
 pub fn classic_engine() -> Result<M0Engine, String> {
     let body = from_yaml(CLASSIC_RULESET_YAML).map_err(|e| e.to_string())?;
-    Ok(M0Engine { ruleset: body })
+    Ok(M0Engine::new(body))
 }
 
 /// classic 领出态（`last_play = None`，候选峰值口径），纯状态推进、不含时钟调用。

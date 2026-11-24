@@ -119,7 +119,7 @@ fn build_engine() -> M0Engine {
     let yaml = std::fs::read_to_string(&yaml_path)
         .unwrap_or_else(|e| panic!("读取夹具 ruleset.yaml 失败: {e}"));
     let body = from_yaml(&yaml).expect("夹具 ruleset.yaml 解析失败");
-    M0Engine { ruleset: body }
+    M0Engine::new(body)
 }
 
 /// 中位数（最近秩法，与 m0_bench 同口径）。

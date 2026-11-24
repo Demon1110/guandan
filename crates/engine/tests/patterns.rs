@@ -24,9 +24,7 @@ fn fixture_body() -> RuleSetBody {
 }
 
 fn engine() -> M0Engine {
-    M0Engine {
-        ruleset: fixture_body(),
-    }
+    M0Engine::new(fixture_body())
 }
 
 /// 变体夹具：调整 `deck.copies`（凑齐多张百搭），并同步 `perSeat` / `cardCount`
@@ -48,7 +46,7 @@ fn engine_with_copies(copies: u8, strip_bombs: bool) -> M0Engine {
         .replace("perSeat: 27", &format!("perSeat: {per_seat}"))
         .replace("cardCount: 108", &format!("cardCount: {total}"));
     let body = from_yaml(&src).expect("变体夹具应构造成功");
-    M0Engine { ruleset: body }
+    M0Engine::new(body)
 }
 
 /// 基础牌便捷构造：`rank` 0..12、`suit` 0..3、`copy` 0/1。

@@ -9,14 +9,15 @@
 //! 确定性纪律（§3.3 约束 2）：纯整数、无浮点、无 `SystemTime`/线程 RNG/文件网络 I/O；
 //! 排序给全序；RNG 唯一来源是引擎注入的种子与计数器。
 
-use crate::contract::{Action, Engine, EngineError, Seat, State, View, ZoneId};
+use crate::contract::{Action, Engine, EngineError, PatternId, Seat, State, View, ZoneId};
 use crate::hash::{seed_digest, LastPlay, RngState, TributeState, ZoneEntry};
 use crate::patterns;
 use crate::ruleset::model::{AfterAllPass, TurnDirection, ZoneScope};
 use crate::ruleset::params::PrimitiveParams;
 use crate::ruleset::RuleSetBody;
 use crate::view::{encode_canonical, ViewData, ViewLastPlay};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
+use std::sync::OnceLock;
 
 /// phase 枚举序号（与 `model::Phase` 声明序一致：deal=0, tribute=1, play=2, settle=3）。
 pub const PHASE_DEAL: u16 = 0;
@@ -30,9 +31,26 @@ const ACTION_QUOTA: usize = 4096;
 /// M0 引擎：持有载入后的 RuleSetBody，实现四接口的最小路径。
 pub struct M0Engine {
     pub ruleset: RuleSetBody,
+    /// 载入期合成牌力阶梯（`synthetic_ladder` 结果）。只依赖规则集体、不依赖局级牌档位，
+    /// 构造后缓存一次；枚举 / 压制比较都读这份缓存，不再每次重建。
+    ladder: OnceLock<Vec<PatternId>>,
 }
 
 impl M0Engine {
+    pub fn new(ruleset: RuleSetBody) -> Self {
+        Self {
+            ruleset,
+            ladder: OnceLock::new(),
+        }
+    }
+
+    /// 载入期缓存的合成阶梯；规则集体在引擎生命周期内不可变，缓存与局级牌档位无关，
+    /// 换局 / 换 `attackingTeam` 不会命中旧档位。
+    fn cached_ladder(&self) -> &[PatternId] {
+        self.ladder
+            .get_or_init(|| crate::ruleset::ladder::synthetic_ladder(&self.ruleset))
+    }
+
     // ---------- 载入期派生：区号 / 牌 id / 牌力序 ----------
 
     /// 区号按 RuleSet 声明序分配并冻结（§5.12 第 796 行）。
@@ -84,7 +102,7 @@ impl M0Engine {
                 .and_then(|k| self.ruleset.deck.ranks.iter().position(|d| d == k)),
             None => None,
         };
-        patterns::RankContext::new(level_rank)
+        patterns::RankContext::new(&self.ruleset, level_rank)
     }
 
     /// `action.require-legal` 参数（§5.2 第 524 行）：`force` 是否要求压过 lastPlay，
@@ -459,39 +477,18 @@ impl M0Engine {
 
     // ---------- legal_actions ----------
 
-    fn legal_actions_impl(&self, state: &State) -> Result<Vec<Action>, EngineError> {
-        let mut out: Vec<Action> = Vec::new();
-        if state.phase != PHASE_PLAY {
-            return Ok(out);
-        }
-        let seat = state.turn_seat;
-
-        // 轮转不变量：turnSeat 不得指向已出完座位（skipFinished 应在推进时跳过）。
-        if state.finish_order.contains(&seat) {
-            return Err(EngineError::Internal {
-                message: format!(
-                    "turnSeat={seat} 已在 finishOrder 中，轮转未跳过已出完座位: {:?}",
-                    state.finish_order
-                ),
-            });
-        }
-
-        let Some(hand) = self.hand_cards(state, seat) else {
-            return Err(EngineError::Internal {
-                message: format!("seat {seat} 手牌区缺失"),
-            });
-        };
-        let hand = hand.clone();
-
-        // 候选四元组：(countKey, rankKey, cards 牌 id 序列, patternId)，全序（§5.12 第 842 行）。
-        let force = self.require_legal_params().0;
-        let ctx = self.rank_context(state);
-        let wild_ids = patterns::wildcard_ids(&self.ruleset, &ctx);
-
-        // §5.13 第 899 行：`legal_actions` 只列规范子集——同 patternId + patternKey
-        // 只出一条；代表选定序 ① rankKey 最大 ② 百搭用量最少 ③ 真牌牌 id 升序
-        // 字典序最小（按牌 id 序列比，不按点数组合比）。客户端仍可提交任意结构等价
-        // 组合，`apply` 按结构复检，不受本子集约束。
+    /// 把枚举记录归并为最终动作列表：同 `patternId + patternKey` 只留一条规范代表，
+    /// 代表选定序 ① rankKey 最大 ② 百搭用量最少 ③ 真牌牌 id 升序字典序最小；
+    /// 再按四元组全序排序，跟牌态末尾追加 `Pass`。生产枚举与参照枚举共用本归并路径，
+    /// 差分比较直接落在最终 `Vec<Action>`（含顺序）上。
+    fn actions_from_records(
+        &self,
+        records: Vec<patterns::Recognized>,
+        state: &State,
+        force: bool,
+        wild_ids: &HashSet<u16>,
+        ladder: &[PatternId],
+    ) -> Vec<Action> {
         struct Entry {
             count_key: u32,
             rank_key: u32,
@@ -503,12 +500,12 @@ impl M0Engine {
         }
         let mut groups: BTreeMap<(String, u32, u32), Entry> = BTreeMap::new();
 
-        for rec in patterns::enumerate(&self.ruleset, &ctx, &hand) {
+        for rec in records {
             // 领出（lastPlay 为空）任意成型牌型合法；跟牌时：force=true 只保留能压过
             // lastPlay 的候选，force=false 只校牌型合法、不要求压过（§5.2 第 524 行）。
             let legal = match &state.last_play {
                 None => true,
-                Some(last) if force => patterns::beats(&self.ruleset, &rec, last),
+                Some(last) if force => patterns::beats(ladder, &self.ruleset, &rec, last),
                 Some(_) => true,
             };
             if !legal {
@@ -556,14 +553,46 @@ impl M0Engine {
             .collect();
 
         candidates.sort_by(|a, b| (&a.0, &a.1, &a.2, &a.3).cmp(&(&b.0, &b.1, &b.2, &b.3)));
-        for candidate in candidates {
-            out.push(candidate.4);
-        }
+        let mut out: Vec<Action> = candidates.into_iter().map(|c| c.4).collect();
 
         // 过牌：仅跟牌阶段合法（领出不能 pass）。Pass 不参与牌型四元组排序，排在所有 Play 之后。
         if state.last_play.is_some() {
             out.push(Action::Pass);
         }
+        out
+    }
+
+    fn legal_actions_impl(&self, state: &State) -> Result<Vec<Action>, EngineError> {
+        let out: Vec<Action> = Vec::new();
+        if state.phase != PHASE_PLAY {
+            return Ok(out);
+        }
+        let seat = state.turn_seat;
+
+        // 轮转不变量：turnSeat 不得指向已出完座位（skipFinished 应在推进时跳过）。
+        if state.finish_order.contains(&seat) {
+            return Err(EngineError::Internal {
+                message: format!(
+                    "turnSeat={seat} 已在 finishOrder 中，轮转未跳过已出完座位: {:?}",
+                    state.finish_order
+                ),
+            });
+        }
+
+        let Some(hand) = self.hand_cards(state, seat) else {
+            return Err(EngineError::Internal {
+                message: format!("seat {seat} 手牌区缺失"),
+            });
+        };
+        let hand = hand.clone();
+
+        // 候选四元组：(countKey, rankKey, cards 牌 id 序列, patternId)，全序（§5.12 第 842 行）。
+        let force = self.require_legal_params().0;
+        let ctx = self.rank_context(state);
+        let ladder = self.cached_ladder();
+        let wild_ids = patterns::wildcard_ids(&self.ruleset, &ctx);
+        let records = patterns::enumerate(ladder, &self.ruleset, &ctx, &hand);
+        let out = self.actions_from_records(records, state, force, &wild_ids, ladder);
         // 接风（`flow.turn.partnerLead`）是出牌落子后的领出座位解析，不在候选枚举侧展开；
         // 判定见 `apply_impl` 的 Play 分支。
 
@@ -610,15 +639,17 @@ impl M0Engine {
                 // §5.9 第 203 行：出牌只传牌 id，`patternId` 由服务端判定。复检按牌结构
                 // 判定牌型并判定能否压过 lastPlay，不再要求提交的 cards 精确等于枚举清单。
                 let ctx = self.rank_context(&state);
-                let rec = patterns::recognize(&self.ruleset, &ctx, &cards).ok_or_else(|| {
-                    EngineError::IllegalAction {
-                        reason: format!("seat {seat} 提交的牌不构成任何已声明牌型"),
-                    }
-                })?;
+                let ladder = self.cached_ladder();
+                let rec =
+                    patterns::recognize(ladder, &self.ruleset, &ctx, &cards).ok_or_else(|| {
+                        EngineError::IllegalAction {
+                            reason: format!("seat {seat} 提交的牌不构成任何已声明牌型"),
+                        }
+                    })?;
                 let force = self.require_legal_params().0;
                 if force {
                     if let Some(last) = &state.last_play {
-                        if !patterns::beats(&self.ruleset, &rec, last) {
+                        if !patterns::beats(ladder, &self.ruleset, &rec, last) {
                             return Err(EngineError::IllegalAction {
                                 reason: format!(
                                     "seat {seat} 提交的牌压不过上家 {}（{:?}）",
@@ -899,7 +930,7 @@ mod tests {
         // （§5.4 `RS_ZONE_CONSERVATION` 口径）。
         let yaml = crate::cases::m0_ruleset_yaml().replace("perSeat: 27", "perSeat: 26");
         let body = from_yaml(&yaml).expect("修改后的夹具应能构造");
-        let engine = M0Engine { ruleset: body };
+        let engine = M0Engine::new(body);
         let err = engine
             .deal(M0_SEED)
             .expect_err("perSeat×座位数≠总张数必须报 Internal");
@@ -934,7 +965,7 @@ mod tests {
 
     fn engine_from(yaml: &str) -> M0Engine {
         let body = from_yaml(yaml).expect("内联 YAML 构造 RuleSet 失败");
-        M0Engine { ruleset: body }
+        M0Engine::new(body)
     }
 
     #[test]
@@ -1025,9 +1056,10 @@ mod tests {
         // 取全场可识别单张中点数键最大的一张留给 seat 0，保证能压过 (1,0)。
         let mut best: Option<(u32, u16)> = None;
         let ctx = engine.rank_context(&state);
+        let ladder = engine.cached_ladder();
         for hand in &hands {
             for &card in hand {
-                if let Some(rec) = patterns::recognize(&engine.ruleset, &ctx, &[card]) {
+                if let Some(rec) = patterns::recognize(ladder, &engine.ruleset, &ctx, &[card]) {
                     let key = rec.pattern_key.1;
                     if best.map(|(bk, _)| key > bk).unwrap_or(true) {
                         best = Some((key, card));
