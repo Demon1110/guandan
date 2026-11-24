@@ -1199,3 +1199,264 @@ pub(crate) fn beats(
     // 4. 非同型非炸弹：不能压。
     false
 }
+
+// ---------- 参照实现（仅 `#[cfg(test)]` 编译，不进发布产物） ----------
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) mod legacy_ref {
+    //! 重构前的枚举 / 识别路径留档。差分测试用它与生产路径逐张比对
+    //! `Vec<Action>`（含顺序）；旧实现每次调用都重建 `synthetic_ladder`，
+    //! 与重构前行为一致。本模块不进发布产物。
+    use super::*;
+    use crate::ruleset::ladder::synthetic_ladder;
+
+    fn legacy_ladder_position(r: &RuleSetBody, def: &PatternDef) -> usize {
+        let ladder = synthetic_ladder(r);
+        ladder
+            .iter()
+            .position(|p| *p == def.id)
+            .unwrap_or(usize::MAX)
+    }
+
+    pub(crate) fn recognize_legacy(
+        r: &RuleSetBody,
+        ctx: &RankContext,
+        cards: &[u16],
+    ) -> Option<Recognized> {
+        if cards.is_empty() {
+            return None;
+        }
+        let mut seen = HashSet::new();
+        if !cards.iter().all(|c| seen.insert(*c)) {
+            return None;
+        }
+        let groups = Groups::build(r, ctx, cards);
+        if groups.base.is_empty()
+            && groups.little.is_empty()
+            && groups.big.is_empty()
+            && !groups.wild.is_empty()
+        {
+            return recognize_all_wildcard(r, ctx, &groups.wild);
+        }
+        let mut defs: Vec<(&PatternDef, usize)> = r
+            .patterns
+            .iter()
+            .filter(|p| !matches!(p.params, PrimitiveParams::Reserved { .. }))
+            .map(|p| (p, legacy_ladder_position(r, p)))
+            .collect();
+        defs.sort_by_key(|(_, pos)| std::cmp::Reverse(*pos));
+        for (def, _) in defs {
+            if let Some(rec) = match_def(r, ctx, def, &groups) {
+                return Some(rec);
+            }
+        }
+        None
+    }
+
+    pub(crate) fn enumerate_legacy(
+        r: &RuleSetBody,
+        ctx: &RankContext,
+        hand: &[u16],
+    ) -> Vec<Recognized> {
+        let g = HandGroups::build(r, ctx, hand);
+        let mut out: Vec<Recognized> = Vec::new();
+        let mut emitted: HashSet<Vec<u16>> = HashSet::new();
+
+        let mut push = |rec: Recognized| {
+            if emitted.insert(rec.cards.clone()) {
+                out.push(rec);
+            }
+        };
+
+        if g.base.is_empty() && g.little.is_empty() && g.big.is_empty() && !g.wild.is_empty() {
+            for n in 1..=g.wild.len() {
+                let cards = g.wild[..n].to_vec();
+                if let Some(rec) = recognize_legacy(r, ctx, &cards) {
+                    push(rec);
+                }
+            }
+            return out;
+        }
+
+        let mut defs: Vec<(&PatternDef, usize)> = r
+            .patterns
+            .iter()
+            .filter(|p| !matches!(p.params, PrimitiveParams::Reserved { .. }))
+            .map(|p| (p, legacy_ladder_position(r, p)))
+            .collect();
+        defs.sort_by_key(|(_, pos)| std::cmp::Reverse(*pos));
+        for (def, _) in defs {
+            match &def.params {
+                PrimitiveParams::SameRank { count } => {
+                    let count = *count as usize;
+                    if count == 1 {
+                        for bucket in g.base.values() {
+                            for &card in bucket {
+                                if let Some(rec) = recognize_legacy(r, ctx, &[card]) {
+                                    push(rec);
+                                }
+                            }
+                        }
+                        for &card in &g.little {
+                            if let Some(rec) = recognize_legacy(r, ctx, &[card]) {
+                                push(rec);
+                            }
+                        }
+                        for &card in &g.big {
+                            if let Some(rec) = recognize_legacy(r, ctx, &[card]) {
+                                push(rec);
+                            }
+                        }
+                        for &card in &g.wild {
+                            if let Some(rec) = recognize_legacy(r, ctx, &[card]) {
+                                push(rec);
+                            }
+                        }
+                    } else {
+                        for bucket in g.base.values() {
+                            let need = count.saturating_sub(bucket.len());
+                            if need <= g.wild.len() {
+                                let take = count.min(bucket.len());
+                                let mut cards = bucket[..take].to_vec();
+                                cards.extend_from_slice(&g.wild[..need]);
+                                if let Some(rec) = recognize_legacy(r, ctx, &cards) {
+                                    push(rec);
+                                }
+                            }
+                        }
+                    }
+                }
+                PrimitiveParams::Bomb { count } => {
+                    let count = *count as usize;
+                    for bucket in g.base.values() {
+                        let need = count.saturating_sub(bucket.len());
+                        if need <= g.wild.len() {
+                            let take = count.min(bucket.len());
+                            let mut cards = bucket[..take].to_vec();
+                            cards.extend_from_slice(&g.wild[..need]);
+                            if let Some(rec) = recognize_legacy(r, ctx, &cards) {
+                                push(rec);
+                            }
+                        }
+                    }
+                }
+                PrimitiveParams::Straight { length, .. } => {
+                    for window in all_windows(rank_count(r), *length as usize) {
+                        let missing: Vec<usize> = window
+                            .iter()
+                            .copied()
+                            .filter(|p| !g.base.contains_key(p))
+                            .collect();
+                        if missing.len() > g.wild.len() {
+                            continue;
+                        }
+                        let mut cards = pick_one_per_rank(&g.base, &window);
+                        cards.extend_from_slice(&g.wild[..missing.len()]);
+                        if let Some(rec) = recognize_legacy(r, ctx, &cards) {
+                            push(rec);
+                        }
+                    }
+                }
+                PrimitiveParams::ConsecutivePairs { pairs } => {
+                    let groups = *pairs as usize;
+                    for window in all_windows(rank_count(r), groups) {
+                        if !window_wildcard_fits(&g.base, &window, 2, g.wild.len()) {
+                            continue;
+                        }
+                        let cards = consecutive_cards(&g.base, &g.wild, &window, 2);
+                        if let Some(rec) = recognize_legacy(r, ctx, &cards) {
+                            push(rec);
+                        }
+                    }
+                }
+                PrimitiveParams::ConsecutiveTriples { triples } => {
+                    let groups = *triples as usize;
+                    for window in all_windows(rank_count(r), groups) {
+                        if !window_wildcard_fits(&g.base, &window, 3, g.wild.len()) {
+                            continue;
+                        }
+                        let cards = consecutive_cards(&g.base, &g.wild, &window, 3);
+                        if let Some(rec) = recognize_legacy(r, ctx, &cards) {
+                            push(rec);
+                        }
+                    }
+                }
+                PrimitiveParams::TriplePair => {
+                    let joker_pairs: Vec<Vec<u16>> = [&g.little, &g.big]
+                        .iter()
+                        .filter(|j| j.len() == 2)
+                        .map(|j| j[..2].to_vec())
+                        .collect();
+                    for (&main, main_bucket) in &g.base {
+                        let real_main = main_bucket.len().min(3);
+                        let need_main = 3 - real_main;
+                        for (&pair, pair_bucket) in &g.base {
+                            if pair == main {
+                                continue;
+                            }
+                            let take_pair = pair_bucket.len().min(2);
+                            let need_pair = 2 - take_pair;
+                            if need_main + need_pair > g.wild.len() {
+                                continue;
+                            }
+                            let mut cards = main_bucket[..real_main].to_vec();
+                            cards.extend_from_slice(&g.wild[..need_main]);
+                            cards.extend_from_slice(&pair_bucket[..take_pair]);
+                            cards.extend_from_slice(&g.wild[need_main..need_main + need_pair]);
+                            if let Some(rec) = recognize_legacy(r, ctx, &cards) {
+                                push(rec);
+                            }
+                        }
+                        for jp in &joker_pairs {
+                            if need_main > g.wild.len() {
+                                continue;
+                            }
+                            let mut cards = main_bucket[..real_main].to_vec();
+                            cards.extend_from_slice(&g.wild[..need_main]);
+                            cards.extend_from_slice(jp);
+                            if let Some(rec) = recognize_legacy(r, ctx, &cards) {
+                                push(rec);
+                            }
+                        }
+                    }
+                }
+                PrimitiveParams::StraightFlush { length } => {
+                    for suit_buckets in g.by_suit.values() {
+                        for window in all_windows(rank_count(r), *length as usize) {
+                            if suit_buckets.is_empty()
+                                || (!wildcard_flush_allowed(r) && !g.wild.is_empty())
+                            {
+                                continue;
+                            }
+                            let missing: Vec<usize> = window
+                                .iter()
+                                .copied()
+                                .filter(|p| !suit_buckets.contains_key(p))
+                                .collect();
+                            if missing.len() > g.wild.len() {
+                                continue;
+                            }
+                            let mut cards = pick_one_per_rank(suit_buckets, &window);
+                            cards.extend_from_slice(&g.wild[..missing.len()]);
+                            if let Some(rec) = recognize_legacy(r, ctx, &cards) {
+                                push(rec);
+                            }
+                        }
+                    }
+                }
+                PrimitiveParams::JokerBomb if g.little.len() >= 2 && g.big.len() >= 2 => {
+                    let mut cards = Vec::new();
+                    cards.extend_from_slice(&g.little[..2]);
+                    cards.extend_from_slice(&g.big[..2]);
+                    if let Some(rec) = recognize_legacy(r, ctx, &cards) {
+                        push(rec);
+                    }
+                }
+                PrimitiveParams::JokerBomb => {}
+                _ => {}
+            }
+        }
+        out
+    }
+}
