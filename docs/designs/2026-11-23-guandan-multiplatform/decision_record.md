@@ -602,6 +602,7 @@
 - **追认结果（2026-11-24）**：用户就该 8 条逐条表态，**8 条全部「确认」（8/8，无一条否决）**，故状态由 `待追认` 转为 **`已追认、生效`**；此前「不得记为已批准」的约束只作用于用户表态之前的那一轮，现已以用户本人的逐条确认为准。
 - 8 条摘要（明细见 §12.2 第十一次变更）：①`legal_actions` 返回 `Result<Vec<Action>, EngineError>`；②`streakLimit` 值域统一 1–3；③`flushRank` 插入位惰性校验；④`score-only` 局 `seat.levels` 键不出现（双端同解追认）；⑤`ai.hint` 为 `bool` 开关；⑥`tribute.enabled=false` 时其余子键可省；⑦§5.12 固化长度前缀宽度（计数 `u8`、牌数组与字符串 `u16`）；⑧`State` 承载九段、`CanonicalState` 为 `From<&State>` 单向投影。
 - **③ 锚点口径定稿（2026-11-24 用户裁决，已不再是推迟项）**：炸弹大小由张数决定（同点数张数越多越大）、同花顺位次为「大于 5 张炸、小于 6 张炸」——对应 `bombOrder = count-then-rank` 与 `flushRank = above-bomb-5`，两者均为 §5.10 冻结现值，**取值未动**；由此外推：锚点必须按 `primitiveId = pattern.bomb` + `params.count` **语义识别**，不看 `id` 字符串（否则等于用名字约束牌型命名）。锚点缺失 → 拒绝加载、报新码 `RS_FLUSH_ANCHOR_MISSING`，**不降级、不插到「最近位置」**；位次冲突 → 拒绝加载、报新码 `RS_LADDER_CONFLICT`；两码分开报，均为 L1 Blocker，已入 §5.7 全表（码数 25 → 27）。
+- **炸弹两级比较补充定稿（2026-11-24 用户裁决）**：`bombOrder` 写成可判定口径——`count-then-rank` = 先比张数（多者大）、张数相同再比点数；`rank-then-count` = 先比点数、相同再比张数。**点数按载入期合成牌力序（`naturalOrder` + `levelInsert`）比较，不是牌面自然序**，故级牌高于 A（4 张级牌 > 4 张 A，但 < 5 张任意牌）；王只在 `pattern.joker-bomb` 中参与比较。§5.10 炸弹序行的「`count-then-rank`：4 张 < 5 张 < … < 8 张；同张数比点数」与原状态「定」**逐字未动**，本次只是把它展开到可判定粒度（§5.1 `compare` 行、§5.13 比较行）。
 - 仍未定的项：`levelTable` 在 `level.upgrade`/`settle` 之外的准入检查、`tribute.enabled=true` 时的完整条件必填矩阵、`RS_INTERPRETER_TOO_OLD` 的判定落点（M1 定），均不阻断 M0。
 
 ## 未决问题（等用户拍板）
