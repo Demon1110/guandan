@@ -439,7 +439,7 @@ levelTable:
              { teamRanks: [1,4], step: 1 } ]
 naturalOrder: ["2","3","4","5","6","7","8","9","10","J","Q","K","A",little-joker,big-joker]
 levelInsert: above-A
-wildcard: { source: { suit: H, rank: "@level" }, substitute: ["2","3","4","5","6","7","8","9","10","J","Q","K","A"], inStraightFlush: false }
+wildcard: { source: { suit: H, rank: "@level" }, substitute: ["2","3","4","5","6","7","8","9","10","J","Q","K","A"], inStraightFlush: true }
 patterns:
   - { id: single,           primitiveId: pattern.same-rank,           params: { count: 1 } }
   - { id: pair,             primitiveId: pattern.same-rank,           params: { count: 2 } }
@@ -770,7 +770,7 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 | 用牌 | `deck` | 2 副共 108 张（每副 52 张 + 2 王，`jokers: 2`）；合计大王 2、小王 2 | 定 |
 | 级牌 | `levelTable.initial` + 房间 `levels` | 首局每队都是 2；级牌牌力高于 A、低于小王；**每队一个 `levels`** | 定 |
 | 逢人配 | `wildcard.source` | 红桃级牌（`heart-@level`），每副 1 张共 2 张 | 定 |
-| 逢人配能否组同花顺 | `wildcard.inStraightFlush` | `false`（C2 争议项，可切换） | 定 |
+| 逢人配能否组同花顺 | `wildcard.inStraightFlush` | `true`（C2 争议项；2026-11-24 用户裁定可组，第十五次变更由 `false` 改 `true`） | 定 |
 | 炸弹序 | `compare.bombOrder` | `count-then-rank`：4 张 < 5 张 < … < 8 张；同张数比点数 | 定 |
 | 同花顺位置 | `compare.flushRank` | `above-bomb-5`（5 张炸之上、6 张炸之下），完整阶梯：4 张炸 < 5 张炸 < 同花顺 < 6 张 < 7 张 < 8 张 < 四王炸；其余三值（`below-bomb-5` / `above-bomb-6` / `above-bomb-8`）作为其他 RuleSet 的可选值保留 | 定 |
 | 四王炸 | `pattern.joker-bomb` | 最高，压所有炸弹与同花顺 | 定 |
@@ -890,7 +890,7 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 | 牌型 | `single`/`pair`/`triple`/`straight-5`/`plate-3`（3 连对）/`steel-2`（2 组三张连）/`bomb-4..8`/`straight-flush-5`/`joker-bomb`，**id 与 §5.1 示例的 `patterns[].id` 完全一致**（`plate-3` 与 `steel-2` 是唯一写法，不出现"木板/钢板"别名） |
 | 顺子边界 | 顺子取 5 张连续自然点数，允许从 A 起（`A-2-3-4-5`）但不允许绕回（`Q-K-A-2-3` 非法）；相邻判定按 `naturalOrder` 线性比较，唯一环形特例：A 可前接 2（A 在首位组成 `A-2-3-4-5`），A 后接 2 非法，双端按同一顺序判定；级牌在顺子里按自然点数参与，不按 `@level` 的高位；大小王不得入顺；逢人配代牌后仍须整体连续 |
 | 级牌 | 当前 `levels[team]` 对应的牌在**单张/对/三张/顺子**里按"高于 A、低于小王"的牌力参与比较；作为炸弹时仍按自身点数。牌力序由 `naturalOrder` + `levelInsert` 在 RuleSet 载入期合成：先取 `naturalOrder` 自然序，再按 `levelInsert` 把级牌插到指定位置（`above-A` 即 A 之后、小王之前）；合成结果在任一 `levels` 下唯一，不允许占位符参与运行时排序 |
-| 逢人配 | 红桃级牌可替代除大小王外任意一张牌；`wildcard.inStraightFlush=false` 时不得用于同花顺 |
+| 逢人配 | 红桃级牌（`wildcard.source`）可替代除大小王外任意一张牌，也可按自身点数（该队当前级牌）使用；**一手内百搭张数不限**（含整手全为百搭的情形）；含百搭时按「可达解中 `rankKey` 最大者」取解，`rankKey` 相同再由「真牌点数组合按 `naturalOrder` 字典序最小」定唯一解，两端按同一顺序判定；顺子多孔多解同按此条取「最大且唯一」解；`wildcard.inStraightFlush=true` 时可参与同花顺、`false` 时不得参与（本基线取 `true`，见 §5.10 该行与第十五次变更）；百搭不得替代大小王，`joker-bomb` 不接受百搭 |
 | 比较 | 同牌型比 `patternKey = (countKey, rankKey)`（张数优先、再点数）；炸弹按 `bombOrder` 两级比较（本版 `count-then-rank`）：张数多者大；张数相同比点数，点数按载入期合成牌力序（`naturalOrder` + `levelInsert`）比较、级牌位高于 A——故 4 张级牌 > 4 张 A > 4 张 K，但 5 张任何牌 > 4 张级牌（§5.10 炸弹序行、§5.1 `compare` 行）；`straight-flush` 与 `bomb` 的相对位置由 `compare.flushRank` 决定（§5.1）；本版 `flushRank=above-bomb-5`，最终压制阶梯 `bomb-4` < `bomb-5` < `straight-flush-5` < `bomb-6` < `bomb-7` < `bomb-8` < `joker-bomb` |
 | 过牌 | 无牌可压或主动不要，`pass` 记入事件；三家连续 `pass` 后由最后出牌者重新领出 |
 | 接风 | 含义固定为：某座位出完牌的同一轮里，若其队友是最后压牌者，则该队友在下一轮直接"领出"，跳过其余两家；`turn.return-to-last` 只负责"全过后回到最后出牌者"，**不负责接风**，接风由 `flow.turn.partnerLead` + 队友判定实现 |
@@ -1591,6 +1591,7 @@ P0 之外不做自动干预，只有两项自动动作：`canary` 指标超标�
 | --- | --- | --- |
 | 第十三次变更（M0 收尾：实测数字补录 + 必填性口径对齐） | 2026-11-24，M0 gate 第 3、4 项收尾。**本条不含任何新的设计决策，只有①实测数字回填与②已裁决口径的对齐**：①§10.5 第 5、6 行由「待实测（M0 末第 6 周补）」改为实测值——1500 房间（按 A4 峰值 ×3 倍余量，行标题由「1000 房间空转」改为「1500 房间空转」）常驻状态堆内存 1,065,000 B / 710 B 每房间、空转 tick CPU 0.803 ns/(房间·tick)（1500 房间 10Hz ≈12.0 µs/s）；wasm（HEAD `061ae60`、默认 release profile、未改 strip/lto）原始 678,604 B、gzip 后 189,972 B（27.99%），两口径均 ≤1.5MB 目标线；两行均补写测量口径并以"地板值"标注（空转 CPU 不含 `legal_actions`/`apply` 与网络 IO，内存是分配器差值而非 RSS）；②§5.13 「tribute」段补一段必填性声明，把此前本节未重申必填性、实现侧按"整段可省"落地的双口径统一到 §5.1 的写法（`enabled: true` 时 `return` 必填、整段缺省即 L1 拒绝；`enabled: false` 时只写一个键即合法），与第十一次变更⑥同源、未新增契约。同批实现侧据此落 L1 值域闸门（`pattern.bomb` 4–8〔`count: 12` 由静默通过改为拒绝〕、六类牌型参数值域、六条原语参数值域、`tribute.pairs` 名次数值域与 `tribute` 必填性），`m0-minimal` 锚点 `e09079f1…bedd` / steps 150 / finishOrder `[1,3,2,0]` 逐字未变。**§5.10 冻结表的取值与状态逐字未动** | §5.13（`tribute` 段必填性声明）；§10.5（第 5、6 行实测值与测量口径、表后"地板"说明）；§12.2 |
 | 第十四次变更（M0 收尾：`perSeat` 两侧值域对齐） | 2026-11-24，M0 收尾补 `flow.deal.perSeat` 顶层 1–108 值域闸门时，实现侧报出同一量的两侧上界不一致：§5.1 顶层写 1–108，§5.2 `deal.shuffle.perSeat` 写 1–27，且 §5.1 的键名映射表漏了 `flow.deal.perSeat`↔`deal.shuffle.perSeat` 这一行；实现侧未自行裁决、交回主会话。用户当日选定**方案 A**：「把 §5.2 原语侧放宽到 108（27 作为四座真值仍在域内，对将来 3/5 座扩展更稳）」。据此落两处改动：①§5.2 `deal.shuffle.perSeat` 值域 1–27 → **1–108**，并写明它与顶层是同一个量（"每座位分得张数"，不是"每轮每人张数"）、四座真值 27 仍落域内、上界放宽是为三座／五座变体免改语法；②§5.1 键名映射表补 `flow.deal.perSeat`↔`deal.shuffle.perSeat`，顶层值域行补一句「两侧同域、守恒属 L2」。**未动**：默认值公式（`deck` 总张数 ÷ `seats.count` 的整除值）、不整除必须显式声明的规则、`m0-minimal` 与 `guandan-classic` 两份夹具的取值、§5.10 冻结表的取值与状态。实现侧已落的顶层 1–108 闸门（含 0／109 反证、1／27／108 正例）与本变更方向一致，无需回改；原语侧闸门由 1–27 改为 1–108 属本次的落码动作 | §5.1（`flow.deal.perSeat` 行、键名映射）；§5.2（`deal.shuffle` 参数行）；§12.2 |
+| 第十五次变更（M1 开工：逢人配口径与同花顺可用） | 2026-11-24，M1 第一条（牌型全表）落地时，实现侧报告 §5.13「逢人配」行只写了「可替代除大小王外任意一张牌 + `inStraightFlush=false` 不得用于同花顺」，而 `guandan-classic` 首局在第 136 步（`turnSeat=3`、领出态、剩 1 张红桃级牌）因百搭被整体剔除而出现空候选死锁，五个判定空白必须定死才能跑完一局。用户当日裁决两句：①RNG 契约「**改实现，对齐文档**」（§5.2 的 20 字节 `seed_le64‖stream_le32‖counter_le64` + `bounded()` 拒绝采样 + Fisher-Yates 降序为准，实现侧现用的 16 字节 + 取模须重写，锚点随之重算——属实现对齐、不改文档）；②逢人配套餐「**多张可用 + 最大解 + 同花顺可用**」。据此落三处：**(a)** §5.13 逢人配行改写为可判定口径——百搭张数不限（含整手全百搭，此时按自身级牌点数使用）、含百搭时取「可达解中 `rankKey` 最大者」、`rankKey` 相同再按「真牌点数组合字典序最小」定唯一解（顺子多孔多解同此），百搭不得替代大小王、`joker-bomb` 不接受百搭；**(b)** §5.10「逢人配能否组同花顺」取值由 `false` 改 **`true`**（§5.10 唯一一处取值变更，用户明确裁定）；**(c)** §5.1 示例 YAML 的 `inStraightFlush` 同步为 `true`。**未动**：`tribute`/`level`/`compare` 各项冻结取值、`pattern.joker-bomb` 无参、炸弹上界 8（G9/G10 仍属六人变体 backlog）。同批实现侧另修一处跨型压制 bug（`beats` 曾把 `compare.ladder` 当跨型合法性表，致对子可压单张），收敛为「同型比 key / 炸弹族内按 ladder / 炸弹压非炸弹 / 其余不可压」四分支，属实现缺陷、非设计变更 | §5.1（示例 YAML `wildcard` 行）；§5.10（逢人配能否组同花顺行）；§5.13（逢人配行）；§12.2 |
 
 **留痕的意义**：评审时若发现"为什么一个棋牌项目要 40～44 周"，答案在 12.2 而不是在某一节的数字里；若未来要缩范围，也按 12.2 的变更顺序倒着砍。
 
