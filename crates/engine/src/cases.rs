@@ -55,6 +55,22 @@ pub fn build_engine() -> Result<M0Engine, String> {
     Ok(M0Engine { ruleset: body })
 }
 
+/// 基准夹具：固定策略走 12 步到中局（手牌约 27、已有 lastPlay）。
+/// 纯状态推进，不含任何时钟调用（§3.3）。
+pub fn mid_game_state() -> (M0Engine, State) {
+    let engine = build_engine().expect("构造引擎失败");
+    let mut state = engine.deal(M0_SEED).expect("发牌失败");
+    for _ in 0..12 {
+        if state.phase == PHASE_SETTLE {
+            break;
+        }
+        let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
+        let action = legal.into_iter().next().expect("中局候选不应为空");
+        state = engine.apply(state, action).expect("落子失败");
+    }
+    (engine, state)
+}
+
 /// 固定策略：每步取 `legal_actions` 排序后的第一个（最小合法单张）；
 /// 跑到 `settle` 为止。策略固定即序列固定，日志可逐条复现。
 pub fn run_m0_golden() -> Result<GoldenOutcome, String> {
@@ -242,4 +258,46 @@ pub extern "C" fn gf_m0_golden_report() -> *mut u8 {
     let ptr = buf.as_mut_ptr();
     std::mem::forget(buf);
     ptr
+}
+
+/// 基准批处理：对固定中局状态连续枚举 `batch` 次合法动作，返回累计候选条数
+/// （checksum，防止宿主侧优化删除）。计时由 Node 宿主 `process.hrtime` 完成，
+/// 本函数不含时钟调用（§3.3 豁免边界：计时只在 benches/host）。
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn gf_bench_legal_actions(batch: u32) -> u64 {
+    let (engine, state) = mid_game_state();
+    let mut checksum: u64 = 0;
+    for _ in 0..batch {
+        let legal = engine
+            .legal_actions(&state)
+            .expect("基准夹具枚举合法动作失败");
+        checksum = checksum.wrapping_add(legal.len() as u64);
+    }
+    checksum
+}
+
+/// 基准批处理：固定策略连续落子 `batch` 次；一局 settle 后重新 deal（deal 不计时、
+/// 不计入 apply 次数）。返回 checksum（座位号累计），防止被优化删除。
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn gf_bench_apply(batch: u32) -> u64 {
+    let engine = build_engine().expect("构造引擎失败");
+    let mut state = engine.deal(M0_SEED).expect("发牌失败");
+    let mut checksum: u64 = 0;
+    let mut applied: u32 = 0;
+    while applied < batch {
+        if state.phase == PHASE_SETTLE {
+            state = engine.deal(M0_SEED).expect("重发牌失败");
+            continue;
+        }
+        let legal = engine
+            .legal_actions(&state)
+            .expect("基准夹具枚举合法动作失败");
+        let action = legal.into_iter().next().expect("非终局候选不应为空");
+        state = engine.apply(state, action).expect("落子失败");
+        checksum = checksum.wrapping_add(state.turn_seat as u64);
+        applied += 1;
+    }
+    checksum
 }
