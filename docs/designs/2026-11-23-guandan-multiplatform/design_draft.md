@@ -444,6 +444,7 @@ patterns:
   - { id: single,           primitiveId: pattern.same-rank,           params: { count: 1 } }
   - { id: pair,             primitiveId: pattern.same-rank,           params: { count: 2 } }
   - { id: triple,           primitiveId: pattern.same-rank,           params: { count: 3 } }
+  - { id: triple-pair,      primitiveId: pattern.triple-pair,         params: {} }
   - { id: straight-5,       primitiveId: pattern.straight,            params: { length: 5 } }
   - { id: plate-3,          primitiveId: pattern.consecutive-pairs,   params: { pairs: 3 } }
   - { id: steel-2,          primitiveId: pattern.consecutive-triples, params: { triples: 2 } }
@@ -455,7 +456,7 @@ patterns:
   - { id: straight-flush-5, primitiveId: pattern.straight-flush,      params: { length: 5 } }
   - { id: joker-bomb,       primitiveId: pattern.joker-bomb,          params: {} }
 compare:
-  ladder: [single, pair, triple, straight-5, plate-3, steel-2, bomb-4, bomb-5, bomb-6, bomb-7, bomb-8, joker-bomb]
+  ladder: [single, pair, triple, triple-pair, straight-5, plate-3, steel-2, bomb-4, bomb-5, bomb-6, bomb-7, bomb-8, joker-bomb]
   bombOrder: count-then-rank
   flushRank: above-bomb-5      # 同花顺位次：below-bomb-5 / above-bomb-5 / above-bomb-6 / above-bomb-8（C2 争议项，改这一个值即可切换）
 tribute:
@@ -492,7 +493,7 @@ view: { schemaVersion: 1, fields: [hand, seat.levels, discard, lastPlay] }
 | 类别 | 原语 | 关键参数 | 允许改状态 |
 | --- | --- | --- | --- |
 | 发牌 | v1：`deal.shuffle`（落点区读顶层 `flow.deal.zone`）；**v1 未启用**：`deal.draw` / `deal.reveal` | 数量、目标区、是否公开 | 是 |
-| 牌型 | v1：`pattern.same-rank` / `pattern.straight` / `pattern.consecutive-pairs` / `pattern.consecutive-triples` / **`pattern.bomb`** / **`pattern.straight-flush`** / **`pattern.joker-bomb`**；**v2 预留**：`pattern.with-attachment` / `pattern.all-same-suit` | 张数（`bomb` 支持 4～8）、连续长度、是否允许通配 | 否 |
+| 牌型 | v1：`pattern.same-rank` / `pattern.straight` / `pattern.consecutive-pairs` / `pattern.consecutive-triples` / **`pattern.triple-pair`** / **`pattern.bomb`** / **`pattern.straight-flush`** / **`pattern.joker-bomb`**；**v2 预留**：`pattern.with-attachment` / `pattern.all-same-suit` | 张数（`bomb` 支持 4～8）、连续长度、是否允许通配 | 否 |
 | 比较 | `compare.by-rank` / `compare.by-count` / `compare.by-ladder` / **`compare.bomb-order`** | 比较维度（枚举）、炸弹序策略 | 否 |
 | 行动 | v1：`action.require-legal` / `action.consume-cards` / `action.pass`；**v2 预留**：`action.claim` / `action.declare` | 是否强制、消耗区 | 是 |
 | 轮转 | `turn.next` / `turn.after-all-pass` / `turn.skip-finished` / `turn.return-to-last` | 方向、全过后回谁、是否跳过已出完的人 | 是 |
@@ -514,6 +515,7 @@ view: { schemaVersion: 1, fields: [hand, seat.levels, discard, lastPlay] }
 | `pattern.straight` | `length: u8`｜5–12，必填；`wildcardAllowed: bool`｜默认 `true` |
 | `pattern.consecutive-pairs` | `pairs: u8`｜2–10，必填（掼蛋取 3） |
 | `pattern.consecutive-triples` | `triples: u8`｜2–6，必填（掼蛋取 2） |
+| `pattern.triple-pair` | 无参：固定「3 张同点 + 1 对」共 5 张，只能为空对象 `{}`，出现任何键即拒绝（形状由原语自带，不做参数化；可配带牌的玩法走 v2 的 `pattern.with-attachment`） |
 | `pattern.bomb` | `count: u8`｜4–8，必填 |
 | `pattern.straight-flush` | `length: u8`｜5–12，必填 |
 | `pattern.joker-bomb` | 无参：只能为空对象 `{}`，出现任何键即拒绝 |
@@ -544,7 +546,7 @@ view: { schemaVersion: 1, fields: [hand, seat.levels, discard, lastPlay] }
 | `assert.card-count` | `expected: u32`｜必填 |
 | `assert.zone-capacity` | `zone: ZoneId`｜必填 |
 
-**v2 预留原语**（v1 ADT 不收录，RuleSet 引用即 L1 拒绝 `RS_SCHEMA_INVALID`）：`pattern.with-attachment`、`pattern.all-same-suit`、`action.claim`、`action.declare`、`score.table`。这五个原语在 §5.2 分类表里同样按 v2 标注，v1 的解释器不实现它们。
+**v2 预留原语**（v1 ADT 不收录，RuleSet 引用即 L1 拒绝 `RS_SCHEMA_INVALID`）：`pattern.with-attachment`、`pattern.all-same-suit`、`action.claim`、`action.declare`、`score.table`。这五个原语在 §5.2 分类表里同样按 v2 标注，v1 的解释器不实现它们。其中 `pattern.with-attachment` 只保留给"带牌数与主牌数都可配"的玩法（三带一、四带二等）；掼蛋的三带二是**固定形状**，由 v1 新原语 `pattern.triple-pair` 承担（第十八次变更）。
 
 **v1 未启用原语**（口径同上：v1 的 Primitive ADT 不收录，RuleSet 引用即 L1 `RS_SCHEMA_INVALID`）：`deal.draw`、`deal.reveal`、`rng.range`。三者参数定义保留在参数表，v2 启用时再补各自的顶层承载位；v1 基线的发牌只走 `deal.shuffle`、随机只走 `rng.pick`，因此 §5.1 不需要为它们新增承载键。不启用的理由：v1 是一次性发牌到 `flow.deal.zone` 指定的区（发完即进入 `play`），观战走回放式重放（§6 观战章 / U8），既没有中场抽牌也没有翻牌需求；`rng.range` 仅在 v2 的随机玩法参数里才需要。
 
@@ -775,7 +777,7 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 | 炸弹序 | `compare.bombOrder` | `count-then-rank`：4 张 < 5 张 < … < 8 张；同张数比点数 | 定 |
 | 同花顺位置 | `compare.flushRank` | `above-bomb-5`（5 张炸之上、6 张炸之下），完整阶梯：4 张炸 < 5 张炸 < 同花顺 < 6 张 < 7 张 < 8 张 < 四王炸；其余三值（`below-bomb-5` / `above-bomb-6` / `above-bomb-8`）作为其他 RuleSet 的可选值保留 | 定 |
 | 四王炸 | `pattern.joker-bomb` | 最高，压所有炸弹与同花顺 | 定 |
-| 单张/对/三/顺子/三连对/二连三 | `patterns` | 顺子 5 张、`plate-3` 为 3 连对、`steel-2` 为 2 组三张连 | 定 |
+| 单张/对/三/三带二/顺子/三连对/二连三 | `patterns` | 顺子 5 张、`plate-3` 为 3 连对、`steel-2` 为 2 组三张连；**三带二 = 3 张同点 + 1 对（`triple-pair`），大小只看主牌那三张的点数、与所带的对子无关**（2026-11-24 用户裁定，第十八次变更） | 定 |
 | 进贡配对 | `tribute.pairs[]` | 单贡：末游→头游；双下（对位进贡）：末游（第 4 名）→头游（第 1 名）、三游（第 3 名）→二游（第 2 名），一对一映射，不交叉 | 定 |
 | 还贡 | `tribute.return`（`ceiling`/`count`/`fallback` 三键） | 受贡方还一张不大于 10 的牌；全大于 10 时还其中最小的一张 | 定 |
 | 抗贡 | `tribute.resist` | 贡方两家合计持有 2 张大王即可抗贡（不要求在同一人手里），本局不进贡 | 定 |
@@ -889,10 +891,11 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 
 | 规则 | 判定写法 |
 | --- | --- |
-| 牌型 | `single`/`pair`/`triple`/`straight-5`/`plate-3`（3 连对）/`steel-2`（2 组三张连）/`bomb-4..8`/`straight-flush-5`/`joker-bomb`，**id 与 §5.1 示例的 `patterns[].id` 完全一致**（`plate-3` 与 `steel-2` 是唯一写法，不出现"木板/钢板"别名） |
+| 牌型 | `single`/`pair`/`triple`/`triple-pair`（三带二）/`straight-5`/`plate-3`（3 连对）/`steel-2`（2 组三张连）/`bomb-4..8`/`straight-flush-5`/`joker-bomb`，**id 与 §5.1 示例的 `patterns[].id` 完全一致**；同一手牌若同时能判成多个牌型（含百搭多解），按 `compare.ladder` 位次取**最高**的那一种作为识别结果（`plate-3` 与 `steel-2` 是唯一写法，不出现"木板/钢板"别名） |
+| 三带二 | 结构 = 3 张同点 + 1 对，共 5 张，id `triple-pair`（**固定形状**，由 `pattern.triple-pair` 承担，不参数化）；**大小只看主牌那三张的点数，与所带的对子无关**：`countKey = 5`、`rankKey` = 主牌点数在载入期合成牌力序（`naturalOrder` + `levelInsert`）中的位置，级牌做主牌时同样按「高于 A、低于小王」；带的对子不进 `rankKey`，带哪一对都不改强弱；带的对子可以是任意同点数两张（双副牌下大小王各 2 张，成对亦可），不得是两张不同点数；与其它非炸弹非插入型牌型**互不可压**（只有炸弹与同花顺按阶梯可压它）；`ladder` 位次在 `triple` 之后、`straight-5` 之前，仅用于识别消歧与展示；百搭可代主牌三张或对子中的任一张，取解仍按逢人配那条（`rankKey` 最大、再真牌字典序最小） |
 | 顺子边界 | 顺子取 5 张连续自然点数，允许从 A 起（`A-2-3-4-5`）但不允许绕回（`Q-K-A-2-3` 非法）；相邻判定按 `naturalOrder` 线性比较，唯一环形特例：A 可前接 2（A 在首位组成 `A-2-3-4-5`），A 后接 2 非法，双端按同一顺序判定；级牌在顺子里按自然点数参与，不按 `@level` 的高位；大小王不得入顺；逢人配代牌后仍须整体连续。**轮子特例（第十七次变更，2026-11-24 用户裁定）**：`straight-5`（**非同花**杂顺）的结构为 `A-2-3-4-5` 时——不论这一手是否含级牌、是否由百搭补位而成——其 `rankKey` **恒取保留值 `0`**，在杂顺内永远最小，**不受 `levelInsert` 提升**（否则级牌恰为 5 时轮子会被抬成强顺，与"轮子最小"的直觉冲突）；`0` 为保留值，牌力序里的任何真实点数不得映射到 `0`，其它牌型也不得取 `0`。`straight-flush-5` 的 `A-2-3-4-5` **不适用**本特例：同花顺族内比较仍按 `naturalOrder` + `levelInsert` 的顶牌取 `rankKey`，其与炸弹的相对位次只由 `compare.flushRank` 决定 |
 | 级牌 | 当前 `levels[team]` 对应的牌在**单张/对/三张/顺子**里按"高于 A、低于小王"的牌力参与比较；作为炸弹时仍按自身点数。牌力序由 `naturalOrder` + `levelInsert` 在 RuleSet 载入期合成：先取 `naturalOrder` 自然序，再按 `levelInsert` 把级牌插到指定位置（`above-A` 即 A 之后、小王之前）；合成结果在任一 `levels` 下唯一，不允许占位符参与运行时排序 |
-| 逢人配 | 红桃级牌（`wildcard.source`）可替代除大小王外任意一张牌，也可按自身点数（该队当前级牌）使用；**一手内百搭张数不限**（含整手全为百搭的情形）；含百搭时按「可达解中 `rankKey` 最大者」取解，`rankKey` 相同再由「真牌点数组合按 `naturalOrder` 字典序最小」定唯一解，两端按同一顺序判定；顺子多孔多解同按此条取「最大且唯一」解；`wildcard.inStraightFlush=true` 时可参与同花顺、`false` 时不得参与（本基线取 `true`，见 §5.10 该行与第十五次变更）；百搭不得替代大小王，`joker-bomb` 不接受百搭 |
+| 逢人配 | 红桃级牌（`wildcard.source`）可替代除大小王外任意一张牌，也可按自身点数（该队当前级牌）使用；**一手内百搭张数不限**（含整手全为百搭的情形）；含百搭时按「可达解中 `rankKey` 最大者」取解，`rankKey` 相同再由「真牌点数组合按 `naturalOrder` 字典序最小」定唯一解，两端按同一顺序判定；顺子多孔多解同按此条取「最大且唯一」解；`wildcard.inStraightFlush=true` 时可参与同花顺、`false` 时不得参与（本基线取 `true`，见 §5.10 该行与第十五次变更）；百搭不得替代大小王，`joker-bomb` 不接受百搭；`triple-pair` 中百搭可代主牌或对子任一张，取解同样按本条 |
 | 比较 | 同牌型比 `patternKey = (countKey, rankKey)`（张数优先、再点数）；炸弹按 `bombOrder` 两级比较（本版 `count-then-rank`）：张数多者大；张数相同比点数，点数按载入期合成牌力序（`naturalOrder` + `levelInsert`）比较、级牌位高于 A——故 4 张级牌 > 4 张 A > 4 张 K，但 5 张任何牌 > 4 张级牌（§5.10 炸弹序行、§5.1 `compare` 行）；`straight-flush` 与 `bomb` 的相对位置由 `compare.flushRank` 决定（§5.1）；本版 `flushRank=above-bomb-5`，最终压制阶梯 `bomb-4` < `bomb-5` < `straight-flush-5` < `bomb-6` < `bomb-7` < `bomb-8` < `joker-bomb` |
 | 过牌 | 无牌可压或主动不要，`pass` 记入事件；三家连续 `pass` 后由最后出牌者重新领出 |
 | 接风 | 含义固定为：某座位出完牌的同一轮里，若其队友是最后压牌者，则该队友在下一轮直接"领出"，跳过其余两家；`turn.return-to-last` 只负责"全过后回到最后出牌者"，**不负责接风**，接风由 `flow.turn.partnerLead` + 队友判定实现 |
@@ -1596,6 +1599,7 @@ P0 之外不做自动干预，只有两项自动动作：`canary` 指标超标�
 | 第十五次变更（M1 开工：逢人配口径与同花顺可用） | 2026-11-24，M1 第一条（牌型全表）落地时，实现侧报告 §5.13「逢人配」行只写了「可替代除大小王外任意一张牌 + `inStraightFlush=false` 不得用于同花顺」，而 `guandan-classic` 首局在第 136 步（`turnSeat=3`、领出态、剩 1 张红桃级牌）因百搭被整体剔除而出现空候选死锁，五个判定空白必须定死才能跑完一局。用户当日裁决两句：①RNG 契约「**改实现，对齐文档**」（§5.2 的 20 字节 `seed_le64‖stream_le32‖counter_le64` + `bounded()` 拒绝采样 + Fisher-Yates 降序为准，实现侧现用的 16 字节 + 取模须重写，锚点随之重算——属实现对齐、不改文档）；②逢人配套餐「**多张可用 + 最大解 + 同花顺可用**」。据此落三处：**(a)** §5.13 逢人配行改写为可判定口径——百搭张数不限（含整手全百搭，此时按自身级牌点数使用）、含百搭时取「可达解中 `rankKey` 最大者」、`rankKey` 相同再按「真牌点数组合字典序最小」定唯一解（顺子多孔多解同此），百搭不得替代大小王、`joker-bomb` 不接受百搭；**(b)** §5.10「逢人配能否组同花顺」取值由 `false` 改 **`true`**（§5.10 唯一一处取值变更，用户明确裁定）；**(c)** §5.1 示例 YAML 的 `inStraightFlush` 同步为 `true`。**未动**：`tribute`/`level`/`compare` 各项冻结取值、`pattern.joker-bomb` 无参、炸弹上界 8（G9/G10 仍属六人变体 backlog）。同批实现侧另修一处跨型压制 bug（`beats` 曾把 `compare.ladder` 当跨型合法性表，致对子可压单张），收敛为「同型比 key / 炸弹族内按 ladder / 炸弹压非炸弹 / 其余不可压」四分支，属实现缺陷、非设计变更 | §5.1（示例 YAML `wildcard` 行）；§5.10（逢人配能否组同花顺行）；§5.13（逢人配行）；§12.2 |
 | 第十六次变更（打级队口径：B3 裁决） | 2026-11-24，M1 实现期 B3（"两队级牌不同时牌力序按谁的"）一直 hold。用户原话："首局由系统随机抽一张牌分到谁就由这对先出并且打这对的级牌，后续就是谁赢就打谁的级牌，依次升级直到过 A"。据此把「每队各一套 ladder」改为「每局单一局级牌」的口径：①每局只有一份局级牌，取 `levels[attackingTeam]`，牌力序按这一份合成（`naturalOrder` + `levelInsert`），全场统一、可传递，不必再在比较时判定方向；②`attackingTeam` = 上一局头游所在队（"谁赢打谁的级牌"），场次首局无上局名次，改为**抽牌前置**：`deal.shuffle` **之前**先取一次 `bounded(总张数)` 抽出一张牌（牌不剔出牌堆），洗牌与连续切分发完之后看这张牌落在哪个座位，该座位先出、其所属队即 `attackingTeam`；非首局不抽牌；③`levels` 仍每队各存（各自升档与记账），`aFailStreak` 不动；④新增状态字段 `attackingTeam` 并**进 `stateHash` 第 11 项**（段数 9→10），快照字段集同步；⑤删除原文「v1 固定座位 0 先出」。**抽牌口径（用户 2026-11-24 当日追认，本行内补记、不另开变更号）**：用户选 A（抽牌定持有者）并要求**抽牌前置**——先抽一张牌、再洗牌发牌、最后「落到谁就是谁」。落码定为：`deal.shuffle` 之前先 `bounded(总张数)` 取牌 id 下标，洗牌与切分之后按牌 id 定位持牌座位；该牌不剔出牌堆、正常参与本局；非首局不抽牌、不消耗随机字。由此 `counter` 的消耗序整体前移一个字，锚点按最终口径一次性重算。**未动**：§5.10 其余取值、升级档表、过 A 判定（1+2 或 1+3）与 `aFailStreak` 阈值 | §5.10（级牌行）；§5.12（哈希段标题、第 11 项、快照字段集）；§5.13（决定首出行）；§12.2 |
 | 第十七次变更（轮子顺恒最小：B5 裁决） | 2026-11-24，M1 实现期 B5（`A-2-3-4-5` 的 `rankKey` 取 5 还是 A）一直 hold。用户裁决两句：①「选 a」——沿用「`rankKey` = 该顺子按 `naturalOrder`（含级牌插入）的最高一张」，不做另一套原始序；②「12345 非同花不管包不包含级牌都是最小牌不用特殊处理」——即 `straight-5` 的结构为 `A-2-3-4-5`（轮子）时，无论是否含级牌、是否由百搭补位，都恒为杂顺最小。据此落：**`straight-5` 的轮子 `rankKey` 恒取保留值 `0`**（小于任何其它顺子、不受 `levelInsert` 提升；`0` 为保留值，真实点数不得映射到 `0`，其它牌型不得取 `0`）；**`straight-flush-5` 的 `A-2-3-4-5` 不适用**，同花顺族内仍按 `naturalOrder` + `levelInsert` 顶牌取 `rankKey`，与炸弹的位次只由 `flushRank` 决定。**未动**：顺子结构规则（A 可前接 2、不可绕回、王不入顺）、`levelInsert` 合成算法、`flushRank` 与阶梯、`bombOrder`、逢人配取解规则 | §5.13（顺子边界行）；§12.2 |
+| 第十八次变更（三带二进 v1：B2 裁决） | 2026-11-24，M1 实现期 B2 一直是**文档内部打架**：§5.2 把带牌类能力（`pattern.with-attachment`）标为 v2 预留、RuleSet 一引用即 L1 拒，而 `docs/开发计划.md` 的 M1 行又列着三带二。用户裁定："三带二进进 v1，掼蛋有三带二，大小判断为 3 张的那张大小同单张一样，跟带的二是什么没关系"。据此：①**三带二进 v1**，新增固定形状原语 `pattern.triple-pair`（无参，只能为空对象 `{}`，固定 3 张同点 + 1 对共 5 张）；`pattern.with-attachment` **仍留 v2**，只服务"带牌数与主牌数都可配"的玩法（三带一、四带二）；②牌型 id 取 **`triple-pair`**，加入 §5.13 牌型行与 §5.1 示例 YAML 的 `patterns`、`ladder`（位次在 `triple` 之后、`straight-5` 之前）；③比较口径：`countKey = 5`、`rankKey` = **主牌三张的点数**（按 `naturalOrder` + `levelInsert`，级牌做主牌时同样高于 A），**所带的对子不进 `rankKey`**、带哪一对都不改强弱；与其它非炸弹非插入型牌型互不可压，只有炸弹与同花顺按阶梯可压它；④带的对子允许任意同点数两张（双副牌下王成对亦可），不得是两张不同点数；⑤百搭可代主牌或对子任一张，取解沿用逢人配的"`rankKey` 最大、再真牌字典序最小"；⑥新增识别消歧通用规则：**同一手牌同时可判成多个牌型（含百搭多解）时，取 `compare.ladder` 位次最高者**；⑦§5.10 冻结表相应行由「单张/对/三/顺子/三连对/二连三」扩为含三带二，**其余 15 行取值逐字未动**。**未动**：顺子结构、`flushRank` 与阶梯、`bombOrder`、逢人配张数与取解、`countKey`/`rankKey` 的既有定义 | §5.1（示例 YAML 的 `patterns` 与 `compare.ladder`）；§5.2（分类表、v2 预留说明、参数表新增行）；§5.10（牌型行）；§5.13（牌型行、新增三带二行、逢人配行）；§12.2 |
 
 **留痕的意义**：评审时若发现"为什么一个棋牌项目要 40～44 周"，答案在 12.2 而不是在某一节的数字里；若未来要缩范围，也按 12.2 的变更顺序倒着砍。
 
