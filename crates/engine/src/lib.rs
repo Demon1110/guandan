@@ -12,5 +12,6 @@ pub mod cases;
 pub mod contract;
 pub mod engine;
 pub mod hash;
+pub mod patterns;
 pub mod ruleset;
 pub mod view;
