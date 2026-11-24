@@ -816,6 +816,18 @@
 - **代价**：`enumerate` 重写，百搭多解/级牌组牌/轮子特例/`triple-pair` 需在构造式重新表达。
 - **未动**：消歧规则、级牌组牌序、轮子 `rankKey=0`、6 张上限、`triple-pair` 主牌口径、规范子集选定序、4096 闸门、锚点。
 
+## 第三十一次变更：`roundNo` 的推进点定在 `deal`（2026-11-24）
+
+- **触发**：第二十三次变更只说换局靠 `SettleResult.roundNo` 与 `DealEvent` 判，未写谁负责推进；而这决定三处一致性（快照、结算帧、动作记录）。
+- **用户裁定**：B —— 下一局 `deal` 时才 `+1`。
+- **落稿**：
+  - `roundNo` 只在 `deal` 时 `+1`，`settle` 不改；空窗期语义为「第 N 局已结算、第 N+1 局未开始」，靠 `phase = settle` 判。
+  - 快照 = 当前正在打的局号；`SettleResult.roundNo` = 刚结束的局（与本局快照、本局动作记录一致，不存在差 1）；`ActionRecord.roundNo` = 动作发生时局号。
+  - 首局 `roundNo = 1`，只换场重来。
+  - 选项 A（`settle` 末尾 +1）作废。
+- **代价**：客户端需自行 `+1`；空窗期断线要读 `phase`。
+- **未动**：序号跨局连续、`STALE_SEQ`、`settlementId` 构成、库侧 `round_no`、`stateHash`。
+
 ## 未决问题（等用户拍板）
 
 | # | 问题 | 需要谁决定 | 状态 |
