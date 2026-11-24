@@ -8,7 +8,9 @@
 //! 确定性纪律见 §3.3：判定链路禁用浮点、`HashMap` 迭代顺序依赖、`SystemTime::now()`、
 //! `rand::thread_rng()`、文件 I/O 与网络 I/O。
 
+pub mod cases;
 pub mod contract;
+pub mod engine;
 pub mod hash;
 pub mod ruleset;
 pub mod view;

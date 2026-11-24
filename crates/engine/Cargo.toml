@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "掼蛋多端框架 M0 引擎契约层（双产物同一份：native / wasm）"
 
+[lib]
+# native 走 rlib（example / 测试链接），wasm 走 cdylib 裸产物（零 import，Node 裸加载）。
+crate-type = ["rlib", "cdylib"]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"

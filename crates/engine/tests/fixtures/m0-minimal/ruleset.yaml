@@ -17,6 +17,7 @@ compare:
   flushRank: above-bomb-5
 actions:
   - { kind: play, primitive: action.require-legal, legalFrom: patterns, params: { force: true, consume: hand } }
+  - { kind: pass, primitive: action.pass, legalFrom: play, params: {} }
 lifecycle: [deal, tribute, play, settle]
 flow:
   deal:   { zone: hand, perSeat: 27, reveal: false }
