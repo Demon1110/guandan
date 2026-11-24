@@ -13,6 +13,9 @@ pub const M0_SEED: u64 = 0x0D15EA5E_00000001;
 
 const M0_RULESET_YAML: &str = include_str!("../tests/fixtures/m0-minimal/ruleset.yaml");
 
+/// §10.5 第 1505 行：`guandan-classic` 满牌型基准夹具（13 牌型），编译期嵌入双端同一份字节串。
+const CLASSIC_RULESET_YAML: &str = include_str!("../tests/fixtures/guandan-classic/ruleset.yaml");
+
 /// 单步动作日志：seat / kind / cards（可逐条复现）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActionLogEntry {
@@ -88,6 +91,37 @@ pub fn lead_state() -> (M0Engine, State) {
     let engine = build_engine().expect("构造引擎失败");
     let state = engine.deal(M0_SEED).expect("发牌失败");
     debug_assert!(state.last_play.is_none(), "领出态 last_play 应为 None");
+    (engine, state)
+}
+
+/// `guandan-classic` 引擎（满牌型基准，§10.5 第 1505 行）。
+pub fn classic_engine() -> Result<M0Engine, String> {
+    let body = from_yaml(CLASSIC_RULESET_YAML).map_err(|e| e.to_string())?;
+    Ok(M0Engine { ruleset: body })
+}
+
+/// classic 领出态（`last_play = None`，候选峰值口径），纯状态推进、不含时钟调用。
+pub fn classic_lead_state() -> (M0Engine, State) {
+    let engine = classic_engine().expect("classic 构造失败");
+    let state = engine.deal(M0_SEED).expect("classic 发牌失败");
+    debug_assert!(state.last_play.is_none(), "领出态 last_play 应为 None");
+    (engine, state)
+}
+
+/// classic 中局态：固定策略走 12 步（已有 lastPlay、跟牌口径）；纯状态推进。
+pub fn classic_mid_state() -> (M0Engine, State) {
+    let engine = classic_engine().expect("classic 构造失败");
+    let mut state = engine.deal(M0_SEED).expect("classic 发牌失败");
+    for _ in 0..12 {
+        if state.phase == PHASE_SETTLE {
+            break;
+        }
+        let legal = engine
+            .legal_actions(&state)
+            .expect("classic 中局枚举合法动作失败");
+        let action = legal.into_iter().next().expect("classic 中局候选不应为空");
+        state = engine.apply(state, action).expect("classic 落子失败");
+    }
     (engine, state)
 }
 
@@ -389,6 +423,63 @@ pub extern "C" fn gf_bench_apply(batch: u32) -> u64 {
             .expect("基准夹具枚举合法动作失败");
         let action = legal.into_iter().next().expect("非终局候选不应为空");
         state = engine.apply(state, action).expect("落子失败");
+        checksum = checksum.wrapping_add(state.turn_seat as u64);
+        applied += 1;
+    }
+    checksum
+}
+
+/// classic 基准批处理：中局跟牌态连续枚举 `batch` 次，返回累计候选条数 checksum。
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn gf_bench_classic_legal_actions(batch: u32) -> u64 {
+    let (engine, state) = classic_mid_state();
+    let mut checksum: u64 = 0;
+    for _ in 0..batch {
+        let legal = engine
+            .legal_actions(&state)
+            .expect("classic 基准枚举合法动作失败");
+        checksum = checksum.wrapping_add(legal.len() as u64);
+    }
+    checksum
+}
+
+/// classic 基准批处理：领出态（`last_play = None`，候选峰值）连续枚举 `batch` 次。
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn gf_bench_classic_legal_actions_lead(batch: u32) -> u64 {
+    let (engine, state) = classic_lead_state();
+    let mut checksum: u64 = 0;
+    for _ in 0..batch {
+        let legal = engine
+            .legal_actions(&state)
+            .expect("classic 基准枚举合法动作失败");
+        checksum = checksum.wrapping_add(legal.len() as u64);
+    }
+    checksum
+}
+
+/// classic 基准批处理：固定策略连续落子 `batch` 次；settle 后重新 deal（不计时）。
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn gf_bench_classic_apply(batch: u32) -> u64 {
+    let engine = classic_engine().expect("classic 构造失败");
+    let mut state = engine.deal(M0_SEED).expect("classic 发牌失败");
+    let mut checksum: u64 = 0;
+    let mut applied: u32 = 0;
+    while applied < batch {
+        if state.phase == PHASE_SETTLE {
+            state = engine.deal(M0_SEED).expect("classic 重发牌失败");
+            continue;
+        }
+        let legal = engine
+            .legal_actions(&state)
+            .expect("classic 基准枚举合法动作失败");
+        let action = legal
+            .into_iter()
+            .next()
+            .expect("classic 非终局候选不应为空");
+        state = engine.apply(state, action).expect("classic 落子失败");
         checksum = checksum.wrapping_add(state.turn_seat as u64);
         applied += 1;
     }

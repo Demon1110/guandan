@@ -23,3 +23,7 @@ harness = false
 [[bench]]
 name = "idle_1500"
 harness = false
+
+[[bench]]
+name = "classic_bench"
+harness = false
