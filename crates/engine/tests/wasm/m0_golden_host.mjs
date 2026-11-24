@@ -52,16 +52,21 @@ const finishLen = dv.getUint32(40, true);
 const finishOrder = [...view.subarray(44, 48)].filter((_, i) => i < finishLen);
 gf_free(ptr, 48);
 
-// m0-minimal 夹具 seats.teams = [[0,2],[1,3]]；终局前两位同队即双下收尾，
-// 据此反推 terminalTeam（报告缓冲未单独传输队位）。
+// m0-minimal 夹具 seats.teams = [[0,2],[1,3]]；terminalTeam 口径与 cases.rs 一致
+// （§5.13 第 902 行）：全员进入 finishOrder 的队伍中，最晚名次（最大下标）最小者，
+// 并列按队伍下标小者；1+4 形态下是对家队，不等于头游所在队。报告缓冲未单独传输队位。
 const TEAMS = [
   [0, 2],
   [1, 3],
 ];
-const terminalTeam =
-  finishOrder.length >= 2
-    ? TEAMS.findIndex((t) => t.includes(finishOrder[0]) && t.includes(finishOrder[1]))
-    : -1;
+const terminalTeam = TEAMS.map((team, i) => ({ i, team }))
+  .filter(({ team }) => team.every((s) => finishOrder.includes(s)))
+  .map(({ i, team }) => ({
+    i,
+    last: Math.max(...team.map((s) => finishOrder.indexOf(s))),
+  }))
+  .sort((a, b) => a.last - b.last || a.i - b.i)
+  .map((x) => x.i)[0] ?? -1;
 
 console.log(
   JSON.stringify({ hash, steps, phase, finishOrder, terminalTeam }),

@@ -36,7 +36,8 @@ pub struct GoldenOutcome {
     pub phase: u16,
     /// 终局名次：4 个座位按出完先后排序。
     pub finish_order: Vec<u8>,
-    /// 先满足「同队两人均出完」的队伍下标（双下收尾的那一队）。
+    /// 最先全员出完的队伍下标（§5.13 第 902 行「局终止与名次」：双下 / 1+3 / 1+4
+    /// 三种收尾中，最晚名次编号最小者；1+4 形态下为对家队，不等于头游所在队）。
     pub terminal_team: Option<u8>,
     /// settle 转移发生次数，正常应恰为 1。
     pub settle_count: u32,
@@ -143,17 +144,34 @@ pub fn run_m0_golden() -> Result<GoldenOutcome, String> {
         .and_then(|i| state.zones.iter().find(|z| z.zone_id == i))
         .map(|z| z.cards.len())
         .unwrap_or(0);
-    // 终局触发：名次前两位属于同一队（双下收尾）；terminal_team 即这一队。
-    let terminal_team = match (state.finish_order.first(), state.finish_order.get(1)) {
-        (Some(&a), Some(&b)) => engine
-            .ruleset
-            .seats
-            .teams
-            .iter()
-            .position(|team| team.contains(&a) && team.contains(&b))
-            .map(|i| i as u8),
-        _ => None,
-    };
+    // 终局触发（§5.13 第 902 行「局终止与名次」）：一局在某队全部队员均已出完时结束。
+    // 掼蛋基线三种收尾都由这一条覆盖——该队占 1、2 名（双下）、夹进对家一人（1+3）、
+    // 对家两人先出完而本队头游在前（1+4）。terminal_team = 最先全员出完的队伍：
+    // 队员全部进入 finish_order 的队伍中，「最晚名次」（在 finish_order 中的最大下标）
+    // 最小者；并列按队伍下标小者。注意它不等于头游所在队——1+4 形态下是对家队。
+    let terminal_team = engine
+        .ruleset
+        .seats
+        .teams
+        .iter()
+        .enumerate()
+        .filter(|(_, team)| team.iter().all(|s| state.finish_order.contains(s)))
+        .map(|(i, team)| {
+            let last_rank = team
+                .iter()
+                .map(|s| {
+                    state
+                        .finish_order
+                        .iter()
+                        .position(|&x| x == *s)
+                        .expect("队员应已进入名次")
+                })
+                .max()
+                .expect("队伍非空");
+            (i, last_rank)
+        })
+        .min_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)))
+        .map(|(i, _)| i as u8);
 
     if state.phase != PHASE_SETTLE {
         return Err(format!(
@@ -180,7 +198,7 @@ pub fn run_m0_golden() -> Result<GoldenOutcome, String> {
     }
     let Some(team) = terminal_team else {
         return Err(format!(
-            "终局前两位不同队（无双下收尾）：finishOrder={:?}",
+            "终局没有队伍全员进入名次：finishOrder={:?}",
             state.finish_order
         ));
     };

@@ -8,8 +8,9 @@ use gf_engine::engine::{M0Engine, PHASE_SETTLE};
 use gf_engine::hash::{canonical_bytes, state_hash, CanonicalState};
 
 /// native 用例跑出并核对过动作日志后的 32 字节 stateHash（双端逐字节比对锚点）。
+/// §5.2 随机源口径变更（20 字节 BLAKE3 + 拒绝采样 + Fisher-Yates 降序）后重算。
 const EXPECTED_STATE_HASH: &str =
-    "e09079f1496be12cdcd248f6711d2c3d7a225480826d53fb1a64e8c08907bedd";
+    "925e4018c4c51ef276d9bfbb754038fc00c81c6eadb7c5a3cf60e16e3af281ac";
 
 #[test]
 fn golden_reaches_settle_and_matches_recorded_hash() {
@@ -29,7 +30,7 @@ fn golden_reaches_settle_and_matches_recorded_hash() {
         108,
         "终局牌数必须守恒"
     );
-    assert!(outcome.terminal_team.is_some(), "终局应有同队两人先出完");
+    assert!(outcome.terminal_team.is_some(), "终局应有队伍全员先出完");
     let hex: String = outcome
         .state_hash
         .iter()
