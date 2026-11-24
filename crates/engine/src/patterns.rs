@@ -16,19 +16,12 @@
 //!
 //! # 仍未落地的 hold / 缺口
 //!
-//! - TODO(M1-HOLD-with-attachment)：三带二（`pattern.with-attachment`）。§5.2 第 495、
-//!   547 行定为 v2 预留、引用即 L1 拒；§5.13 第 890 行牌型清单没有它；`guandan-classic`
-//!   夹具也未声明。本批不识别。
-//! - TODO(M1-HOLD-level-rank)：级牌点力重排。§5.13 第 892 行写「当前 `levels[team]`
-//!   对应的牌…按高于 A 参与比较」，但每队一个 `levels`、两队档位可能不同，跨队比较时
-//!   同一张牌点力不唯一；本批 `rankKey` 保持 `naturalOrder`，不按级牌高位重排。
-//! - TODO(M1-GAP-levels-init)：`levels` 按队初始化尚未落地（`deal()` 置空序列），百搭
-//!   自身点数暂按 `levelTable.initial` 解析；levels 初始化落地后，自身点数改为读
-//!   `state.levels[team]`。此点与 level-rank hold 正交：B3 裁决前不做级牌高位插入。
+//! - TODO(M1-HOLD-with-attachment)：三带二之外的 `pattern.with-attachment`。
+//!   §5.2 第 547 行定为 v2 预留、引用即 L1 拒；本批不识别。
 
 use crate::hash::LastPlay;
 use crate::ruleset::ladder::synthetic_ladder;
-use crate::ruleset::model::{PatternDef, RuleSetBody, WildcardRank};
+use crate::ruleset::model::{LevelInsert, PatternDef, RankKey, RuleSetBody, WildcardRank};
 use crate::ruleset::params::PrimitiveParams;
 use std::collections::{BTreeMap, HashSet};
 
@@ -85,30 +78,78 @@ fn card_ref(r: &RuleSetBody, card: u16) -> CardRef {
     }
 }
 
-/// 点数键：`naturalOrder` 下标（不含级牌高位插入；见模块顶部 level-rank hold）。
-fn rank_key_of(r: &RuleSetBody, rank_idx: usize) -> u32 {
-    // TODO(M1-HOLD-level-rank)：§5.13 第 892 行「当前 levels[team] 对应的牌…按高于 A
-    // 参与比较」未落地——每队一个 levels、两队档位可能不同，跨队比较时同一张牌点力
-    // 不唯一，可比性口径待裁决；本批保持 naturalOrder，不按级牌高位重排。
-    let rank_str = r.deck.ranks[rank_idx].as_str();
-    r.natural_order
-        .iter()
-        .position(|k| k.as_str() == rank_str)
-        .unwrap_or(rank_idx) as u32
+/// 当前局牌力序上下文：打级队的级牌（`deck.ranks` 下标）。
+///
+/// 牌力序全场唯一一份，由 `levels[attackingTeam]` 的级牌 + `levelInsert` 合成
+/// （§5.13 第 911、932 行）；`None` 表示 score-only 局无 `levelTable`，合成序
+/// 退回 `naturalOrder`。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RankContext {
+    level_rank: Option<usize>,
 }
 
-fn joker_rank_key(r: &RuleSetBody, big: bool) -> u32 {
-    let tail = r.natural_order.len();
-    (tail - 2 + if big { 1 } else { 0 }) as u32
+impl RankContext {
+    pub(crate) fn new(level_rank: Option<usize>) -> Self {
+        Self { level_rank }
+    }
+
+    /// 级牌在 `deck.ranks` 中的下标（逢人配按自身点数使用时取这一份）。
+    pub(crate) fn own_rank(&self) -> Option<usize> {
+        self.level_rank
+    }
+
+    /// 载入期合成牌力序：`naturalOrder` 去掉级牌，按 `levelInsert` 插回
+    /// `above-A`（A 之后、小王之前）或 `below-2`（2 之前）。
+    fn synth_order<'a>(&self, r: &'a RuleSetBody) -> Vec<&'a RankKey> {
+        let mut order: Vec<&RankKey> = r.natural_order.iter().collect();
+        let Some(lr) = self.level_rank else {
+            return order;
+        };
+        let level_key = &r.deck.ranks[lr];
+        let Some(pos) = order.iter().position(|k| **k == *level_key) else {
+            return order;
+        };
+        order.remove(pos);
+        let insert_at = match r.level_insert {
+            LevelInsert::AboveA => {
+                let a = r.deck.ranks.last().expect("deck.ranks 非空");
+                order
+                    .iter()
+                    .position(|k| **k == *a)
+                    .map(|p| p + 1)
+                    .unwrap_or(order.len())
+            }
+            LevelInsert::Below2 => 0,
+        };
+        order.insert(insert_at, level_key);
+        order
+    }
+
+    /// 真实点数的 `rankKey`：合成序下标 +1；`0` 是保留值（轮子特例），真实点数与
+    /// 大小王不得映射到 `0`（§5.13 第 931 行）。
+    fn rank_key(&self, r: &RuleSetBody, rank_idx: usize) -> u32 {
+        let key = &r.deck.ranks[rank_idx];
+        let order = self.synth_order(r);
+        let pos = order.iter().position(|k| **k == *key).unwrap_or(rank_idx);
+        let k = pos as u32 + 1;
+        debug_assert!(k >= 1, "真实点数 rankKey 不得取保留值 0");
+        k
+    }
+
+    /// 大小王 `rankKey`：序尾两位，同样 +1 偏移（小王 < 大王）。
+    fn joker_key(&self, r: &RuleSetBody, big: bool) -> u32 {
+        let tail = r.natural_order.len();
+        (tail - 2 + if big { 1 } else { 0 }) as u32 + 1
+    }
 }
 
 // ---------- 逢人配定位 ----------
 
 /// 逢人配牌 id 集合（源花色 + 源点数）。
-fn wildcard_ids(r: &RuleSetBody) -> HashSet<u16> {
+fn wildcard_ids(r: &RuleSetBody, ctx: &RankContext) -> HashSet<u16> {
     let mut out = HashSet::new();
     let Some(w) = &r.wildcard else { return out };
-    let Some(rank_idx) = wildcard_own_rank(r) else {
+    let Some(rank_idx) = wildcard_own_rank(r, ctx) else {
         return out;
     };
     let Some(suit_idx) = r.deck.suits.iter().position(|s| *s == w.source.suit) else {
@@ -120,11 +161,12 @@ fn wildcard_ids(r: &RuleSetBody) -> HashSet<u16> {
     out
 }
 
-/// 百搭自身点数的下标（`@level` 占位符当前按 `levelTable.initial` 解析）。
-///
-/// TODO(M1-GAP-levels-init)：levels 按队初始化落地后，这里改为读 `state.levels[team]`；
-/// 本函数签名目前拿不到 state，待接线层把当前队级牌传入。
-fn wildcard_own_rank(r: &RuleSetBody) -> Option<usize> {
+/// 百搭自身点数的下标：优先取 `levels[attackingTeam]` 的局级牌（唯一那份 ladder）；
+/// 上下文未给级牌（score-only）时退回 `levelTable.initial` 占位。
+fn wildcard_own_rank(r: &RuleSetBody, ctx: &RankContext) -> Option<usize> {
+    if let Some(lr) = ctx.own_rank() {
+        return Some(lr);
+    }
     let w = r.wildcard.as_ref()?;
     let rank_str = match &w.source.rank {
         WildcardRank::Rank(k) => k.0.clone(),
@@ -236,8 +278,8 @@ struct Groups {
 }
 
 impl Groups {
-    fn build(r: &RuleSetBody, cards: &[u16]) -> Self {
-        let wild_ids = wildcard_ids(r);
+    fn build(r: &RuleSetBody, ctx: &RankContext, cards: &[u16]) -> Self {
+        let wild_ids = wildcard_ids(r, ctx);
         let mut base: BTreeMap<usize, Vec<u16>> = BTreeMap::new();
         let mut wild = Vec::new();
         let mut little = Vec::new();
@@ -333,22 +375,23 @@ fn feasible_windows(
     out
 }
 
-fn match_same_rank(r: &RuleSetBody, def: &PatternDef, count: u8, g: &Groups) -> Option<Recognized> {
+fn match_same_rank(
+    r: &RuleSetBody,
+    ctx: &RankContext,
+    def: &PatternDef,
+    count: u8,
+    g: &Groups,
+) -> Option<Recognized> {
     let k = count as usize;
 
     // 王只在单张牌型里出现；百搭不能代王。
     if !g.little.is_empty() || !g.big.is_empty() {
         if k == 1 && g.base.is_empty() && g.wild.is_empty() {
             if g.little.len() == 1 && g.big.is_empty() {
-                return Some(build_rec(
-                    def,
-                    1,
-                    joker_rank_key(r, false),
-                    g.little.clone(),
-                ));
+                return Some(build_rec(def, 1, ctx.joker_key(r, false), g.little.clone()));
             }
             if g.big.len() == 1 && g.little.is_empty() {
-                return Some(build_rec(def, 1, joker_rank_key(r, true), g.big.clone()));
+                return Some(build_rec(def, 1, ctx.joker_key(r, true), g.big.clone()));
             }
         }
         return None;
@@ -371,7 +414,7 @@ fn match_same_rank(r: &RuleSetBody, def: &PatternDef, count: u8, g: &Groups) -> 
             let mut cards = bucket.clone();
             cards.extend_from_slice(&g.wild[..need]);
             let sol = Sol {
-                rank_key: rank_key_of(r, rank),
+                rank_key: ctx.rank_key(r, rank),
                 true_combo: vec![rank],
                 cards,
             };
@@ -381,12 +424,12 @@ fn match_same_rank(r: &RuleSetBody, def: &PatternDef, count: u8, g: &Groups) -> 
 
     // 整手全百搭：按自身点数用，不走最大解。
     if g.base.is_empty() && k <= g.wild.len() {
-        let Some(own) = wildcard_own_rank(r) else {
+        let Some(own) = wildcard_own_rank(r, ctx) else {
             return best.map(|sol| build_rec(def, k as u32, sol.rank_key, sol.cards));
         };
         let cards = g.wild[..k].to_vec();
         let sol = Sol {
-            rank_key: rank_key_of(r, own),
+            rank_key: ctx.rank_key(r, own),
             true_combo: Vec::new(),
             cards,
         };
@@ -396,13 +439,20 @@ fn match_same_rank(r: &RuleSetBody, def: &PatternDef, count: u8, g: &Groups) -> 
     best.map(|sol| build_rec(def, k as u32, sol.rank_key, sol.cards))
 }
 
-fn match_bomb(r: &RuleSetBody, def: &PatternDef, count: u8, g: &Groups) -> Option<Recognized> {
+fn match_bomb(
+    r: &RuleSetBody,
+    ctx: &RankContext,
+    def: &PatternDef,
+    count: u8,
+    g: &Groups,
+) -> Option<Recognized> {
     // 炸弹是同点数 4–8 张；结构与 same-rank 同，张数区间由夹具参数 + L1 值域闸门保证。
-    match_same_rank(r, def, count, g)
+    match_same_rank(r, ctx, def, count, g)
 }
 
 fn match_straight(
     r: &RuleSetBody,
+    ctx: &RankContext,
     def: &PatternDef,
     length: u8,
     g: &Groups,
@@ -422,8 +472,9 @@ fn match_straight(
     let present: HashSet<usize> = g.base.keys().copied().collect();
     let substitute = substitute_set(r);
     let mut best: Option<Sol> = None;
+    let rc = rank_count(r);
 
-    for (window, missing) in feasible_windows(rank_count(r), &present, length, g.wild.len()) {
+    for (window, missing) in feasible_windows(rc, &present, length, g.wild.len()) {
         if !window.iter().all(|p| substitute.contains(p)) {
             continue;
         }
@@ -447,8 +498,19 @@ fn match_straight(
                 continue;
             }
         }
-        let Some(top) = consecutive_top(rank_count(r), &window, length) else {
+        let Some(top) = consecutive_top(rc, &window, length) else {
             continue;
+        };
+        // 轮子特例（第十七次变更）：非同花 `A-2-3-4-5` 的 rankKey 恒取保留值 0，
+        // 不论含不含级牌、是否百搭补位，不受 levelInsert 提升；同花顺不适用本特例。
+        let mut window_sorted = window.clone();
+        window_sorted.sort_unstable();
+        let wheel = vec![0, 1, 2, 3, rc - 1];
+        let is_wheel = length == 5 && window_sorted == wheel;
+        let rank_key = if !flush && is_wheel {
+            0
+        } else {
+            ctx.rank_key(r, top)
         };
         let mut cards = Vec::new();
         for &rank in &window {
@@ -460,7 +522,7 @@ fn match_straight(
         let mut true_combo: Vec<usize> = present.iter().copied().collect();
         true_combo.sort_unstable();
         let sol = Sol {
-            rank_key: rank_key_of(r, top),
+            rank_key,
             true_combo,
             cards,
         };
@@ -471,6 +533,7 @@ fn match_straight(
 
 fn match_consecutive(
     r: &RuleSetBody,
+    ctx: &RankContext,
     def: &PatternDef,
     groups: usize,
     per_group: usize,
@@ -515,7 +578,7 @@ fn match_consecutive(
         let mut true_combo: Vec<usize> = present.iter().copied().collect();
         true_combo.sort_unstable();
         let sol = Sol {
-            rank_key: rank_key_of(r, top),
+            rank_key: ctx.rank_key(r, top),
             true_combo,
             cards,
         };
@@ -524,7 +587,12 @@ fn match_consecutive(
     best.map(|sol| build_rec(def, (groups * per_group) as u32, sol.rank_key, sol.cards))
 }
 
-fn match_joker_bomb(r: &RuleSetBody, def: &PatternDef, g: &Groups) -> Option<Recognized> {
+fn match_joker_bomb(
+    r: &RuleSetBody,
+    ctx: &RankContext,
+    def: &PatternDef,
+    g: &Groups,
+) -> Option<Recognized> {
     // 百搭不得代王，王炸不接受百搭。
     if !g.base.is_empty() || !g.wild.is_empty() || g.little.len() != 2 || g.big.len() != 2 {
         return None;
@@ -532,7 +600,7 @@ fn match_joker_bomb(r: &RuleSetBody, def: &PatternDef, g: &Groups) -> Option<Rec
     let mut cards = Vec::new();
     cards.extend_from_slice(&g.little);
     cards.extend_from_slice(&g.big);
-    Some(build_rec(def, 4, joker_rank_key(r, true), cards))
+    Some(build_rec(def, 4, ctx.joker_key(r, true), cards))
 }
 
 /// 提交牌总数必须与牌型张数一致（多余百搭 / 散牌不得被匹配器忽略）。
@@ -551,22 +619,27 @@ fn submitted_len_ok(def: &PatternDef, g: &Groups) -> bool {
     }
 }
 
-fn match_def(r: &RuleSetBody, def: &PatternDef, g: &Groups) -> Option<Recognized> {
+fn match_def(
+    r: &RuleSetBody,
+    ctx: &RankContext,
+    def: &PatternDef,
+    g: &Groups,
+) -> Option<Recognized> {
     if !submitted_len_ok(def, g) {
         return None;
     }
     match &def.params {
-        PrimitiveParams::SameRank { count } => match_same_rank(r, def, *count, g),
-        PrimitiveParams::Straight { length, .. } => match_straight(r, def, *length, g, false),
+        PrimitiveParams::SameRank { count } => match_same_rank(r, ctx, def, *count, g),
+        PrimitiveParams::Straight { length, .. } => match_straight(r, ctx, def, *length, g, false),
         PrimitiveParams::ConsecutivePairs { pairs } => {
-            match_consecutive(r, def, *pairs as usize, 2, g)
+            match_consecutive(r, ctx, def, *pairs as usize, 2, g)
         }
         PrimitiveParams::ConsecutiveTriples { triples } => {
-            match_consecutive(r, def, *triples as usize, 3, g)
+            match_consecutive(r, ctx, def, *triples as usize, 3, g)
         }
-        PrimitiveParams::Bomb { count } => match_bomb(r, def, *count, g),
-        PrimitiveParams::StraightFlush { length } => match_straight(r, def, *length, g, true),
-        PrimitiveParams::JokerBomb => match_joker_bomb(r, def, g),
+        PrimitiveParams::Bomb { count } => match_bomb(r, ctx, def, *count, g),
+        PrimitiveParams::StraightFlush { length } => match_straight(r, ctx, def, *length, g, true),
+        PrimitiveParams::JokerBomb => match_joker_bomb(r, ctx, def, g),
         // TODO(M1-HOLD-with-attachment)：v2 预留原语（§5.2 第 495/547 行、§5.13 第 890 行），
         // L1 已拒绝引用；运行期即便进入也不识别为任何牌型。
         PrimitiveParams::Reserved { .. } => None,
@@ -575,7 +648,7 @@ fn match_def(r: &RuleSetBody, def: &PatternDef, g: &Groups) -> Option<Recognized
 }
 
 /// 按提交牌结构判定牌型；不匹配任何已声明牌型返回 `None`（§5.9：`patternId` 服务端判定）。
-pub(crate) fn recognize(r: &RuleSetBody, cards: &[u16]) -> Option<Recognized> {
+pub(crate) fn recognize(r: &RuleSetBody, ctx: &RankContext, cards: &[u16]) -> Option<Recognized> {
     if cards.is_empty() {
         return None;
     }
@@ -583,7 +656,7 @@ pub(crate) fn recognize(r: &RuleSetBody, cards: &[u16]) -> Option<Recognized> {
     if !cards.iter().all(|c| seen.insert(*c)) {
         return None;
     }
-    let groups = Groups::build(r, cards);
+    let groups = Groups::build(r, ctx, cards);
     let mut defs: Vec<&PatternDef> = r
         .patterns
         .iter()
@@ -591,7 +664,7 @@ pub(crate) fn recognize(r: &RuleSetBody, cards: &[u16]) -> Option<Recognized> {
         .collect();
     defs.sort_by_key(|p| priority(&p.params));
     for def in defs {
-        if let Some(rec) = match_def(r, def, &groups) {
+        if let Some(rec) = match_def(r, ctx, def, &groups) {
             return Some(rec);
         }
     }
@@ -610,8 +683,8 @@ struct HandGroups {
 }
 
 impl HandGroups {
-    fn build(r: &RuleSetBody, hand: &[u16]) -> Self {
-        let wild_ids = wildcard_ids(r);
+    fn build(r: &RuleSetBody, ctx: &RankContext, hand: &[u16]) -> Self {
+        let wild_ids = wildcard_ids(r, ctx);
         let mut base: BTreeMap<usize, Vec<u16>> = BTreeMap::new();
         let mut by_suit: BTreeMap<usize, BTreeMap<usize, Vec<u16>>> = BTreeMap::new();
         let mut wild = Vec::new();
@@ -709,8 +782,8 @@ fn all_windows(rank_count: usize, length: usize) -> Vec<Vec<usize>> {
 ///
 /// 枚举走「孔位填充 + 剪枝」：百搭不做全排列，孔位由窗口 / 目标点数唯一确定，
 /// 百搭副本不可区分时只取规范前缀；同一 (牌型, 解) 只发一条。
-pub(crate) fn enumerate(r: &RuleSetBody, hand: &[u16]) -> Vec<Recognized> {
-    let g = HandGroups::build(r, hand);
+pub(crate) fn enumerate(r: &RuleSetBody, ctx: &RankContext, hand: &[u16]) -> Vec<Recognized> {
+    let g = HandGroups::build(r, ctx, hand);
     let mut out: Vec<Recognized> = Vec::new();
     let mut emitted: HashSet<Vec<u16>> = HashSet::new();
 
@@ -734,23 +807,23 @@ pub(crate) fn enumerate(r: &RuleSetBody, hand: &[u16]) -> Vec<Recognized> {
                 if count == 1 {
                     for bucket in g.base.values() {
                         for &card in bucket {
-                            if let Some(rec) = recognize(r, &[card]) {
+                            if let Some(rec) = recognize(r, ctx, &[card]) {
                                 push(rec);
                             }
                         }
                     }
                     for &card in &g.little {
-                        if let Some(rec) = recognize(r, &[card]) {
+                        if let Some(rec) = recognize(r, ctx, &[card]) {
                             push(rec);
                         }
                     }
                     for &card in &g.big {
-                        if let Some(rec) = recognize(r, &[card]) {
+                        if let Some(rec) = recognize(r, ctx, &[card]) {
                             push(rec);
                         }
                     }
                     for &card in &g.wild {
-                        if let Some(rec) = recognize(r, &[card]) {
+                        if let Some(rec) = recognize(r, ctx, &[card]) {
                             push(rec);
                         }
                     }
@@ -761,7 +834,7 @@ pub(crate) fn enumerate(r: &RuleSetBody, hand: &[u16]) -> Vec<Recognized> {
                             let take = count.min(bucket.len());
                             let mut cards = bucket[..take].to_vec();
                             cards.extend_from_slice(&g.wild[..need]);
-                            if let Some(rec) = recognize(r, &cards) {
+                            if let Some(rec) = recognize(r, ctx, &cards) {
                                 push(rec);
                             }
                         }
@@ -769,7 +842,7 @@ pub(crate) fn enumerate(r: &RuleSetBody, hand: &[u16]) -> Vec<Recognized> {
                     // 整手全百搭 → 自身点数。
                     if g.base.is_empty() && count <= g.wild.len() {
                         let cards = g.wild[..count].to_vec();
-                        if let Some(rec) = recognize(r, &cards) {
+                        if let Some(rec) = recognize(r, ctx, &cards) {
                             push(rec);
                         }
                     }
@@ -783,7 +856,7 @@ pub(crate) fn enumerate(r: &RuleSetBody, hand: &[u16]) -> Vec<Recognized> {
                         let take = count.min(bucket.len());
                         let mut cards = bucket[..take].to_vec();
                         cards.extend_from_slice(&g.wild[..need]);
-                        if let Some(rec) = recognize(r, &cards) {
+                        if let Some(rec) = recognize(r, ctx, &cards) {
                             push(rec);
                         }
                     }
@@ -801,7 +874,7 @@ pub(crate) fn enumerate(r: &RuleSetBody, hand: &[u16]) -> Vec<Recognized> {
                     }
                     let mut cards = pick_one_per_rank(&g.base, &window);
                     cards.extend_from_slice(&g.wild[..missing.len()]);
-                    if let Some(rec) = recognize(r, &cards) {
+                    if let Some(rec) = recognize(r, ctx, &cards) {
                         push(rec);
                     }
                 }
@@ -813,7 +886,7 @@ pub(crate) fn enumerate(r: &RuleSetBody, hand: &[u16]) -> Vec<Recognized> {
                         continue;
                     }
                     let cards = consecutive_cards(&g.base, &g.wild, &window, 2);
-                    if let Some(rec) = recognize(r, &cards) {
+                    if let Some(rec) = recognize(r, ctx, &cards) {
                         push(rec);
                     }
                 }
@@ -825,7 +898,7 @@ pub(crate) fn enumerate(r: &RuleSetBody, hand: &[u16]) -> Vec<Recognized> {
                         continue;
                     }
                     let cards = consecutive_cards(&g.base, &g.wild, &window, 3);
-                    if let Some(rec) = recognize(r, &cards) {
+                    if let Some(rec) = recognize(r, ctx, &cards) {
                         push(rec);
                     }
                 }
@@ -849,7 +922,7 @@ pub(crate) fn enumerate(r: &RuleSetBody, hand: &[u16]) -> Vec<Recognized> {
                         }
                         let mut cards = pick_one_per_rank(suit_buckets, &window);
                         cards.extend_from_slice(&g.wild[..missing.len()]);
-                        if let Some(rec) = recognize(r, &cards) {
+                        if let Some(rec) = recognize(r, ctx, &cards) {
                             push(rec);
                         }
                     }
@@ -859,7 +932,7 @@ pub(crate) fn enumerate(r: &RuleSetBody, hand: &[u16]) -> Vec<Recognized> {
                 let mut cards = Vec::new();
                 cards.extend_from_slice(&g.little[..2]);
                 cards.extend_from_slice(&g.big[..2]);
-                if let Some(rec) = recognize(r, &cards) {
+                if let Some(rec) = recognize(r, ctx, &cards) {
                     push(rec);
                 }
             }

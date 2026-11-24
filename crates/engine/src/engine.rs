@@ -71,6 +71,21 @@ impl M0Engine {
             .map(|i| i as u16)
     }
 
+    /// 当前局牌力序上下文：打级队 `levels[attackingTeam]` 的级牌（`deck.ranks` 下标）；
+    /// score-only 局无 `levelTable` 时返回 `None`，合成序退回 naturalOrder。
+    fn rank_context(&self, state: &State) -> patterns::RankContext {
+        let level_rank = match state.levels.get(state.attacking_team as usize) {
+            Some(&lv) => self
+                .ruleset
+                .level_table
+                .as_ref()
+                .and_then(|t| t.ranks.get(lv as usize))
+                .and_then(|k| self.ruleset.deck.ranks.iter().position(|d| d == k)),
+            None => None,
+        };
+        patterns::RankContext::new(level_rank)
+    }
+
     /// `action.require-legal` 参数（§5.2 第 524 行）：`force` 是否要求压过 lastPlay，
     /// `consume` 出牌扣牌区；规则集未声明时取默认 force=true、consume=hand。
     fn require_legal_params(&self) -> (bool, ZoneId) {
@@ -456,8 +471,9 @@ impl M0Engine {
 
         // 候选四元组：(countKey, rankKey, cards 牌 id 序列, primitiveId)，全序（§5.12 第 842 行）。
         let force = self.require_legal_params().0;
+        let ctx = self.rank_context(state);
         let mut candidates: Vec<(u32, u32, Vec<u16>, String, Action)> = Vec::new();
-        for rec in patterns::enumerate(&self.ruleset, &hand) {
+        for rec in patterns::enumerate(&self.ruleset, &ctx, &hand) {
             // 领出（lastPlay 为空）任意成型牌型合法；跟牌时：force=true 只保留能压过
             // lastPlay 的候选，force=false 只校牌型合法、不要求压过（§5.2 第 524 行）。
             let legal = match &state.last_play {
@@ -532,7 +548,8 @@ impl M0Engine {
                 // 判定牌型并判定能否压过 lastPlay，不再要求提交的 cards 精确等于枚举清单。
                 // 接风判定要在覆写 `last_play` 之前记录本墩最后压牌者座位。
                 let prev_last_seat = state.last_play.as_ref().map(|p| p.seat);
-                let rec = patterns::recognize(&self.ruleset, &cards).ok_or_else(|| {
+                let ctx = self.rank_context(&state);
+                let rec = patterns::recognize(&self.ruleset, &ctx, &cards).ok_or_else(|| {
                     EngineError::IllegalAction {
                         reason: format!("seat {seat} 提交的牌不构成任何已声明牌型"),
                     }
@@ -937,9 +954,10 @@ mod tests {
             .collect();
         // 取全场可识别单张中点数键最大的一张留给 seat 0，保证能压过 (1,0)。
         let mut best: Option<(u32, u16)> = None;
+        let ctx = engine.rank_context(&state);
         for hand in &hands {
             for &card in hand {
-                if let Some(rec) = patterns::recognize(&engine.ruleset, &[card]) {
+                if let Some(rec) = patterns::recognize(&engine.ruleset, &ctx, &[card]) {
                     let key = rec.pattern_key.1;
                     if best.map(|(bk, _)| key > bk).unwrap_or(true) {
                         best = Some((key, card));

@@ -105,13 +105,13 @@ fn assert_played(
 #[test]
 fn single_recognized() {
     let r = fixture_body();
-    // 2♠ copy 0 → rankKey 0。
+    // 2♠ copy 0；级牌 2 在 above-A 合成序中位于 A 后，rankKey 13。
     let card = c(&r, 0, 0, 0);
     let engine = engine();
     assert_played(
         apply_play(&engine, vec![card], vec![card]),
         "single",
-        (1, 0),
+        (1, 13),
         "单张 2",
     );
 }
@@ -121,17 +121,17 @@ fn single_joker_recognized() {
     let engine = engine();
     let little = joker_id(&engine.ruleset, false, 0);
     let big = joker_id(&engine.ruleset, true, 0);
-    // 小王 rankKey 13、大王 14。
+    // 小王 rankKey 14、大王 15（rankKey 整体 +1，王占序尾）。
     assert_played(
         apply_play(&engine, vec![little], vec![little]),
         "single",
-        (1, 13),
+        (1, 14),
         "小王单张",
     );
     assert_played(
         apply_play(&engine, vec![big], vec![big]),
         "single",
-        (1, 14),
+        (1, 15),
         "大王单张",
     );
 }
@@ -145,7 +145,7 @@ fn pair_recognized() {
     assert_played(
         apply_play(&engine, cards.clone(), cards),
         "pair",
-        (2, 0),
+        (2, 13),
         "对子 2",
     );
 }
@@ -159,7 +159,7 @@ fn triple_recognized_boundary_three() {
     assert_played(
         apply_play(&engine, cards.clone(), cards),
         "triple",
-        (3, 0),
+        (3, 13),
         "三张 2（边界 3 张）",
     );
 }
@@ -211,7 +211,7 @@ fn straight_23456_recognized() {
 #[test]
 fn straight_wheel_a2345_is_legal_boundary() {
     let r = fixture_body();
-    // A-2-3-4-5：唯一环形特例合法（§5.13 第 891 行）；高点按 5（下标 3）。
+    // A-2-3-4-5：唯一环形特例合法（§5.13 第 891 行）；非同花轮子 rankKey 恒取保留值 0。
     let cards = vec![
         c(&r, 12, 0, 0),
         c(&r, 0, 0, 0),
@@ -223,9 +223,150 @@ fn straight_wheel_a2345_is_legal_boundary() {
     assert_played(
         apply_play(&engine, cards.clone(), cards),
         "straight-5",
-        (5, 3),
+        (5, 0),
         "轮子顺 A-2-3-4-5",
     );
+}
+
+#[test]
+fn wheel_filled_by_wildcard_still_zero_rank_key() {
+    let r = fixture_body();
+    // A-2-3-4 + 百搭补 5：非同花轮子，含百搭仍恒取保留值 0。
+    let cards = vec![
+        c(&r, 12, 0, 0),
+        c(&r, 0, 0, 0),
+        c(&r, 1, 2, 0),
+        c(&r, 2, 3, 0),
+        w(&r, 0),
+    ];
+    let engine = engine();
+    assert_played(
+        apply_play(&engine, cards.clone(), cards),
+        "straight-5",
+        (5, 0),
+        "百搭补轮子仍 rankKey 0",
+    );
+}
+
+#[test]
+fn flush_wheel_follows_top_not_zero() {
+    let r = fixture_body();
+    // 同花 A-2-3-4-5：轮子特例只豁免非同花，同花顺跟随顶牌 5（合成序 key 3）。
+    let cards = vec![
+        c(&r, 12, 0, 0),
+        c(&r, 0, 0, 0),
+        c(&r, 1, 0, 0),
+        c(&r, 2, 0, 0),
+        c(&r, 3, 0, 0),
+    ];
+    let engine = engine();
+    assert_played(
+        apply_play(&engine, cards.clone(), cards),
+        "straight-flush-5",
+        (5, 3),
+        "同花顺轮子不取 0",
+    );
+}
+
+#[test]
+fn level_single_beats_a() {
+    let r = fixture_body();
+    let engine = engine();
+    // 级牌 2 above-A：单张 2（key 13）可压单张 A（key 12）。
+    let hand = vec![c(&r, 0, 0, 0)];
+    let state = follow_state(&engine, hand, "single", (1, 12), vec![c(&r, 12, 0, 0)]);
+    let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
+    assert!(
+        plays_contain(&legal, &[c(&r, 0, 0, 0)]),
+        "级牌单张应压过 A: {legal:?}"
+    );
+}
+
+#[test]
+fn level_bomb_beats_a_bomb() {
+    let r = fixture_body();
+    let engine = engine();
+    let bomb2 = vec![
+        c(&r, 0, 0, 0),
+        c(&r, 0, 0, 1),
+        c(&r, 0, 2, 0),
+        c(&r, 0, 2, 1),
+    ];
+    let bomb_a = vec![
+        c(&r, 12, 0, 0),
+        c(&r, 12, 0, 1),
+        c(&r, 12, 2, 0),
+        c(&r, 12, 2, 1),
+    ];
+    let state = follow_state(&engine, bomb2.clone(), "bomb-4", (4, 12), bomb_a);
+    let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
+    assert!(
+        plays_contain(&legal, &bomb2),
+        "级牌炸弹应压过 A 炸弹: {legal:?}"
+    );
+}
+
+#[test]
+fn high_straight_beats_wheel() {
+    let r = fixture_body();
+    let engine = engine();
+    // 上家轮子 (5,0)，10-J-Q-K-A 顺子（顶 A，key 12）可压。
+    let hand = vec![
+        c(&r, 8, 0, 0),
+        c(&r, 9, 1, 0),
+        c(&r, 10, 2, 0),
+        c(&r, 11, 3, 0),
+        c(&r, 12, 0, 1),
+    ];
+    let wheel = vec![
+        c(&r, 12, 0, 0),
+        c(&r, 0, 2, 0),
+        c(&r, 1, 2, 0),
+        c(&r, 2, 2, 0),
+        c(&r, 3, 2, 0),
+    ];
+    let state = follow_state(&engine, hand.clone(), "straight-5", (5, 0), wheel);
+    let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
+    assert!(plays_contain(&legal, &hand), "高顺子应压轮子: {legal:?}");
+}
+
+#[test]
+fn synth_rank_key_table_level_above_a() {
+    let r = fixture_body();
+    // 打级 2、above-A：合成序 3,4,5,6,7,8,9,10,J,Q,K,A,2,little,big；rankKey=位序+1。
+    let table: [(usize, u32); 13] = [
+        (0, 13),
+        (1, 1),
+        (2, 2),
+        (3, 3),
+        (4, 4),
+        (5, 5),
+        (6, 6),
+        (7, 7),
+        (8, 8),
+        (9, 9),
+        (10, 10),
+        (11, 11),
+        (12, 12),
+    ];
+    let engine = engine();
+    for &(rank, key) in &table {
+        let card = c(&r, rank, 0, 0);
+        let after = apply_play(&engine, vec![card], vec![card])
+            .unwrap_or_else(|e| panic!("单张 {rank} 应合法: {e:?}"));
+        let last = after.last_play.as_ref().unwrap();
+        assert_eq!(
+            last.pattern_key,
+            (1, key),
+            "rank {rank} 合成序 rankKey 不符"
+        );
+    }
+    let little = joker_id(&r, false, 0);
+    let big = joker_id(&r, true, 0);
+    let after = apply_play(&engine, vec![little], vec![little]).unwrap();
+    assert_eq!(after.last_play.as_ref().unwrap().pattern_key, (1, 14));
+    let after = apply_play(&engine, vec![big], vec![big]).unwrap();
+    assert_eq!(after.last_play.as_ref().unwrap().pattern_key, (1, 15));
 }
 
 #[test]
@@ -459,7 +600,7 @@ fn steel_rejects_wrong_grouping() {
 #[test]
 fn bomb4_recognized_boundary_four() {
     let r = fixture_body();
-    // 2 四张（黑桃×2 + 方块×2），rankKey 0。
+    // 2 四张（黑桃×2 + 方块×2）；级牌 2 above-A，rankKey 13。
     let cards = vec![
         c(&r, 0, 0, 0),
         c(&r, 0, 0, 1),
@@ -470,7 +611,7 @@ fn bomb4_recognized_boundary_four() {
     assert_played(
         apply_play(&engine, cards.clone(), cards),
         "bomb-4",
-        (4, 0),
+        (4, 13),
         "炸弹 4 张 2（边界 4）",
     );
 }
@@ -632,7 +773,7 @@ fn joker_bomb_four_jokers() {
     assert_played(
         apply_play(&engine, cards.clone(), cards),
         "joker-bomb",
-        (4, 14),
+        (4, 15),
         "四王炸",
     );
 }
@@ -807,8 +948,8 @@ fn lead_enumerates_each_single() {
 fn follow_filters_unbeatable_and_offers_pass() {
     let r = fixture_body();
     let engine = engine();
-    // 上家单张 A（rankKey 12），手牌两张小牌，无可压单张，只能 pass。
-    let hand = vec![c(&r, 0, 0, 0), c(&r, 1, 0, 0)];
+    // 上家单张 A（rankKey 12），手牌 3/4 均低于 A，无可压单张，只能 pass。
+    let hand = vec![c(&r, 1, 0, 0), c(&r, 2, 0, 0)];
     let state = follow_state(&engine, hand, "single", (1, 12), vec![c(&r, 12, 0, 0)]);
     let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
     assert!(
@@ -898,12 +1039,12 @@ fn w(r: &RuleSetBody, copy: u8) -> u16 {
 fn wildcard_single_own_rank() {
     let r = fixture_body();
     let engine = engine();
-    // 整手全百搭：按自身点数（级牌 2，下标 0）用，不走最大解。
+    // 整手全百搭：按自身点数（级牌 2，above-A 合成序 rankKey 13）用，不走最大解。
     let wild = w(&r, 0);
     assert_played(
         apply_play(&engine, vec![wild], vec![wild]),
         "single",
-        (1, 0),
+        (1, 13),
         "百搭单独出按自身点数",
     );
     let state = state_with(&engine, vec![wild]);
@@ -932,12 +1073,12 @@ fn wildcard_pair_mixed_fills_slot() {
 fn wildcard_pair_all_wildcards() {
     let r = fixture_body();
     let engine = engine();
-    // 整手全百搭两张：按自身点数成对，rankKey 为级牌点数（2，下标 0）。
+    // 整手全百搭两张：按自身点数成对，级牌 2 above-A，rankKey 13。
     let cards = vec![w(&r, 0), w(&r, 1)];
     assert_played(
         apply_play(&engine, cards.clone(), cards),
         "pair",
-        (2, 0),
+        (2, 13),
         "两张百搭成对按自身点数",
     );
 }
@@ -1049,12 +1190,12 @@ fn wildcard_steel_fills_slot() {
 fn wildcard_bomb_fills_slot() {
     let r = fixture_body();
     let engine = engine();
-    // 真牌 2 三张 + 百搭补成 bomb-4，rankKey 2 下标 0。
+    // 真牌 2 三张 + 百搭补成 bomb-4；级牌 2 above-A，rankKey 13。
     let cards = vec![c(&r, 0, 0, 0), c(&r, 0, 0, 1), c(&r, 0, 2, 0), w(&r, 0)];
     assert_played(
         apply_play(&engine, cards.clone(), cards),
         "bomb-4",
-        (4, 0),
+        (4, 13),
         "百搭补炸弹",
     );
 }
@@ -1255,7 +1396,7 @@ fn bomb4_beats_straight() {
         .expect("炸弹压顺子应落子成功");
     let last = after.last_play.as_ref().expect("应有 last_play");
     assert_eq!(last.pattern_id, "bomb-4");
-    assert_eq!(last.pattern_key, (4, 0));
+    assert_eq!(last.pattern_key, (4, 13));
 }
 
 #[test]
@@ -1277,7 +1418,7 @@ fn bomb4_beats_pair() {
         .expect("炸弹压对子应落子成功");
     let last = after.last_play.as_ref().expect("应有 last_play");
     assert_eq!(last.pattern_id, "bomb-4");
-    assert_eq!(last.pattern_key, (4, 0));
+    assert_eq!(last.pattern_key, (4, 13));
 }
 
 #[test]
@@ -1292,7 +1433,7 @@ fn straight_flush_beats_non_bomb() {
         c(&r, 4, 0, 0),
     ];
     let single = vec![c(&r, 0, 0, 1)];
-    let state = follow_state(&engine, flush.clone(), "single", (1, 0), single);
+    let state = follow_state(&engine, flush.clone(), "single", (1, 12), single);
     let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
     assert!(plays_contain(&legal, &flush), "同花顺应能压单张: {legal:?}");
     let after = engine
