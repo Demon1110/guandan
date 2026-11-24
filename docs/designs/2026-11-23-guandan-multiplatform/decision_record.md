@@ -772,6 +772,13 @@
 - **代价**：若 classic 轨迹含双下或接风，锚点漂移，须重算；`finishOrder` 口径不变。
 - **未动**：direction/skipFinished、partnerLead 与 afterAllPass 默认值、升级档、过 A、stateHash 段集。
 
+## 第二十七次变更：`consume-cards` 的 `count > 0` 标 v2 预留（2026-11-24）
+
+- **触发**：参数表只给了 `count: u8` 取 0–8、默认 0，`count > 0` 时消耗哪几张牌从未规定；v1 现存 RuleSet 都没引用该原语。
+- **用户裁定**：A —— v1 只允许 `count = 0`。
+- **落稿**：`count` 非 0 一律 L1 `RS_SCHEMA_INVALID`；`count > 0` 的「固定消耗 N 张」整段语义标 v2 预留，届时连「哪几张」与 `legal_actions` 候选形态一起定，现在不猜。
+- **未动**：`zone` 必填性、`require-legal` 的 `force`/`consume` 默认值、`action.pass`、`stateHash` 段集。
+
 ## 未决问题（等用户拍板）
 
 | # | 问题 | 需要谁决定 | 状态 |
