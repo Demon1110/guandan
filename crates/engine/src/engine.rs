@@ -159,6 +159,40 @@ impl M0Engine {
 
     // ---------- RNG（§5.2 第 551–563 行：20 字节 BLAKE3 + 拒绝采样） ----------
 
+    // ---------- 相位机（§6.3 第 1074–1080 行转移表） ----------
+
+    /// §6.3 相位转移表：相位机只按本表转移，不存在表外跳转。
+    ///
+    /// 已接线：`deal → play`（`tribute.enabled=false` 整段跳过，首局 / 抗贡同路径）、
+    /// `play → settle`（某队全员出完）。
+    /// 表内声明但执行路径待落地（不自造转移）：
+    /// - `deal → tribute`、`tribute → play`：进贡 / 还贡 / 抗贡分支（进贡原语未实现）；
+    /// - `settle → deal`：下一局开局，依赖 ⑧ 跨局携带与场次计数。
+    fn allowed_transition(from: u16, to: u16) -> bool {
+        matches!(
+            (from, to),
+            (PHASE_DEAL, PHASE_TRIBUTE)
+                | (PHASE_DEAL, PHASE_PLAY)
+                | (PHASE_TRIBUTE, PHASE_PLAY)
+                | (PHASE_PLAY, PHASE_SETTLE)
+                | (PHASE_SETTLE, PHASE_DEAL)
+        )
+    }
+
+    /// 校验并执行相位转移；表外跳转（跳相、回退）报 `Internal`，不静默接受。
+    fn transition(&self, state: &mut State, to: u16) -> Result<(), EngineError> {
+        if !Self::allowed_transition(state.phase, to) {
+            return Err(EngineError::Internal {
+                message: format!(
+                    "非法相位转移: {} → {}（§6.3 转移表外跳转，跳相 / 回退）",
+                    state.phase, to
+                ),
+            });
+        }
+        state.phase = to;
+        Ok(())
+    }
+
     // ---------- 发牌（Fisher–Yates 降序；按座位升序连续切分） ----------
 
     /// 由固定种子开局：洗牌并发到各座位私有区，相位进入 `play`（夹具省略 tribute，G6）。
@@ -263,8 +297,8 @@ impl M0Engine {
             None => Vec::new(),
         };
 
-        Ok(State {
-            phase: PHASE_PLAY,
+        let mut state = State {
+            phase: PHASE_DEAL,
             turn_seat: lead_seat,
             attacking_team,
             levels,
@@ -287,7 +321,12 @@ impl M0Engine {
             passes_since_last_play: 0,
             // TODO(M0-GAP-SEQ-CROSS-ROUND)：跨局序号连续待 ⑧ 落地；首局占位 0，不进哈希。
             round_no: 0,
-        })
+        };
+
+        // §6.3 转移表：`tribute.enabled=false`（或抗贡成立）时 `deal → play` 整段跳过
+        // 进贡；`enabled=true` 的 `deal → tribute` 路径待进贡原语落地后接入。
+        self.transition(&mut state, PHASE_PLAY)?;
+        Ok(state)
     }
 
     /// `flow.rng.stream`（0–3，默认 0）；同一局内 `deal.shuffle` 与 `rng.pick` 共用同一条
@@ -733,6 +772,8 @@ impl M0Engine {
 
     /// score-only 结算：只记名次、不升级（§5.1 第 393 行、§5.13「局终止与名次」）。
     fn settle(&self, state: &mut State) -> Result<(), EngineError> {
+        // §6.3：`play → settle`，经相位机校验，表外跳转报错不静默接受。
+        self.transition(state, PHASE_SETTLE)?;
         // 已出完按 finish_order；未出完按剩余手牌张数升序，同数按座位号小者在前
         // （§5.13 第 884 行）。
         let mut unfinished: Vec<(u8, usize)> = state
@@ -747,7 +788,6 @@ impl M0Engine {
             state.finish_order.push(seat);
         }
         // G4：score-only 不挂等级表，levels 保持空序列；aFailStreak 不推进。
-        state.phase = PHASE_SETTLE;
         // TODO(M0-GAP-N17)：局终口径文档未定义——settle 时 `lastPlay` 应清空为 None 还是保留
         // 最后一墩；§5.12 第 819 行只规定「本回合无人出过牌时该键不出现」，未写局终快照口径。
         // 现取清空，待裁决，本批不改行为。
@@ -1291,6 +1331,58 @@ mod tests {
         match err {
             EngineError::IllegalAction { .. } => {}
             other => panic!("应为 IllegalAction，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn phase_transition_allows_declared_edges_only() {
+        let engine = engine_from(&m0_yaml());
+        let mut state = engine.deal(M0_SEED).expect("发牌失败");
+        // `deal → play`：tribute 整段跳过，开局即进入 play。
+        assert_eq!(state.phase, PHASE_PLAY);
+
+        // 正向：`play → settle` 允许。
+        engine
+            .transition(&mut state, PHASE_SETTLE)
+            .expect("play→settle 应在表内允许");
+        assert_eq!(state.phase, PHASE_SETTLE);
+
+        // 表内其余已声明边（执行路径待对应阶段落地，先收白名单）。
+        assert!(M0Engine::allowed_transition(PHASE_DEAL, PHASE_PLAY));
+        assert!(M0Engine::allowed_transition(PHASE_DEAL, PHASE_TRIBUTE));
+        assert!(M0Engine::allowed_transition(PHASE_TRIBUTE, PHASE_PLAY));
+        assert!(M0Engine::allowed_transition(PHASE_SETTLE, PHASE_DEAL));
+    }
+
+    #[test]
+    fn illegal_phase_transition_rejected_not_silently_accepted() {
+        let engine = engine_from(&m0_yaml());
+        let mut state = engine.deal(M0_SEED).expect("发牌失败");
+        // 当前处于 play：回退到 deal / tribute 均必须报错，不静默接受。
+        for to in [PHASE_DEAL, PHASE_TRIBUTE] {
+            let err = engine
+                .transition(&mut state, to)
+                .expect_err("相位回退必须报错");
+            assert!(matches!(err, EngineError::Internal { .. }));
+        }
+        // 表外跳相 / 回退组合：deal→settle、tribute→settle、settle→play、play→deal。
+        let rejected = [
+            (PHASE_DEAL, PHASE_SETTLE),
+            (PHASE_TRIBUTE, PHASE_SETTLE),
+            (PHASE_SETTLE, PHASE_PLAY),
+            (PHASE_PLAY, PHASE_DEAL),
+        ];
+        for (from, to) in rejected {
+            assert!(
+                !M0Engine::allowed_transition(from, to),
+                "{from}→{to} 应在表外"
+            );
+            let mut staged = state.clone();
+            staged.phase = from;
+            let err = engine
+                .transition(&mut staged, to)
+                .expect_err("表外相位跳转必须报错");
+            assert!(matches!(err, EngineError::Internal { .. }));
         }
     }
 }
