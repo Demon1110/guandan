@@ -2,4 +2,10 @@
 name = "gf-protocol"
 version = "0.1.0"
 edition = "2021"
-description = "牌桌协议消息骨架（M0 本轮不生成 protobuf 代码）"
+description = "牌桌协议消息层（§5.9）：proto 生成代码，服务端与 wasm 客户端共用同一份"
+
+[dependencies]
+prost = "0.13"
+
+[build-dependencies]
+prost-build = "0.13"
