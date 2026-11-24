@@ -9,7 +9,7 @@ use gf_engine::hash::{canonical_bytes, state_hash, CanonicalState};
 
 /// native 用例跑出并核对过动作日志后的 32 字节 stateHash（双端逐字节比对锚点）。
 const EXPECTED_STATE_HASH: &str =
-    "3e562fe289db6fb0ce59aa20d4ad47b6abfc23c721b9c181aa2f94290e90085a";
+    "e09079f1496be12cdcd248f6711d2c3d7a225480826d53fb1a64e8c08907bedd";
 
 #[test]
 fn golden_reaches_settle_and_matches_recorded_hash() {

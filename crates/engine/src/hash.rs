@@ -165,7 +165,8 @@ pub fn canonical_bytes(state: &CanonicalState) -> Vec<u8> {
     // 第 4 段：zones 按 (seat, zoneId) 升序；cards 牌 id 升序。
     let mut zones = state.zones.clone();
     zones.sort_by_key(|a| (a.seat, a.zone_id));
-    w.u16(zones.len() as u16);
+    // N2：段内元素个数 u8 前缀；区内牌 id 数组才是 u16 前缀（§5.12 第 838 行）。
+    w.u8(zones.len() as u8);
     for zone in &zones {
         w.u8(zone.seat);
         w.u16(zone.zone_id);
