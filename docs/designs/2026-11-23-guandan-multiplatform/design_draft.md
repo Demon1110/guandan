@@ -392,7 +392,7 @@
 | `actions` | `[{kind, primitive, legalFrom, params}]` | ✓ | ✓ | `kind` 是 v1 闭集枚举，仅 `play`/`pass`；`claim`/`declare` 及其对应原语 `action.claim`/`action.declare` 移出 v1、标 v2 预留，RuleSet 中出现即 L1 拒绝（`RS_SCHEMA_INVALID`）。`tribute`/`return` 不由玩家提交，属引擎自动执行（§5.13/§5.9）。`primitive` 指向实际执行的原语，`legalFrom` 只允许三种取值：`patterns`（受牌型约束）、某个 zone 的 id、某个 phase 名（如 `play`）；`turn` 不是合法取值。`params` 与 `patterns[].params` 同一套分型规则（§5.2）：无参原语必须写空对象 `{}`，有默认值的键可省略，必填键不得省。**`kind` 不能当幂等键**（一局内会重复出现），幂等键见 §6.4 的 `requestId` |
 | `settle` | `{algorithm, levelTableRef?}` | ✓ | ✓ | v1 含两个 ADT 变体并列：`Settle::LevelUp{levelTableRef}`（`algorithm: level-up`，`levelTableRef` 必填且引用 `levelTable.id`）与 `Settle::ScoreOnly{}`（`algorithm: score-only`，无等级表引用，只记名次、不升级）；两种变体都不隐式引用外部表名。`score-only` 在 v1 有两个用途：`m0-minimal` 夹具的最小结算路径（§2.4）与 v2 的无阵营玩法；**v1 不开放无阵营玩法本身**（`seats.teams` 仍须覆盖全座，见本节 `seats` 行） |
 | `matchCap` | `{rounds: u16}` | ○ | ○ | 安全局数上限（场次终止判据之一，§5.13）；`rounds` 取值 1–99，缺省 12；越界值在 L1 拒绝；仅防死循环，不是胜负判据；随 `ruleset.body` 持久化 |
-| `view` | `{fields[], schemaVersion}` | ✓ | ✓ | `fields` 只允许三种写法：`seat.levels`、某个 zone 的 id（私有区按 zoneId 引用，不写 `seat.hand`）、`lastPlay`；其它写法一律 `RS_REF_MISSING`。`schemaVersion: u16` 标识这份字段白名单的版本：**字段集合或顺序变化必须 +1，只增不改序**；版本号由 RuleSet 作者分配，后台不统一发号（§5.16/§9.2）。它是房间快照 `viewSchemaVersion` 的来源，房间创建时锁定（§5.9/§5.12/§9.2）；客户端白名单缓存键为 `(rulesetId, viewSchemaVersion)` 二元组（§9.2）。传输出入一律按白名单（`project`）生成，避免"漏写一条就漏牌"
+| `view` | `{fields[], schemaVersion}` | ✓ | ✓ | `fields` 只允许五类写法：`seat.levels`、某个 zone 的 id（私有区按 zoneId 引用，不写 `seat.hand`）、`lastPlay`、`round.level`（本局局级牌的档位下标）、`round.attackingTeam`（本局打级队序号）；其它写法一律 `RS_REF_MISSING`。后两者由第二十二次变更新增，均为桌面公开信息（谁先出、谁打级人人可见），不构成信息泄露。`schemaVersion: u16` 标识这份字段白名单的版本：**字段集合或顺序变化必须 +1，只增不改序**；版本号由 RuleSet 作者分配，后台不统一发号（§5.16/§9.2）。它是房间快照 `viewSchemaVersion` 的来源，房间创建时锁定（§5.9/§5.12/§9.2）；客户端白名单缓存键为 `(rulesetId, viewSchemaVersion)` 二元组（§9.2）。传输出入一律按白名单（`project`）生成，避免"漏写一条就漏牌"
 | `timing` | `{turnTimeSec, graceSec, offlineAllSec}` | ○ | ○ | 计时器可调参数：`turnTimeSec` 5–120 秒（默认 30）、`graceSec` 30–180 秒（默认 90）、`offlineAllSec` 60–600 秒（默认 300）；越界值在 L1 拒绝；缺省取括号内默认值 |
 | `ai` | `{features[], hint}` | ○ | ○ | 给 AI 的特征与提示开关，不影响判定。`features` 取值集合见 §5.11；`hint: bool`（默认 `false`）是「是否允许开启提示」的**布尔开关**，不是难度档位——AI 难度三档（AI-L0/L1/L2）属实现层选型、不进 RuleSet（§5.11） |
 | `flow` | `{deal, turn, score, rng, assert}` | ○ | ○ | 运行期流程参数归集（发牌、轮转、计分、RNG、断言五类原语的顶层默认值）；**整段缺省则五个子对象全取默认值**，各子对象逐键类型/取值/默认值见下表 |
@@ -480,7 +480,7 @@ flow:
   assert: { minPlayers: 4, cardCount: 108 }
 matchCap: { rounds: 12 }
 settle: { algorithm: level-up, levelTableRef: guandan-level }
-view: { schemaVersion: 1, fields: [hand, seat.levels, discard, lastPlay] }
+view: { schemaVersion: 2, fields: [hand, seat.levels, discard, lastPlay, round.level, round.attackingTeam] }
 ```
 
 > 本示例是**草稿态** `RuleSetBody`：不含 `version`，发布时由服务端注入版本号并复制进 `ruleset`（§5.6/§5.8）。
@@ -870,15 +870,17 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 | `<zoneId>`（private / shared 区） | 对象 `{"cards": <cardId[]>}`；private 区只含本座位手牌 | 区为空时 `cards: []`，键不省略 | `cards` 按牌 id 升序 |
 | `seat.levels` | `u8[]`（元素为 `levelTable.ranks` 的下标，与 `stateHash` 第 2 项同口径、不写牌面键），按队伍序号升序 | 无队伍级牌状态时该键不出现 | 队伍序号升序 |
 | `lastPlay` | 对象 `{"seat": u8, "patternId": string, "cards": <cardId[]>}` | 本回合无人出过牌时该键不出现 | `cards` 按牌 id 升序；`seat` 单值不定序 |
+| `round.level` | `u8`：本局**局级牌**的档位下标（= `levels[attackingTeam]`，口径见 §5.13「决定首出」行） | `settle.algorithm = score-only` 或无级牌状态时该键不出现 | 单值不定序 |
+| `round.attackingTeam` | `u8`：本局打级队的队序号 | 同上 | 单值不定序 |
 
-**定值向量（双端比对锚点）**：覆盖上表全部白名单字段的一条固定视图，canonical bytes 如下（单行、无空白，键序 = 白名单序 `hand, seat.levels, discard, lastPlay`）：
+**定值向量（双端比对锚点）**：覆盖上表全部白名单字段的一条固定视图，canonical bytes 如下（单行、无空白，键序 = 白名单序 `hand, seat.levels, discard, lastPlay, round.level, round.attackingTeam`）：
 
 ```
-{"hand":{"cards":[0,1,2]},"seat.levels":[2,2],"discard":{"cards":[10,11]},"lastPlay":{"seat":1,"patternId":"single","cards":[5]}}
+{"hand":{"cards":[0,1,2]},"seat.levels":[2,2],"discard":{"cards":[10,11]},"lastPlay":{"seat":1,"patternId":"single","cards":[5]},"round.level":2,"round.attackingTeam":0}
 ```
 
-- canonical bytes 长度：129 字节（UTF-8）。
-- SHA-256 指纹（对上述 canonical bytes 真算，双端逐字节比对锚点）：`9e0b756d600f8eb6b74b098f804735c752a2232f0ca3772673a3a4da51afcc72`。
+- canonical bytes 长度：169 字节（UTF-8；第二十二次变更追加 `round.level`/`round.attackingTeam` 后由 129 字节增至此）。
+- SHA-256 指纹（对上述 canonical bytes 真算，双端逐字节比对锚点）：`36e7bdc6d3ea4bba20ec571f3034c2663ec253909c56b4d649a2713c6aeeab51`（旧值 `9e0b756d…cc72` 随白名单升级作废）。
 - 该向量对应的 `viewHash` 仍按本节定义由 BLAKE3-256 从同一 canonical bytes 追加 `seat`/`roomSeq` 定宽尾段推导；改动白名单形状后必须换新向量并重算指纹。
 
 **明确排除**：任何时间戳、连接/在线状态、托管标记（它只影响 UI 与超时策略，不影响合法动作）、日志与审计、客户端版本、昵称头像。
@@ -1638,6 +1640,7 @@ P0 之外不做自动干预，只有两项自动动作：`canary` 指标超标�
 | 第十九次变更（`legal_actions` 规范子集：B6 裁决） | 2026-11-24，M1 实现期 B6 一直 hold：`legal_actions` 现在每个点数只发一条规范子集，但"只发一条"这件事本身没有写进设计稿，实现侧无法判定合法与否。用户选 **B（只列规范子集）**，并要求另配一套「组牌规范」做整手推荐。本条只落前者：**同一 `patternId` 与同一 `patternKey` 只列一条**，规范代表的选定序为①可达解中 `rankKey` 最大 → ②百搭用量最少 → ③真牌牌 id 升序字典序最小；客户端可用任意结构等价的真牌／百搭组合出牌，`apply` 按结构复检、不受规范子集约束；跨端只保证每种牌型有可提交候选、不保证覆盖全部组合。**组牌推荐（整手拆分 + 同花顺提示）**：用户当日给出评分取向——炸弹越大分越高（4→4…8→8、王炸 9）、顺子与三带二越大分越高、对子不得分、单张扣分，按此求"最优推荐"、允许用户自由组牌；具体目标函数形式与常数尚未拍板，**本条不落其规格**，待下一条变更。**未动**：排序键四元组、4096 峰值闸门、基准表 | §5.12（规范子集段、`State` 段数表述）；§12.2 |
 | 第二十次变更（组牌推荐进 DSL：B6 后半） | 2026-11-24，B6 裁决「只列规范子集」之后用户补一条需求："最好定义一套组排规范，让服务端一键推荐组牌、提示是否有同花顺等……按照这个逻辑组一套最有牌推荐，用户不同意可以自己自由组牌"，并选定 **C（权重写进 DSL）**、"但 DSL 里默认用 A 的规则"（即默认权重 = 用户给定的评分取向：炸弹 4→4…8→8、王炸 9、顺子与三带二越大分越高、对子 0 分、单张扣分）。据此落：①§5.1 `ai` 段扩为 `{features[], hint, recommend}`，`recommend = {enabled, weights}`，`weights` 全整数（禁浮点）；②新增只读接口 `recommend(&State, Seat) -> Result<Layout, EngineError>`（§2.4/§5.11），纯函数、不进 `stateHash`、不改 `legal_actions`；③`Layout` 形状与 `straightFlushCandidates`（含百搭方案、独立于最优拆分、`hasStraightFlush` 即候选非空）；④评分公式全整数：炸弹按张数权重、王炸 9、同花顺 6、顺子/三带二/三连对/钢板 = 基础分 + `⌊bonus ×(rankKey−1)/(N−1)⌋` 位次加分、对子 0、单张 −1；⑤默认权重表逐项写入（用户取向原样），已知 `straightFlush=6` 与 `bomb6=6` 同分、由 tie-break 决定先后；⑥tie-break 固定五级（分数 → 散张少 → 炸弹组总张数多 → ladder 位次降的字典序 → 枚举序最先），无随机；⑦搜索用确定性束搜索 `beamWidth = 64`（写死引擎、不进 RuleSet），束宽变更只影响推荐向量、不影响 `stateHash`；⑧预算 ≤2ms P99，超预算只记 P2 指标、不判错。**未动**：`stateHash` 段集与段数、`legal_actions` 排序键与规范子集、§5.10 冻结表全部取值 | §2.4（接口清单）；§5.1（`ai` 行与示例 YAML 可省略）；§5.11（新增「组牌推荐」段）；§12.2 |
 | 第二十一次变更（整手全百搭边界闭合） | 2026-11-24，M1 实现期最后一处设计空白：B1 已定"含整手全百搭按自身级牌点数使用"，但未说"张数如何映射到牌型"，而本副牌百搭只有 2 张、">2 张全百搭"物理不可达，实现侧无从判定。用户裁决 **A（现在就闭合）**。据此定：整手全百搭一律按自身点数取同一 `rankKey`，**张数直接决定牌型**（1 `single`、2 `pair`、3 `triple`、4–8 `bomb-N`），不得判成顺子/三连对/钢板/三带二/同花顺（同 `rankKey` 既无连续也无异花色）；该条与 `deck.copies` 无关，多副牌同样适用、不另设上限；张数超出牌型表已声明值域（>8 张或未声明该张数炸弹）按 `IllegalAction` 拒，不降级。**未动**：逢人配张数不限、`rankKey` 取解序、`joker-bomb` 不收百搭、`wildcard.inStraightFlush=true`、其余 §5.10 取值 | §5.13（逢人配行）；§12.2 |
+| 第二十二次变更（视图补全：局级牌与打级队进视图） | 2026-11-24，B3 落地后暴露的连带缺口：白名单只有 `seat.levels`（两队档位），而 B3 之后**只有打级队那一份参与牌力**，客户端要渲染"级牌是哪张"必须知道是哪一队、哪一档；若让客户端自行推理，断线重连与中途加入的座位推不出 `attackingTeam`，渲染错牌而服务端 `viewHash` 自证查不出来。用户选 **B（直接下发）**。据此：①`view.fields` 允许的写法由三类扩到五类，新增 `round.level`（本局局级牌档位下标 = `levels[attackingTeam]`）与 `round.attackingTeam`（本局打级队序号）；②两者都是桌面公开信息（谁先出、谁打级人人可见），不构成信息泄露；③示例 YAML 的白名单按"只增不改序"追加两键、`view.schemaVersion` 由 1 升 **2**；④§5.12 字段级编码表新增两行（`u8` 单值、无级牌状态与 `score-only` 局该键不出现）；⑤定值向量随白名单序重算为 169 字节 canonical JSON、SHA-256 `36e7bdc6…ab51`（旧向量 `9e0b756d…cc72`、129 字节作废）；⑥`viewHash` 全部既有值随之作废，需随实现一并重算。**未动**：`stateHash` 段集与段数、`RoomSnapshot` 字段集、`lastPlay` 与 zone 编码、`seat.levels` 口径 | §5.1（`view` 行、示例 YAML）；§5.12（字段级编码表、定值向量）；§12.2 |
 
 **留痕的意义**：评审时若发现"为什么一个棋牌项目要 40～44 周"，答案在 12.2 而不是在某一节的数字里；若未来要缩范围，也按 12.2 的变更顺序倒着砍。
 
