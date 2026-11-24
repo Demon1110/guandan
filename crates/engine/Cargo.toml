@@ -19,3 +19,7 @@ sha2 = "0.10"
 [[bench]]
 name = "m0_bench"
 harness = false
+
+[[bench]]
+name = "idle_1500"
+harness = false
