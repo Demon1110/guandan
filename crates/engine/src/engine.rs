@@ -119,6 +119,36 @@ impl M0Engine {
             .unwrap_or((true, ZoneId("hand".to_owned())))
     }
 
+    /// 过 A 名次组合（§5.13「过 A」、§5.1 `level.pass.combos`）：读顶层 `level.pass.combos`；
+    /// 缺省只在 `teamSize = 2` 时有定义 `[[1,2],[1,3]]`，其余规模缺省为空（L1 已拦）。
+    fn pass_combos(&self) -> Vec<Vec<u8>> {
+        match &self.ruleset.level {
+            Some(level) => level.pass.combos.clone().unwrap_or_default(),
+            None => match self.ruleset.seats.teams.first().map(|t| t.len()) {
+                Some(2) => vec![vec![1, 2], vec![1, 3]],
+                _ => Vec::new(),
+            },
+        }
+    }
+
+    /// `aFailStreak` 退回阈值（§5.13 行 1006）：读顶层 `level.pass.streakLimit`，基线 3。
+    fn streak_limit(&self) -> u8 {
+        self.ruleset
+            .level
+            .as_ref()
+            .map(|l| l.pass.streak_limit)
+            .unwrap_or(3)
+    }
+
+    /// 达阈值是否退回 `levelTable.initial` 并清零（§5.1 `resetOnFail`），基线 `true`。
+    fn reset_on_fail(&self) -> bool {
+        self.ruleset
+            .level
+            .as_ref()
+            .map(|l| l.pass.reset_on_fail)
+            .unwrap_or(true)
+    }
+
     /// `action.consume-cards` 参数（§5.2 第 525 行）：`zone` 扣牌区；`count` 在 v1
     /// 只允许 0（L1 闸门，count>0 标 v2 预留），运行期只取扣牌区。规则集未声明该动作时返回 `None`。
     fn consume_cards_zone(&self) -> Option<ZoneId> {
@@ -894,13 +924,46 @@ impl M0Engine {
         state.completed_team = Some(completed_team);
         state.settle_step = step;
 
-        // ④ 该队 `levels≠A`：按 step 推进 `levels`；跨 A 停在 A，超额升级数作废、不累积
-        // （§5.13 行 1004「升级跨 A 的处置」）。② 过 A 判定与 ③ aFailStreak 累计退回
-        // 随下一笔落地；在 A 上打的局本笔不动 levels。
+        // ②③④ 队级牌推进（§5.13 结算四步，顺序固定不得调换）；score-only 只跑 ①（N18，下一笔）。
         if let Some(table) = table {
             let a_index = table.ranks.len().saturating_sub(1) as u8;
-            let level = state.levels.get(winner_team as usize).copied().unwrap_or(0);
-            if level != a_index {
+            let initial_index = table
+                .ranks
+                .iter()
+                .position(|rank| rank == &table.initial)
+                .map(|i| i as u8)
+                .unwrap_or(0);
+            let level = state
+                .levels
+                .get(winner_team as usize)
+                .copied()
+                .unwrap_or(initial_index);
+            let on_a = level == a_index;
+
+            // ② 判过 A：该队 `levels=A` 且本方名次组合在 `pass.combos` 内即过 A，本场随即
+            // 结束；计数不再使用、不参与后续判定，`levels` 保持 A。
+            let passed_a = on_a
+                && self
+                    .pass_combos()
+                    .iter()
+                    .any(|c| c.as_slice() == combo.as_slice());
+
+            if passed_a {
+                // `match_record.winner_team` / `end_reason` 载波属房间层，待 ⑧ / match 层接线。
+            } else if on_a {
+                // ③ 未过 A 且该队 `levels=A`：`aFailStreak += 1` 写入；写入后达到 `streakLimit`
+                // 则退回 `levelTable.initial` 并清零；未达阈值保持 A 不退档。不在 A 上打的局
+                // 不改动 streak（此时它恒为 0）。
+                let limit = self.streak_limit();
+                let next = state.a_fail_streak[winner_team as usize].saturating_add(1);
+                if self.reset_on_fail() && next >= limit {
+                    state.levels[winner_team as usize] = initial_index;
+                    state.a_fail_streak[winner_team as usize] = 0;
+                } else {
+                    state.a_fail_streak[winner_team as usize] = next.min(3);
+                }
+            } else {
+                // ④ 该队 `levels≠A`：按 step 推进 `levels`；跨 A 停在 A，超额升级数作废、不累积。
                 let step = step.unwrap_or(0);
                 state.levels[winner_team as usize] = level.saturating_add(step).min(a_index);
             }
@@ -1126,6 +1189,58 @@ mod tests {
         engine.settle(&mut state).expect("settle 失败");
         assert_eq!(state.levels, vec![2, 0]);
         assert_eq!(state.a_fail_streak, vec![0, 0]);
+    }
+
+    // ---------- 过 A 判定与 aFailStreak（§5.13 行 1006） ----------
+
+    #[test]
+    fn pass_a_combo_1_2_ends_match_and_keeps_level() {
+        // 在 A（下标 12）打 1+2（双下）：算过 A；levels 保持 A，streak 不再使用。
+        let (engine, mut state) = classic_settle_state(vec![12, 0], vec![0, 0], vec![0, 2, 1, 3]);
+        engine.settle(&mut state).expect("settle 失败");
+        assert_eq!(state.levels, vec![12, 0]);
+        assert_eq!(state.a_fail_streak, vec![0, 0]);
+        assert_eq!(state.winner_team, Some(0));
+    }
+
+    #[test]
+    fn pass_a_combo_1_3_ends_match_and_keeps_level() {
+        // 在 A 打 1+3：算过 A；levels 保持 A。
+        let (engine, mut state) = classic_settle_state(vec![12, 0], vec![0, 0], vec![0, 1, 2, 3]);
+        engine.settle(&mut state).expect("settle 失败");
+        assert_eq!(state.levels, vec![12, 0]);
+        assert_eq!(state.a_fail_streak, vec![0, 0]);
+    }
+
+    #[test]
+    fn fail_a_combo_1_4_keeps_a_and_increments_streak() {
+        // 在 A 打 1+4（队友末游）：不算过 A；levels 保持 A 不退档，streak 0 → 1。
+        let (engine, mut state) = classic_settle_state(vec![12, 0], vec![0, 0], vec![0, 1, 3, 2]);
+        engine.settle(&mut state).expect("settle 失败");
+        assert_eq!(state.levels, vec![12, 0], "未过 A 不退档，保持 A");
+        assert_eq!(state.a_fail_streak, vec![1, 0]);
+    }
+
+    #[test]
+    fn fail_a_three_consecutive_rounds_returns_to_initial() {
+        // 连续 3 局在 A 未过（1+4）：第 3 局写入后达到 streakLimit=3，levels 退回
+        // initial（下标 0）、streak 清零。每局用全新 State 复算（跨局携带待 ⑧）。
+        let finish = vec![0, 1, 3, 2];
+        // 第 1 局：streak 0 → 1，仍在 A。
+        let (engine, mut s1) = classic_settle_state(vec![12, 0], vec![0, 0], finish.clone());
+        engine.settle(&mut s1).expect("第 1 局 settle 失败");
+        assert_eq!(s1.levels, vec![12, 0]);
+        assert_eq!(s1.a_fail_streak, vec![1, 0]);
+        // 第 2 局：streak 1 → 2，仍在 A。
+        let (_engine, mut s2) = classic_settle_state(vec![12, 0], vec![1, 0], finish.clone());
+        engine.settle(&mut s2).expect("第 2 局 settle 失败");
+        assert_eq!(s2.levels, vec![12, 0]);
+        assert_eq!(s2.a_fail_streak, vec![2, 0]);
+        // 第 3 局：streak 2 → 3，达阈值退回 initial 并清零。
+        let (_engine, mut s3) = classic_settle_state(vec![12, 0], vec![2, 0], finish);
+        engine.settle(&mut s3).expect("第 3 局 settle 失败");
+        assert_eq!(s3.levels, vec![0, 0], "满 3 局未过，退回起点 2（下标 0）");
+        assert_eq!(s3.a_fail_streak, vec![0, 0]);
     }
 
     // ---------- N17：settle 期视图屏蔽 lastPlay ----------
