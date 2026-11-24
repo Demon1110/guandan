@@ -23,6 +23,7 @@ use crate::contract::PatternId;
 use crate::hash::LastPlay;
 use crate::ruleset::model::{LevelInsert, PatternDef, RankKey, RuleSetBody, WildcardRank};
 use crate::ruleset::params::PrimitiveParams;
+use crate::ruleset::shape_plan::{BombRole, ShapePlan};
 use std::collections::{BTreeMap, HashSet};
 
 // ---------- 牌 id 几何（与发牌期冻结编码一致，§5.12 第 811 行） ----------
@@ -233,21 +234,8 @@ pub(crate) struct Recognized {
     /// `patternKey = (countKey, rankKey)`（§5.12 第 797、842 行）。
     pub pattern_key: (u32, u32),
     pub cards: Vec<u16>,
-    pub primitive: &'static str,
-}
-
-fn primitive_of(params: &PrimitiveParams) -> &'static str {
-    match params {
-        PrimitiveParams::SameRank { .. } => "pattern.same-rank",
-        PrimitiveParams::Straight { .. } => "pattern.straight",
-        PrimitiveParams::ConsecutivePairs { .. } => "pattern.consecutive-pairs",
-        PrimitiveParams::ConsecutiveTriples { .. } => "pattern.consecutive-triples",
-        PrimitiveParams::Bomb { .. } => "pattern.bomb",
-        PrimitiveParams::StraightFlush { .. } => "pattern.straight-flush",
-        PrimitiveParams::JokerBomb => "pattern.joker-bomb",
-        PrimitiveParams::TriplePair => "pattern.triple-pair",
-        _ => "reserved",
-    }
+    /// 炸弹 / 同花顺族角色（由载入期 `ShapePlan` 编译产物给出，运行期按枚举分支判定）。
+    pub role: BombRole,
 }
 
 /// 同手多解消歧（§5.13，`fa13b2a` 追认裁定，非推导）：同一手牌可判成多个牌型时，
@@ -264,11 +252,14 @@ fn ladder_position(ladder: &[PatternId], def: &PatternDef) -> usize {
 fn build_rec(def: &PatternDef, count_key: u32, rank_key: u32, cards: Vec<u16>) -> Recognized {
     let mut cards = cards;
     cards.sort_unstable();
+    let role = ShapePlan::compile(&def.params)
+        .map(|p| p.bomb_role())
+        .unwrap_or(BombRole::Other);
     Recognized {
         pattern_id: def.id.0.clone(),
         pattern_key: (count_key, rank_key),
         cards,
-        primitive: primitive_of(&def.params),
+        role,
     }
 }
 
@@ -469,17 +460,6 @@ fn match_same_rank(
     }
 
     best.map(|sol| build_rec(def, k as u32, sol.rank_key, sol.cards))
-}
-
-fn match_bomb(
-    r: &RuleSetBody,
-    ctx: &RankContext,
-    def: &PatternDef,
-    count: u8,
-    g: &Groups,
-) -> Option<Recognized> {
-    // 炸弹是同点数 4–8 张；结构与 same-rank 同，张数区间由夹具参数 + L1 值域闸门保证。
-    match_same_rank(r, ctx, def, count, g)
 }
 
 fn match_straight(
@@ -694,16 +674,14 @@ fn match_triple_pair(
 fn submitted_len_ok(def: &PatternDef, g: &Groups) -> bool {
     let total =
         g.base.values().map(Vec::len).sum::<usize>() + g.wild.len() + g.little.len() + g.big.len();
-    match &def.params {
-        PrimitiveParams::SameRank { count } => total == *count as usize,
-        PrimitiveParams::Straight { length, .. } => total == *length as usize,
-        PrimitiveParams::ConsecutivePairs { pairs } => total == *pairs as usize * 2,
-        PrimitiveParams::ConsecutiveTriples { triples } => total == *triples as usize * 3,
-        PrimitiveParams::Bomb { count } => total == *count as usize,
-        PrimitiveParams::StraightFlush { length } => total == *length as usize,
-        PrimitiveParams::JokerBomb => total == 4,
-        PrimitiveParams::TriplePair => total == 5,
-        _ => true,
+    match ShapePlan::compile(&def.params) {
+        Some(plan) => match plan.exact_total() {
+            Some(expected) => total == expected,
+            // `suit.same` 这类无固定张数的形状：长度约束由 `maxCards` 上限承担，
+            // 提交侧不做精确张数比对。
+            None => true,
+        },
+        None => true,
     }
 }
 
@@ -716,23 +694,34 @@ fn match_def(
     if !submitted_len_ok(def, g) {
         return None;
     }
-    match &def.params {
-        PrimitiveParams::SameRank { count } => match_same_rank(r, ctx, def, *count, g),
-        PrimitiveParams::Straight { length, .. } => match_straight(r, ctx, def, *length, g, false),
-        PrimitiveParams::ConsecutivePairs { pairs } => {
-            match_consecutive(r, ctx, def, *pairs as usize, 2, g)
+    // 载入期编译产物 `ShapePlan`：运行期按枚举分支判定，无 predicate 列表 / 动态分派。
+    let plan = ShapePlan::compile(&def.params)?;
+    match plan {
+        ShapePlan::RankSame {
+            count,
+            attach: None,
+        } => match_same_rank(r, ctx, def, count, g),
+        ShapePlan::RankSame {
+            count: 3,
+            attach: Some(_),
+        } => match_triple_pair(r, ctx, def, g),
+        ShapePlan::RankSame { .. } => None,
+        ShapePlan::RankContiguous {
+            steps,
+            step: 1,
+            flush,
+            ..
+        } => match_straight(r, ctx, def, steps, g, flush),
+        ShapePlan::RankContiguous { steps, step: 2, .. } => {
+            match_consecutive(r, ctx, def, steps as usize, 2, g)
         }
-        PrimitiveParams::ConsecutiveTriples { triples } => {
-            match_consecutive(r, ctx, def, *triples as usize, 3, g)
+        ShapePlan::RankContiguous { steps, step: 3, .. } => {
+            match_consecutive(r, ctx, def, steps as usize, 3, g)
         }
-        PrimitiveParams::Bomb { count } => match_bomb(r, ctx, def, *count, g),
-        PrimitiveParams::StraightFlush { length } => match_straight(r, ctx, def, *length, g, true),
-        PrimitiveParams::JokerBomb => match_joker_bomb(r, ctx, def, g),
-        PrimitiveParams::TriplePair => match_triple_pair(r, ctx, def, g),
-        // TODO(M1-HOLD-with-attachment)：v2 预留原语（§5.2 第 495/547 行、§5.13 第 890 行），
-        // L1 已拒绝引用；运行期即便进入也不识别为任何牌型。
-        PrimitiveParams::Reserved { .. } => None,
-        _ => None,
+        ShapePlan::RankContiguous { .. } => None,
+        ShapePlan::SuitSame => None,
+        ShapePlan::JokerOnly { big: 2, small: 2 } => match_joker_bomb(r, ctx, def, g),
+        ShapePlan::JokerOnly { .. } => None,
     }
 }
 
@@ -743,11 +732,19 @@ fn recognize_all_wildcard(r: &RuleSetBody, ctx: &RankContext, wild: &[u16]) -> O
     let n = wild.len();
     let own = wildcard_own_rank(r, ctx)?;
     let rank_key = ctx.rank_key(r, own);
-    let def = r.patterns.iter().find(|p| match &p.params {
-        PrimitiveParams::SameRank { count } => n <= 3 && *count as usize == n,
-        PrimitiveParams::Bomb { count } => (4..=8).contains(&n) && *count as usize == n,
-        _ => false,
-    })?;
+    let def = r
+        .patterns
+        .iter()
+        .find(|p| match ShapePlan::compile(&p.params) {
+            Some(ShapePlan::RankSame {
+                count,
+                attach: None,
+            }) => {
+                let c = count as usize;
+                (n <= 3 && c == n) || ((4..=8).contains(&n) && c == n)
+            }
+            _ => false,
+        })?;
     Some(build_rec(def, n as u32, rank_key, wild.to_vec()))
 }
 
@@ -899,6 +896,190 @@ fn all_windows(rank_count: usize, length: usize) -> Vec<Vec<usize>> {
     out
 }
 
+// ---------- 候选枚举生成器（按 ShapePlan 分支，供既有原语与 compose 共用） ----------
+
+fn same_rank_candidates(
+    g: &HandGroups,
+    r: &RuleSetBody,
+    ctx: &RankContext,
+    ladder: &[PatternId],
+    count: usize,
+) -> Vec<Recognized> {
+    let mut out: Vec<Recognized> = Vec::new();
+    if count == 1 {
+        for bucket in g.base.values() {
+            for &card in bucket {
+                if let Some(rec) = recognize(ladder, r, ctx, &[card]) {
+                    out.push(rec);
+                }
+            }
+        }
+        for &card in &g.little {
+            if let Some(rec) = recognize(ladder, r, ctx, &[card]) {
+                out.push(rec);
+            }
+        }
+        for &card in &g.big {
+            if let Some(rec) = recognize(ladder, r, ctx, &[card]) {
+                out.push(rec);
+            }
+        }
+        for &card in &g.wild {
+            if let Some(rec) = recognize(ladder, r, ctx, &[card]) {
+                out.push(rec);
+            }
+        }
+    } else {
+        for bucket in g.base.values() {
+            let need = count.saturating_sub(bucket.len());
+            if need <= g.wild.len() {
+                let take = count.min(bucket.len());
+                let mut cards = bucket[..take].to_vec();
+                cards.extend_from_slice(&g.wild[..need]);
+                if let Some(rec) = recognize(ladder, r, ctx, &cards) {
+                    out.push(rec);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn straight_candidates(
+    g: &HandGroups,
+    r: &RuleSetBody,
+    ctx: &RankContext,
+    ladder: &[PatternId],
+    length: usize,
+    flush: bool,
+) -> Vec<Recognized> {
+    let mut out: Vec<Recognized> = Vec::new();
+    if flush {
+        for suit_buckets in g.by_suit.values() {
+            for window in all_windows(rank_count(r), length) {
+                // 全百搭同花顺无花色可定；gate 关闭时百搭不入同花顺。
+                if suit_buckets.is_empty() || (!wildcard_flush_allowed(r) && !g.wild.is_empty()) {
+                    continue;
+                }
+                let missing: Vec<usize> = window
+                    .iter()
+                    .copied()
+                    .filter(|p| !suit_buckets.contains_key(p))
+                    .collect();
+                if missing.len() > g.wild.len() {
+                    continue;
+                }
+                let mut cards = pick_one_per_rank(suit_buckets, &window);
+                cards.extend_from_slice(&g.wild[..missing.len()]);
+                if let Some(rec) = recognize(ladder, r, ctx, &cards) {
+                    out.push(rec);
+                }
+            }
+        }
+    } else {
+        for window in all_windows(rank_count(r), length) {
+            let missing: Vec<usize> = window
+                .iter()
+                .copied()
+                .filter(|p| !g.base.contains_key(p))
+                .collect();
+            if missing.len() > g.wild.len() {
+                continue;
+            }
+            let mut cards = pick_one_per_rank(&g.base, &window);
+            cards.extend_from_slice(&g.wild[..missing.len()]);
+            if let Some(rec) = recognize(ladder, r, ctx, &cards) {
+                out.push(rec);
+            }
+        }
+    }
+    out
+}
+
+fn consecutive_candidates(
+    g: &HandGroups,
+    r: &RuleSetBody,
+    ctx: &RankContext,
+    ladder: &[PatternId],
+    groups: usize,
+    per_group: usize,
+) -> Vec<Recognized> {
+    let mut out: Vec<Recognized> = Vec::new();
+    for window in all_windows(rank_count(r), groups) {
+        if !window_wildcard_fits(&g.base, &window, per_group, g.wild.len()) {
+            continue;
+        }
+        let cards = consecutive_cards(&g.base, &g.wild, &window, per_group);
+        if let Some(rec) = recognize(ladder, r, ctx, &cards) {
+            out.push(rec);
+        }
+    }
+    out
+}
+
+fn triple_pair_candidates(
+    g: &HandGroups,
+    r: &RuleSetBody,
+    ctx: &RankContext,
+    ladder: &[PatternId],
+) -> Vec<Recognized> {
+    let mut out: Vec<Recognized> = Vec::new();
+    // 主牌三张 + 对子（真牌点对 / 双王对），百搭按缺口分配。
+    let joker_pairs: Vec<Vec<u16>> = [&g.little, &g.big]
+        .iter()
+        .filter(|j| j.len() == 2)
+        .map(|j| j[..2].to_vec())
+        .collect();
+    for (&main, main_bucket) in &g.base {
+        let real_main = main_bucket.len().min(3);
+        let need_main = 3 - real_main;
+        for (&pair, pair_bucket) in &g.base {
+            if pair == main {
+                continue;
+            }
+            let take_pair = pair_bucket.len().min(2);
+            let need_pair = 2 - take_pair;
+            if need_main + need_pair > g.wild.len() {
+                continue;
+            }
+            let mut cards = main_bucket[..real_main].to_vec();
+            cards.extend_from_slice(&g.wild[..need_main]);
+            cards.extend_from_slice(&pair_bucket[..take_pair]);
+            cards.extend_from_slice(&g.wild[need_main..need_main + need_pair]);
+            if let Some(rec) = recognize(ladder, r, ctx, &cards) {
+                out.push(rec);
+            }
+        }
+        for jp in &joker_pairs {
+            if need_main > g.wild.len() {
+                continue;
+            }
+            let mut cards = main_bucket[..real_main].to_vec();
+            cards.extend_from_slice(&g.wild[..need_main]);
+            cards.extend_from_slice(jp);
+            if let Some(rec) = recognize(ladder, r, ctx, &cards) {
+                out.push(rec);
+            }
+        }
+    }
+    out
+}
+
+fn joker_bomb_candidates(
+    g: &HandGroups,
+    r: &RuleSetBody,
+    ctx: &RankContext,
+    ladder: &[PatternId],
+) -> Vec<Recognized> {
+    if g.little.len() < 2 || g.big.len() < 2 {
+        return Vec::new();
+    }
+    let mut cards = Vec::new();
+    cards.extend_from_slice(&g.little[..2]);
+    cards.extend_from_slice(&g.big[..2]);
+    recognize(ladder, r, ctx, &cards).into_iter().collect()
+}
+
 /// 枚举手牌中所有可成型的牌型候选（领出 / 跟牌的压过过滤在接线层做）。
 ///
 /// 枚举走「孔位填充 + 剪枝」：百搭不做全排列，孔位由窗口 / 目标点数唯一确定，
@@ -942,176 +1123,35 @@ pub(crate) fn enumerate(
         .collect();
     defs.sort_by_key(|(_, pos)| std::cmp::Reverse(*pos));
     for (def, _) in defs {
-        match &def.params {
-            PrimitiveParams::SameRank { count } => {
-                let count = *count as usize;
-                if count == 1 {
-                    for bucket in g.base.values() {
-                        for &card in bucket {
-                            if let Some(rec) = recognize(ladder, r, ctx, &[card]) {
-                                push(rec);
-                            }
-                        }
-                    }
-                    for &card in &g.little {
-                        if let Some(rec) = recognize(ladder, r, ctx, &[card]) {
-                            push(rec);
-                        }
-                    }
-                    for &card in &g.big {
-                        if let Some(rec) = recognize(ladder, r, ctx, &[card]) {
-                            push(rec);
-                        }
-                    }
-                    for &card in &g.wild {
-                        if let Some(rec) = recognize(ladder, r, ctx, &[card]) {
-                            push(rec);
-                        }
-                    }
-                } else {
-                    for bucket in g.base.values() {
-                        let need = count.saturating_sub(bucket.len());
-                        if need <= g.wild.len() {
-                            let take = count.min(bucket.len());
-                            let mut cards = bucket[..take].to_vec();
-                            cards.extend_from_slice(&g.wild[..need]);
-                            if let Some(rec) = recognize(ladder, r, ctx, &cards) {
-                                push(rec);
-                            }
-                        }
-                    }
-                }
+        let recs = match ShapePlan::compile(&def.params) {
+            Some(ShapePlan::RankSame {
+                count,
+                attach: None,
+            }) => same_rank_candidates(&g, r, ctx, ladder, count as usize),
+            Some(ShapePlan::RankSame {
+                count: 3,
+                attach: Some(_),
+            }) => triple_pair_candidates(&g, r, ctx, ladder),
+            Some(ShapePlan::RankContiguous {
+                steps,
+                step: 1,
+                flush,
+                ..
+            }) => straight_candidates(&g, r, ctx, ladder, steps as usize, flush),
+            Some(ShapePlan::RankContiguous { steps, step: 2, .. }) => {
+                consecutive_candidates(&g, r, ctx, ladder, steps as usize, 2)
             }
-            PrimitiveParams::Bomb { count } => {
-                let count = *count as usize;
-                for bucket in g.base.values() {
-                    let need = count.saturating_sub(bucket.len());
-                    if need <= g.wild.len() {
-                        let take = count.min(bucket.len());
-                        let mut cards = bucket[..take].to_vec();
-                        cards.extend_from_slice(&g.wild[..need]);
-                        if let Some(rec) = recognize(ladder, r, ctx, &cards) {
-                            push(rec);
-                        }
-                    }
-                }
+            Some(ShapePlan::RankContiguous { steps, step: 3, .. }) => {
+                consecutive_candidates(&g, r, ctx, ladder, steps as usize, 3)
             }
-            PrimitiveParams::Straight { length, .. } => {
-                for window in all_windows(rank_count(r), *length as usize) {
-                    let missing: Vec<usize> = window
-                        .iter()
-                        .copied()
-                        .filter(|p| !g.base.contains_key(p))
-                        .collect();
-                    if missing.len() > g.wild.len() {
-                        continue;
-                    }
-                    let mut cards = pick_one_per_rank(&g.base, &window);
-                    cards.extend_from_slice(&g.wild[..missing.len()]);
-                    if let Some(rec) = recognize(ladder, r, ctx, &cards) {
-                        push(rec);
-                    }
-                }
+            Some(ShapePlan::JokerOnly { big: 2, small: 2 }) => {
+                joker_bomb_candidates(&g, r, ctx, ladder)
             }
-            PrimitiveParams::ConsecutivePairs { pairs } => {
-                let groups = *pairs as usize;
-                for window in all_windows(rank_count(r), groups) {
-                    if !window_wildcard_fits(&g.base, &window, 2, g.wild.len()) {
-                        continue;
-                    }
-                    let cards = consecutive_cards(&g.base, &g.wild, &window, 2);
-                    if let Some(rec) = recognize(ladder, r, ctx, &cards) {
-                        push(rec);
-                    }
-                }
-            }
-            PrimitiveParams::ConsecutiveTriples { triples } => {
-                let groups = *triples as usize;
-                for window in all_windows(rank_count(r), groups) {
-                    if !window_wildcard_fits(&g.base, &window, 3, g.wild.len()) {
-                        continue;
-                    }
-                    let cards = consecutive_cards(&g.base, &g.wild, &window, 3);
-                    if let Some(rec) = recognize(ladder, r, ctx, &cards) {
-                        push(rec);
-                    }
-                }
-            }
-            PrimitiveParams::TriplePair => {
-                // 主牌三张 + 对子（真牌点对 / 双王对），百搭按缺口分配。
-                let joker_pairs: Vec<Vec<u16>> = [&g.little, &g.big]
-                    .iter()
-                    .filter(|j| j.len() == 2)
-                    .map(|j| j[..2].to_vec())
-                    .collect();
-                for (&main, main_bucket) in &g.base {
-                    let real_main = main_bucket.len().min(3);
-                    let need_main = 3 - real_main;
-                    for (&pair, pair_bucket) in &g.base {
-                        if pair == main {
-                            continue;
-                        }
-                        let take_pair = pair_bucket.len().min(2);
-                        let need_pair = 2 - take_pair;
-                        if need_main + need_pair > g.wild.len() {
-                            continue;
-                        }
-                        let mut cards = main_bucket[..real_main].to_vec();
-                        cards.extend_from_slice(&g.wild[..need_main]);
-                        cards.extend_from_slice(&pair_bucket[..take_pair]);
-                        cards.extend_from_slice(&g.wild[need_main..need_main + need_pair]);
-                        if let Some(rec) = recognize(ladder, r, ctx, &cards) {
-                            push(rec);
-                        }
-                    }
-                    for jp in &joker_pairs {
-                        if need_main > g.wild.len() {
-                            continue;
-                        }
-                        let mut cards = main_bucket[..real_main].to_vec();
-                        cards.extend_from_slice(&g.wild[..need_main]);
-                        cards.extend_from_slice(jp);
-                        if let Some(rec) = recognize(ladder, r, ctx, &cards) {
-                            push(rec);
-                        }
-                    }
-                }
-            }
-            PrimitiveParams::StraightFlush { length } => {
-                for suit_buckets in g.by_suit.values() {
-                    for window in all_windows(rank_count(r), *length as usize) {
-                        // 全百搭同花顺无花色可定；gate 关闭时百搭不入同花顺。
-                        if suit_buckets.is_empty()
-                            || (!wildcard_flush_allowed(r) && !g.wild.is_empty())
-                        {
-                            continue;
-                        }
-                        let missing: Vec<usize> = window
-                            .iter()
-                            .copied()
-                            .filter(|p| !suit_buckets.contains_key(p))
-                            .collect();
-                        if missing.len() > g.wild.len() {
-                            continue;
-                        }
-                        let mut cards = pick_one_per_rank(suit_buckets, &window);
-                        cards.extend_from_slice(&g.wild[..missing.len()]);
-                        if let Some(rec) = recognize(ladder, r, ctx, &cards) {
-                            push(rec);
-                        }
-                    }
-                }
-            }
-            PrimitiveParams::JokerBomb if g.little.len() >= 2 && g.big.len() >= 2 => {
-                let mut cards = Vec::new();
-                cards.extend_from_slice(&g.little[..2]);
-                cards.extend_from_slice(&g.big[..2]);
-                if let Some(rec) = recognize(ladder, r, ctx, &cards) {
-                    push(rec);
-                }
-            }
-            PrimitiveParams::JokerBomb => {}
-            _ => {}
+            // `suit.same`、附件非三带二组合、其它 joker.only 张数：v1 未落地判定，不发候选。
+            _ => Vec::new(),
+        };
+        for rec in recs {
+            push(rec);
         }
     }
     out
@@ -1134,28 +1174,21 @@ fn window_wildcard_fits(
 
 // ---------- 压制比较 ----------
 
-fn primitive_by_id(r: &RuleSetBody, pattern_id: &str) -> Option<&'static str> {
+fn role_by_id(r: &RuleSetBody, pattern_id: &str) -> BombRole {
     r.patterns
         .iter()
         .find(|p| p.id.0 == pattern_id)
-        .map(|p| primitive_of(&p.params))
-}
-
-/// 炸弹族：可压任意非炸弹牌型；族内按 ladder 位次比较（`straight-flush` /
-/// `joker-bomb` 与 `bomb` 同属一族，§5.10 第 775 行阶梯）。
-fn is_bomb_class(primitive: &str) -> bool {
-    matches!(
-        primitive,
-        "pattern.bomb" | "pattern.straight-flush" | "pattern.joker-bomb"
-    )
+        .and_then(|p| ShapePlan::compile(&p.params))
+        .map(|p| p.bomb_role())
+        .unwrap_or(BombRole::Other)
 }
 
 /// `candidate` 能否压过 `last`（§5.13 第 894、895 行）。
 ///
 /// 跟牌只在三种情形合法：
 /// 1. 同 `pattern_id`：比 `patternKey = (countKey, rankKey)`，张数优先、再点数；
-/// 2. 两者都属炸弹族：按 `synthetic_ladder` 位次比较；`bomb` 对 `bomb` 仍走
-///    `bombOrder: count-then-rank`（先张数、同张数比点数）；
+/// 2. 两者都属炸弹族：按 `synthetic_ladder` 位次比较；`rank.same` 炸弹对 `rank.same`
+///    炸弹仍走 `bombOrder: count-then-rank`（先张数、同张数比点数）；
 /// 3. 候选属炸弹族、上家不属：炸弹压任意非炸弹。
 ///
 /// 其余（两个非同型的非炸弹牌型）一律不能压。`compare.ladder` 只是牌型位次表
@@ -1166,9 +1199,10 @@ pub(crate) fn beats(
     candidate: &Recognized,
     last: &LastPlay,
 ) -> bool {
-    let last_primitive = primitive_by_id(r, &last.pattern_id).unwrap_or("");
-    let candidate_bomb = is_bomb_class(candidate.primitive);
-    let last_bomb = is_bomb_class(last_primitive);
+    let candidate_role = candidate.role;
+    let last_role = role_by_id(r, &last.pattern_id);
+    let candidate_bomb = candidate_role != BombRole::Other;
+    let last_bomb = last_role != BombRole::Other;
 
     // 1. 同牌型：比 patternKey。
     if candidate.pattern_id == last.pattern_id {
@@ -1177,9 +1211,9 @@ pub(crate) fn beats(
                 && candidate.pattern_key.1 > last.pattern_key.1);
     }
 
-    // 2. 炸弹族对炸弹族：ladder 位次；bomb 对 bomb 走 bombOrder。
+    // 2. 炸弹族对炸弹族：ladder 位次；普通炸弹对普通炸弹走 bombOrder。
     if candidate_bomb && last_bomb {
-        if candidate.primitive == "pattern.bomb" && last_primitive == "pattern.bomb" {
+        if candidate_role == BombRole::SameRankBomb && last_role == BombRole::SameRankBomb {
             return candidate.pattern_key.0 > last.pattern_key.0
                 || (candidate.pattern_key.0 == last.pattern_key.0
                     && candidate.pattern_key.1 > last.pattern_key.1);

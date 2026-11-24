@@ -6,7 +6,11 @@
 
 use crate::contract::PatternId;
 use crate::ruleset::model::{FlushRank, PatternDef, RuleSetBody};
-use crate::ruleset::params::PrimitiveParams;
+use crate::ruleset::shape_plan::ShapePlan;
+
+fn plan(p: &PatternDef) -> Option<ShapePlan> {
+    ShapePlan::compile(&p.params)
+}
 
 /// 锚点张数：`flushRank` 取值里的炸弹张数（§5.1 第 389 行）。
 ///
@@ -29,36 +33,44 @@ pub fn find_pattern<'a>(ruleset: &'a RuleSetBody, id: &PatternId) -> Option<&'a 
     ruleset.patterns.iter().find(|p| &p.id == id)
 }
 
-/// 插入型牌型（`pattern.straight-flush`）定义列表，按声明序。
+/// 插入型牌型（同花顺）定义列表，按声明序；按形状认，不按 primitiveId 字符串认。
 pub fn flush_patterns(ruleset: &RuleSetBody) -> Vec<&PatternDef> {
     ruleset
         .patterns
         .iter()
-        .filter(|p| matches!(p.params, PrimitiveParams::StraightFlush { .. }))
+        .filter(|p| matches!(plan(p), Some(ShapePlan::RankContiguous { flush: true, .. })))
         .collect()
 }
 
-/// `ladder` 中出现的炸弹张数列表（按 ladder 序；仅认 `pattern.bomb` + `params.count`）。
+/// `ladder` 中出现的炸弹张数列表（按 ladder 序；认 `rank.same{4..=8}` 形状）。
 pub fn ladder_bomb_counts(ruleset: &RuleSetBody) -> Vec<u8> {
     ruleset
         .compare
         .ladder
         .iter()
         .filter_map(|pid| {
-            find_pattern(ruleset, pid).and_then(|p| match p.params {
-                PrimitiveParams::Bomb { count } => Some(count),
+            find_pattern(ruleset, pid).and_then(|p| match plan(p)? {
+                ShapePlan::RankSame {
+                    count,
+                    attach: None,
+                } => Some(count),
                 _ => None,
             })
         })
         .collect()
 }
 
-/// 在 `ladder` 中定位锚点炸弹（`pattern.bomb` 且 `count == 锚点张数`），返回 ladder 下标。
+/// 在 `ladder` 中定位锚点炸弹（普通炸弹且 `count == 锚点张数`），返回 ladder 下标。
 pub fn find_anchor_index(ruleset: &RuleSetBody) -> Option<usize> {
     let anchor = anchor_count(ruleset.compare.flush_rank);
     ruleset.compare.ladder.iter().position(|pid| {
-        find_pattern(ruleset, pid)
-            .is_some_and(|p| matches!(p.params, PrimitiveParams::Bomb { count } if count == anchor))
+        find_pattern(ruleset, pid).is_some_and(|p| match plan(p) {
+            Some(ShapePlan::RankSame {
+                count,
+                attach: None,
+            }) => count == anchor,
+            _ => false,
+        })
     })
 }
 
