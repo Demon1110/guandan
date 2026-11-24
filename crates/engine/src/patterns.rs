@@ -441,16 +441,6 @@ fn match_same_rank(
         }
     }
 
-    // 整手全百搭：按自身点数用，不走最大解。
-    if g.base.is_empty() && k <= g.wild.len() {
-        let Some(own) = wildcard_own_rank(r, ctx) else {
-            return best.map(|sol| build_rec(def, k as u32, sol.rank_key, sol.cards));
-        };
-        let cards = g.wild[..k].to_vec();
-        let sol = make_sol(r, ctx, ctx.rank_key(r, own), cards);
-        replace_best(&mut best, sol);
-    }
-
     best.map(|sol| build_rec(def, k as u32, sol.rank_key, sol.cards))
 }
 
@@ -717,6 +707,21 @@ fn match_def(
     }
 }
 
+/// 整手全百搭独立分支（第二十一次变更，§5.13 逢人配行）：张数直接决定牌型——
+/// 1 `single`、2 `pair`、3 `triple`、4–8 `bomb-N`；同一 `rankKey`（百搭自身点数），
+/// 不得判成顺子 / 三连对 / 钢板 / 三带二 / 同花顺。超出已声明值域返回 `None`。
+fn recognize_all_wildcard(r: &RuleSetBody, ctx: &RankContext, wild: &[u16]) -> Option<Recognized> {
+    let n = wild.len();
+    let own = wildcard_own_rank(r, ctx)?;
+    let rank_key = ctx.rank_key(r, own);
+    let def = r.patterns.iter().find(|p| match &p.params {
+        PrimitiveParams::SameRank { count } => n <= 3 && *count as usize == n,
+        PrimitiveParams::Bomb { count } => (4..=8).contains(&n) && *count as usize == n,
+        _ => false,
+    })?;
+    Some(build_rec(def, n as u32, rank_key, wild.to_vec()))
+}
+
 /// 按提交牌结构判定牌型；不匹配任何已声明牌型返回 `None`（§5.9：`patternId` 服务端判定）。
 pub(crate) fn recognize(r: &RuleSetBody, ctx: &RankContext, cards: &[u16]) -> Option<Recognized> {
     if cards.is_empty() {
@@ -727,6 +732,14 @@ pub(crate) fn recognize(r: &RuleSetBody, ctx: &RankContext, cards: &[u16]) -> Op
         return None;
     }
     let groups = Groups::build(r, ctx, cards);
+    // 整手全百搭：独立分支，不走通用同点牌路径。
+    if groups.base.is_empty()
+        && groups.little.is_empty()
+        && groups.big.is_empty()
+        && !groups.wild.is_empty()
+    {
+        return recognize_all_wildcard(r, ctx, &groups.wild);
+    }
     let mut defs: Vec<(&PatternDef, usize)> = r
         .patterns
         .iter()
@@ -865,6 +878,17 @@ pub(crate) fn enumerate(r: &RuleSetBody, ctx: &RankContext, hand: &[u16]) -> Vec
         }
     };
 
+    // 整手全百搭：独立分支按张数输出 single/pair/triple/bomb-N，不进入通用枚举。
+    if g.base.is_empty() && g.little.is_empty() && g.big.is_empty() && !g.wild.is_empty() {
+        for n in 1..=g.wild.len() {
+            let cards = g.wild[..n].to_vec();
+            if let Some(rec) = recognize(r, ctx, &cards) {
+                push(rec);
+            }
+        }
+        return out;
+    }
+
     // 按 ladder 位次输出：更具体的牌型先占位，同一札多解时不被泛化牌型顶掉。
     let mut defs: Vec<(&PatternDef, usize)> = r
         .patterns
@@ -910,13 +934,6 @@ pub(crate) fn enumerate(r: &RuleSetBody, ctx: &RankContext, hand: &[u16]) -> Vec
                             if let Some(rec) = recognize(r, ctx, &cards) {
                                 push(rec);
                             }
-                        }
-                    }
-                    // 整手全百搭 → 自身点数。
-                    if g.base.is_empty() && count <= g.wild.len() {
-                        let cards = g.wild[..count].to_vec();
-                        if let Some(rec) = recognize(r, ctx, &cards) {
-                            push(rec);
                         }
                     }
                 }

@@ -29,6 +29,28 @@ fn engine() -> M0Engine {
     }
 }
 
+/// 变体夹具：调整 `deck.copies`（凑齐多张百搭），并同步 `perSeat` / `cardCount`
+/// 保持发牌守恒；`strip_bombs` 去掉 bomb-5..8 行，用于「未声明该张数炸弹」反例。
+/// 仅构造期用，不走 L1 值域校验。
+fn engine_with_copies(copies: u8, strip_bombs: bool) -> M0Engine {
+    let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    p.push("tests/fixtures/guandan-classic/ruleset.yaml");
+    let src = fs::read_to_string(p).expect("夹具读取失败");
+    let mut lines: Vec<&str> = src.lines().collect();
+    if strip_bombs {
+        lines.retain(|l| !(l.contains("pattern.bomb") && !l.contains("bomb-4")));
+    }
+    let total = (13 * 4 + 2) * copies as usize;
+    let per_seat = total / 4;
+    let src = lines
+        .join("\n")
+        .replace("copies: 2", &format!("copies: {copies}"))
+        .replace("perSeat: 27", &format!("perSeat: {per_seat}"))
+        .replace("cardCount: 108", &format!("cardCount: {total}"));
+    let body = from_yaml(&src).expect("变体夹具应构造成功");
+    M0Engine { ruleset: body }
+}
+
 /// 基础牌便捷构造：`rank` 0..12、`suit` 0..3、`copy` 0/1。
 fn c(r: &RuleSetBody, rank: usize, suit: usize, copy: u8) -> u16 {
     card_id(r, rank, suit, copy)
@@ -1303,6 +1325,50 @@ fn wildcard_pair_all_wildcards() {
         "pair",
         (2, 13),
         "两张百搭成对按自身点数",
+    );
+}
+
+#[test]
+fn all_wildcard_count_decides_pattern_1_to_8() {
+    let engine = engine_with_copies(8, false);
+    let r = &engine.ruleset;
+    // 整手全百搭：张数直接定牌型，同一 rankKey（级牌 2，above-A 取 13）；
+    // 不得判成顺子 / 三连对 / 钢板 / 三带二 / 同花顺。
+    for n in 1u32..=8 {
+        let hand: Vec<u16> = (0..n).map(|copy| w(r, copy as u8)).collect();
+        let expected_id = match n {
+            1 => "single".to_owned(),
+            2 => "pair".to_owned(),
+            3 => "triple".to_owned(),
+            _ => format!("bomb-{n}"),
+        };
+        let after = apply_play(&engine, hand.clone(), hand)
+            .unwrap_or_else(|e| panic!("{n} 张百搭应合法: {e:?}"));
+        let last = after.last_play.as_ref().unwrap();
+        assert_eq!(last.pattern_id, expected_id, "{n} 张百搭牌型");
+        assert_eq!(last.pattern_key, (n, 13), "{n} 张百搭 rankKey");
+    }
+}
+
+#[test]
+fn all_wildcard_over_eight_rejected() {
+    let engine = engine_with_copies(10, false);
+    let r = &engine.ruleset;
+    let hand: Vec<u16> = (0..9).map(|copy| w(r, copy)).collect();
+    assert_illegal(
+        apply_play(&engine, hand.clone(), hand),
+        "9 张百搭超出已声明值域",
+    );
+}
+
+#[test]
+fn all_wildcard_undeclared_bomb_rejected() {
+    let engine = engine_with_copies(8, true);
+    let r = &engine.ruleset;
+    let hand: Vec<u16> = (0..5).map(|copy| w(r, copy)).collect();
+    assert_illegal(
+        apply_play(&engine, hand.clone(), hand),
+        "未声明 bomb-5，全百搭 5 张应按 IllegalAction 拒",
     );
 }
 
