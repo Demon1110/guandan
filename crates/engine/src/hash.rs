@@ -181,9 +181,19 @@ pub fn canonical_bytes(state: &CanonicalState) -> Vec<u8> {
         }
     }
 
-    // 第 5 段：lastPlay（ presence 标记 + 字段序）。
+    // 第 5 段：lastPlay（presence 标记 + 字段序）。
+    // 空值占位（第三十五次变更 / N17）：`None` 本段不省略，seat=0xFF（座位保留值，
+    // 真实座位不得取）、patternId 空串（u16 前缀 0）、patternKey=(0,0)、cards 空数组
+    // （u16 前缀 0）。两种来源（领出态尚无 lastPlay、本局已终局）同编码，语义由 phase 区分。
     match &state.last_play {
-        None => w.u8(0),
+        None => {
+            w.u8(0);
+            w.u8(0xFF);
+            w.str("");
+            w.u32(0);
+            w.u32(0);
+            w.u16(0);
+        }
         Some(last) => {
             w.u8(1);
             w.u8(last.seat);
@@ -348,6 +358,24 @@ mod tests {
         let mut b = sample_state();
         b.finish_order = vec![3, 1];
         assert_ne!(state_hash(&a), state_hash(&b));
+    }
+
+    /// N17（第三十五次变更）：`lastPlay=None` 段不省略，写完整占位编码——seat=0xFF（保留值）、
+    /// patternId 空串（u16 前缀 0）、patternKey=(0,0)、cards 空数组（u16 前缀 0）；
+    /// 领出态与已终局两种来源同编码，语义靠 phase 区分。
+    #[test]
+    fn last_play_none_writes_placeholder_segment() {
+        let mut state = sample_state();
+        state.last_play = None;
+        let bytes = canonical_bytes(&state);
+        let ff = bytes
+            .iter()
+            .position(|&b| b == 0xFF)
+            .expect("占位 seat=0xFF 必须出现");
+        // 紧前是 presence 标记 0；其后：空串 u16(0) 2 字节 + patternKey 两个 u32 共 8 字节
+        // + cards 空数组 u16(0) 2 字节，合计 12 个零字节。
+        assert_eq!(bytes[ff - 1], 0x00, "presence 标记应为 0");
+        assert_eq!(&bytes[ff + 1..ff + 13], &[0u8; 12]);
     }
 
     /// 对照：`seats`/`zones` 文档明确要求升序，乱序输入仍应得到同一哈希。

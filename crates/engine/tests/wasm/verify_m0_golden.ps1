@@ -9,8 +9,10 @@ $rootDir = Resolve-Path (Join-Path $engineDir '..\..')
 
 # B11 后现行锚点（native/wasm 双端一致；m0-minimal 夹具，run_m0_golden）。
 # 轨迹若再漂移，以 run_m0_golden 实测回填，不许改旧期望凑绿。
+# settle-single-round 批次锚点漂移：① N17 第 5 段 None 占位编码扩段；② settle 结束
+# attackingTeam 交接头游队（旧=开局抽牌队 0，新=头游队 1）。其余 7 字段实测未变。
 $Expected = [ordered]@{
-    stateHash      = '9b2ff28b384e8d125f925005fdef659fb8abddd45cbf270e58e2d984d0907ab0'
+    stateHash      = 'f65cfb2f9c598fe096a7142053647184a8041eb03310710431b46d0b7af1037d'
     steps          = '148'
     phase          = '3'
     finishOrder    = '1,3,0,2'
