@@ -197,7 +197,6 @@ impl M0Engine {
 
     /// 由固定种子开局：洗牌并发到各座位私有区，相位进入 `play`（夹具省略 tribute，G6）。
     pub fn deal(&self, seed: u64) -> Result<State, EngineError> {
-        self.check_turn_conflict()?;
         let seat_count = self.ruleset.seats.count as usize;
         let total = self.deck_total();
         let per_seat = self
@@ -438,24 +437,6 @@ impl M0Engine {
             .and_then(|team| team.iter().find(|&&s| s != seat).copied())
     }
 
-    /// §5.2 第 498、528 行冲突检查：`afterAllPass.to = next-player`（顺延领出）与无参原语
-    /// `turn.return-to-last`（全过后回最后出牌者）若在同一规则集同时声明，两者口径冲突；
-    /// 优先级文档未裁决，引擎不自行裁定，直接报 `Internal` 交规则集侧处理。
-    fn check_turn_conflict(&self) -> Result<(), EngineError> {
-        let next_player = matches!(self.after_all_pass(), AfterAllPass::NextPlayer);
-        let return_to_last = self
-            .ruleset
-            .actions
-            .iter()
-            .any(|a| a.primitive == "turn.return-to-last");
-        if next_player && return_to_last {
-            return Err(EngineError::Internal {
-                message: "规则集冲突: afterAllPass.to=next-player 与 turn.return-to-last 同时声明，全过后领出口径互斥，优先级待裁决".to_owned(),
-            });
-        }
-        Ok(())
-    }
-
     /// 按 `flow.turn.direction` 推进到下一个座位；`skipFinished=true` 时跳过已出完座位。
     /// 座位数取 `seats.count`，不写死 4；全员出完时回原座兜底（不应走到）。
     fn next_seat(&self, state: &State, from: u8) -> u8 {
@@ -637,8 +618,6 @@ impl M0Engine {
             Action::Play { cards } => {
                 // §5.9 第 203 行：出牌只传牌 id，`patternId` 由服务端判定。复检按牌结构
                 // 判定牌型并判定能否压过 lastPlay，不再要求提交的 cards 精确等于枚举清单。
-                // 接风判定要在覆写 `last_play` 之前记录本墩最后压牌者座位。
-                let prev_last_seat = state.last_play.as_ref().map(|p| p.seat);
                 let ctx = self.rank_context(&state);
                 let rec = patterns::recognize(&self.ruleset, &ctx, &cards).ok_or_else(|| {
                     EngineError::IllegalAction {
@@ -712,18 +691,9 @@ impl M0Engine {
                 if self.team_both_finished(&state) {
                     self.settle(&mut state)?;
                 } else {
-                    // §5.13 第 896 行、§5.10 第 783 行接风：某座位出完牌的同一墩里，若其
-                    // 队友是最后压牌者，下一轮由该队友直接领出、跳过其余两家；本字段只管
-                    // 接风，不与 `afterAllPass`（全过后回最后出牌者）混用。
-                    let partner = if self.partner_lead() {
-                        prev_last_seat.and_then(|p| self.teammate(seat).filter(|&t| t == p))
-                    } else {
-                        None
-                    };
-                    match partner {
-                        Some(p) if !state.finish_order.contains(&p) => state.turn_seat = p,
-                        _ => state.turn_seat = self.next_seat(&state, seat),
-                    }
+                    // 出牌后先按正常轮转推进；接风在本墩全过后由 Pass 分支统一解析
+                    // （第二十六次变更：出完本人是最后压牌者、其余仍有牌座位都过 → 搭档领出）。
+                    state.turn_seat = self.next_seat(&state, seat);
                 }
             }
             Action::Pass => {
@@ -749,18 +719,28 @@ impl M0Engine {
                     // N14：新墩起始 lastPlay 清空为 None（§5.12 第 819 行：本回合无人出过牌时该键不出现）。
                     state.last_play = None;
                     state.passes_since_last_play = 0;
-                    state.turn_seat = match self.after_all_pass() {
-                        AfterAllPass::LastPlayer => {
-                            // 最后出牌者已出完时顺延到下一个未出完座位。
-                            if state.finish_order.contains(&last_seat) {
-                                self.next_seat(&state, last_seat)
-                            } else {
-                                last_seat
+                    // 判定顺序唯一（第二十六次变更）：① 先判接风——partnerLead 开启且最后
+                    // 出牌者本人已出完，由其搭档领出；搭档亦已出完则沿方向顺延到下一个仍
+                    // 有牌座位。② 接风不成立再读 afterAllPass：last-player 回最后出牌者；
+                    // next-player 从最后出牌者起沿方向顺延，跳过已出完座位。
+                    state.turn_seat =
+                        if self.partner_lead() && state.finish_order.contains(&last_seat) {
+                            match self.teammate(last_seat) {
+                                Some(mate) if !state.finish_order.contains(&mate) => mate,
+                                _ => self.next_seat(&state, last_seat),
                             }
-                        }
-                        // next-player：不回最后出牌者，按轮转方向落到下一座位。
-                        AfterAllPass::NextPlayer => self.next_seat(&state, last_seat),
-                    };
+                        } else {
+                            match self.after_all_pass() {
+                                AfterAllPass::LastPlayer => {
+                                    if state.finish_order.contains(&last_seat) {
+                                        self.next_seat(&state, last_seat)
+                                    } else {
+                                        last_seat
+                                    }
+                                }
+                                AfterAllPass::NextPlayer => self.next_seat(&state, last_seat),
+                            }
+                        };
                 } else {
                     state.turn_seat = self.next_seat(&state, seat);
                 }
@@ -774,17 +754,18 @@ impl M0Engine {
     fn settle(&self, state: &mut State) -> Result<(), EngineError> {
         // §6.3：`play → settle`，经相位机校验，表外跳转报错不静默接受。
         self.transition(state, PHASE_SETTLE)?;
-        // 已出完按 finish_order；未出完按剩余手牌张数升序，同数按座位号小者在前
-        // （§5.13 第 884 行）。
-        let mut unfinished: Vec<(u8, usize)> = state
+        // 已出完按 finish_order；未出完座位的名次分配（双下按座位方向倒排）属 ⑥ 结算批次，
+        // 本批不落地。第二十六次变更已作废「按剩余手牌张数升序、同数按座位号」：张数不进
+        // 判定链，这里只按座位号中性补位到 4 座，方向口径待 ⑥ 第一批接线。
+        // TODO(M0-GAP-rank-direction)：双下名次从头游起沿 direction 倒排。
+        let mut unfinished: Vec<u8> = state
             .seats
             .iter()
             .copied()
             .filter(|s| !state.finish_order.contains(s))
-            .map(|s| (s, self.hand_cards(state, s).map(|h| h.len()).unwrap_or(0)))
             .collect();
-        unfinished.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
-        for (seat, _) in unfinished {
+        unfinished.sort_unstable();
+        for seat in unfinished {
             state.finish_order.push(seat);
         }
         // G4：score-only 不挂等级表，levels 保持空序列；aFailStreak 不推进。
@@ -1035,8 +1016,8 @@ mod tests {
         assert!(state.last_play.is_none());
     }
 
-    /// 接风局面：teams=[[0,2],[1,3]]，seat 0 只剩一张全场点数最大的单张，
-    /// lastPlay 为队友 seat 2；seat 0 出完后队友是否接风由 `partnerLead` 决定。
+    /// 接风局面：teams=[[0,2],[1,3]]，seat 0 只剩一张全场点数最大的单张；出完本人即本墩
+    /// 最后压牌者，其搭档 seat 2 是否接风由 `partnerLead` 与全过后解析决定（第二十六次变更）。
     fn partner_lead_scenario(engine: &M0Engine) -> State {
         let mut state = engine.deal(M0_SEED).expect("发牌失败");
         let hand_idx = engine.hand_zone_index();
@@ -1093,7 +1074,8 @@ mod tests {
 
     #[test]
     fn partner_lead_true_makes_mate_lead_next_round() {
-        // §5.13 第 896 行、§5.10 第 783 行：出完者队友是最后压牌者时，队友下一轮直接领出。
+        // 第二十六次变更：出完最后一手牌的本人是最后压牌者，其余仍有牌座位都过 → 搭档
+        // 领出；接风在全过瞬间解析，出牌后先按正常轮转，不直接跳搭档。
         let engine = engine(); // partnerLead: true
         let mut state = partner_lead_scenario(&engine);
         let card = state
@@ -1106,13 +1088,19 @@ mod tests {
             .apply(state, Action::Play { cards: vec![card] })
             .expect("seat 0 出完");
         assert!(state.finish_order.contains(&0));
-        // 队友 seat 2 接风领出，跳过 seat 1、seat 3。
+        // 出牌后先按正常轮转落到 seat 1。
+        assert_eq!(state.turn_seat, 1);
+        // seat 1、seat 2 连续过牌后全过；last_seat=0 已出完，搭档 seat 2 接风领出。
+        state = engine.apply(state, Action::Pass).expect("seat 1 过牌");
         assert_eq!(state.turn_seat, 2);
+        state = engine.apply(state, Action::Pass).expect("seat 2 过牌");
+        assert_eq!(state.turn_seat, 2, "全过后搭档 seat 2 接风领出");
+        assert!(state.last_play.is_none());
     }
 
     #[test]
     fn partner_lead_false_rotates_past_mate() {
-        // partnerLead: false 时不接风，按常规轮转到 seat 1。
+        // partnerLead: false 时不接风，出牌后按常规轮转到 seat 1。
         let yaml = m0_yaml().replace("partnerLead: true", "partnerLead: false");
         let engine = engine_from(&yaml);
         let mut state = partner_lead_scenario(&engine);
@@ -1127,6 +1115,56 @@ mod tests {
             .expect("seat 0 出完");
         assert!(state.finish_order.contains(&0));
         assert_eq!(state.turn_seat, 1);
+    }
+
+    /// 构造全过解析局面：`last` 为本墩最后出牌者，`finished` 为已出完座位，轮到 `turn`。
+    fn pass_resolution_state(engine: &M0Engine, last: u8, finished: &[u8], turn: u8) -> State {
+        let mut state = engine.deal(M0_SEED).expect("发牌失败");
+        state.finish_order = finished.to_vec();
+        state.last_play = Some(LastPlay {
+            seat: last,
+            pattern_id: "single".to_owned(),
+            pattern_key: (1, 0),
+            cards: vec![0],
+        });
+        state.turn_seat = turn;
+        state.passes_since_last_play = 0;
+        state
+    }
+
+    #[test]
+    fn partner_lead_skipped_when_last_presser_still_active() {
+        // 最后压牌者本人仍有牌（期间有人压过）→ 接风不成立；默认 last-player 回最后出牌者，
+        // 不落到其搭档。teams=[[0,2],[1,3]]，last=1，搭档应为 seat 3。
+        let engine = engine();
+        let mut state = pass_resolution_state(&engine, 1, &[], 2);
+        for seat in [2u8, 3, 0] {
+            let msg = format!("seat {seat} 过牌");
+            state = engine.apply(state, Action::Pass).expect(&msg);
+        }
+        assert_eq!(state.turn_seat, 1, "last-player 回最后出牌者 seat 1");
+        assert_ne!(
+            state.turn_seat, 3,
+            "last_presser 未出完，不接风给搭档 seat 3"
+        );
+        assert!(state.last_play.is_none());
+    }
+
+    #[test]
+    fn partner_lead_takes_precedence_over_next_player() {
+        // 判定顺序：接风优先于 afterAllPass。配置 next-player 时，最后出牌者已出完仍由搭档
+        // 接风；只有接风不成立才按 next-player 顺延。
+        let yaml = m0_yaml().replace("afterAllPass: last-player", "afterAllPass: next-player");
+        let engine = engine_from(&yaml);
+        let mut state = pass_resolution_state(&engine, 0, &[0], 1);
+        state = engine.apply(state, Action::Pass).expect("seat 1 过牌");
+        assert_eq!(state.turn_seat, 2);
+        state = engine.apply(state, Action::Pass).expect("seat 2 过牌");
+        assert_eq!(
+            state.turn_seat, 2,
+            "接风成立时 next-player 让位，搭档 seat 2 领出"
+        );
+        assert!(state.last_play.is_none());
     }
 
     // ---------- 第二笔：require-legal force / consume 与消耗区 ----------

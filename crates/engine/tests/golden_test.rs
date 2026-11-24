@@ -8,9 +8,9 @@ use gf_engine::engine::{M0Engine, PHASE_SETTLE};
 use gf_engine::hash::{canonical_bytes, state_hash, CanonicalState};
 
 /// native 用例跑出并核对过动作日志后的 32 字节 stateHash（双端逐字节比对锚点）。
-/// 首局抽牌前置（B3）后发牌分布变化，轨迹与锚点已重算。
+/// 第二十六次变更（接风 / 全过判定顺序订正）后轨迹漂移，锚点已按最终口径重算。
 const EXPECTED_STATE_HASH: &str =
-    "ec38692f0d8d84b8aa5c217961c015e319fd51939a69360631c2d736ac820f24";
+    "9b2ff28b384e8d125f925005fdef659fb8abddd45cbf270e58e2d984d0907ab0";
 
 #[test]
 fn golden_reaches_settle_and_matches_recorded_hash() {
@@ -68,12 +68,12 @@ fn golden_reaches_settle_and_matches_recorded_hash() {
         outcome.completed_team, expected_completed,
         "completed_team 应等于先全员出完的队"
     );
-    // 当前种子实测为 1+3 形态（finish_order=[3,1,0,2]：头游 seat3 属队 1，队友 seat0 占
-    // 第 3 名，对家 seat1、seat2 夹第 2、4 名）；此形态下 winner_team（头游队）与
+    // 当前种子实测为 1+3 形态（finish_order=[1,3,0,2]：头游 seat1 属队 1，队友 seat3 占
+    // 第 2 名，对家 seat0、seat2 夹第 3、4 名）；此形态下 winner_team（头游队）与
     // completed_team（先全员出完的队）同为队 1，二者不是 1+4 下的对家关系。
     assert_eq!(
         outcome.finish_order,
-        vec![3, 1, 0, 2],
+        vec![1, 3, 0, 2],
         "收尾名次应与实测 1+3 形态一致"
     );
     assert_eq!(
