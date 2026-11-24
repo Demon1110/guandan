@@ -15,6 +15,7 @@ compare:
   ladder: [single]
   bombOrder: count-then-rank
   flushRank: above-bomb-5
+tribute: { enabled: false }
 actions:
   - { kind: play, primitive: action.require-legal, legalFrom: patterns, params: { force: true, consume: hand } }
   - { kind: pass, primitive: action.pass, legalFrom: play, params: {} }

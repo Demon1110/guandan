@@ -107,6 +107,7 @@ compare:
   ladder: [single]
   bombOrder: count-then-rank
   flushRank: above-bomb-5
+tribute: {{ enabled: false }}
 actions:
 {actions}
 lifecycle: [deal, tribute, play, settle]

@@ -38,9 +38,9 @@ tribute:
   enabled: true
   trigger: last-round-rank
   pairs:
-    - { payer: fourth,       receiver: first,  when: single-loss }
-    - { payer: fourth,       receiver: first,  when: double-loss }
-    - { payer: third,        receiver: second, when: double-loss }
+    - { payer: 4, receiver: 1, when: single-loss }
+    - { payer: 4, receiver: 1, when: double-loss }
+    - { payer: 3, receiver: 2, when: double-loss }
   return: { ceiling: under-ten, count: 1, fallback: smallest }
   resist: two-big-jokers
 lifecycle: [deal, tribute, play, settle]
