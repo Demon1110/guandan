@@ -1,5 +1,6 @@
 //! RuleSetBody 类型与 L1 校验器（§5.1 / §5.2 / §5.3 / §5.4）。
 
+pub mod ladder;
 pub mod model;
 pub mod params;
 pub mod parse;

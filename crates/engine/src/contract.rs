@@ -5,7 +5,7 @@
 //!   M1 只补原语实现，不改契约形状；
 //! - §5.4（第 578–579 行）：`Validation` / `Finding` / `Level` / `Severity` /
 //!   `EngineError` 变体清单；
-//! - §5.7（第 630–660 行）：25 个错误码全表。
+//! - §5.7（第 630–660 行）：27 个错误码全表。
 
 use crate::hash::{LastPlay, RngState, TributeState, ZoneEntry};
 use crate::ruleset::RuleSetBody;
@@ -28,10 +28,12 @@ pub enum Severity {
     Minor,
 }
 
-/// §5.7 全表 25 个错误码，逐条抄全，不合并、不改名。
+/// §5.7 全表 27 个错误码，逐条抄全，不合并、不改名。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorCode {
     RsSchemaInvalid,
+    RsFlushAnchorMissing,
+    RsLadderConflict,
     RsRefMissing,
     RsNoTermination,
     RsIllegalActionRate,
@@ -63,6 +65,8 @@ impl ErrorCode {
     pub fn code_str(self) -> &'static str {
         match self {
             ErrorCode::RsSchemaInvalid => "RS_SCHEMA_INVALID",
+            ErrorCode::RsFlushAnchorMissing => "RS_FLUSH_ANCHOR_MISSING",
+            ErrorCode::RsLadderConflict => "RS_LADDER_CONFLICT",
             ErrorCode::RsRefMissing => "RS_REF_MISSING",
             ErrorCode::RsNoTermination => "RS_NO_TERMINATION",
             ErrorCode::RsIllegalActionRate => "RS_ILLEGAL_ACTION_RATE",
@@ -94,6 +98,8 @@ impl ErrorCode {
     pub fn default_severity(self) -> Severity {
         match self {
             ErrorCode::RsSchemaInvalid
+            | ErrorCode::RsFlushAnchorMissing
+            | ErrorCode::RsLadderConflict
             | ErrorCode::RsRefMissing
             | ErrorCode::RsPhaseUnimplemented
             | ErrorCode::RsNoTermination

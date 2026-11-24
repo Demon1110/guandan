@@ -4,7 +4,8 @@
 //! （`ran_levels` 语义是「实际跑完的级别」，§5.4 第 578 行），不伪造通过。
 
 use crate::contract::{ErrorCode, Finding, Level, Validation};
-use crate::ruleset::model::{LegalFrom, RuleSetBody};
+use crate::ruleset::ladder;
+use crate::ruleset::model::{FlushRank, LegalFrom, RuleSetBody};
 use crate::ruleset::params::PrimitiveParams;
 use std::collections::HashSet;
 
@@ -276,16 +277,84 @@ pub fn validate(ruleset: &RuleSetBody, levels: &[Level]) -> Validation {
         }
     }
 
-    // —— flushRank 插入位冲突（§5.1 第 389 行、§5.4 L1，报 RS_REF_MISSING） ——
-    // G3（待裁决）：m0-minimal 只含 single、无 pattern.straight-flush 声明时，flushRank
-    // 视为惰性、不做冲突检查；否则 m0-minimal 永远过不了 L1。若存在 straight-flush 牌型，
-    // 插入位与已有牌型的静态冲突判定规则文档未细化，TODO(M0-GAP-flush-rank) 留待裁决。
-    let has_straight_flush = ruleset
-        .patterns
-        .iter()
-        .any(|p| matches!(p.params, PrimitiveParams::StraightFlush { .. }));
-    if !has_straight_flush {
-        // 惰性：无同花顺锚点，跳过冲突检查。
+    // —— flushRank 锚点与位次冲突（§5.1 第 389 行、§5.4 L1；惰性：无插入型牌型跳过） ——
+    let sf = ladder::flush_patterns(ruleset);
+    if !sf.is_empty() {
+        let anchor = ladder::anchor_count(ruleset.compare.flush_rank);
+        let flush_literal = match ruleset.compare.flush_rank {
+            FlushRank::BelowBomb5 => "below-bomb-5",
+            FlushRank::AboveBomb5 => "above-bomb-5",
+            FlushRank::AboveBomb6 => "above-bomb-6",
+            FlushRank::AboveBomb8 => "above-bomb-8",
+        };
+        match ladder::find_anchor_index(ruleset) {
+            None => {
+                // 锚点缺失：不降级、不插到「最近位置」（§5.1 第 389 行②）。
+                let existing = ladder::ladder_bomb_counts(ruleset);
+                let existing_msg = if existing.is_empty() {
+                    "无".to_owned()
+                } else {
+                    existing
+                        .iter()
+                        .map(|c| c.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                let sf_ids: Vec<&str> = sf.iter().map(|p| p.id.0.as_str()).collect();
+                push(
+                    ErrorCode::RsFlushAnchorMissing,
+                    "compare.ladder",
+                    format!(
+                        "插入型牌型 [{}] 在 ladder 中找不到 {anchor} 张炸弹锚点（primitiveId=pattern.bomb、params.count={anchor}）；ladder 现有炸弹张数：[{existing_msg}]；不做降级插入",
+                        sf_ids.join(", ")
+                    ),
+                );
+            }
+            Some(anchor_idx) => {
+                // 冲突①：同一插入位被多个插入型牌型争夺（flushRank 只定义一个插入位）。
+                if sf.len() > 1 {
+                    let sf_ids: Vec<&str> = sf.iter().map(|p| p.id.0.as_str()).collect();
+                    push(
+                        ErrorCode::RsLadderConflict,
+                        "compare.flushRank",
+                        format!(
+                            "插入位被多个插入型牌型争夺：[{}] 均挤入 flushRank={flush_literal}（锚点 {anchor} 张）的同一插入位，该取值只定义一个插入位",
+                            sf_ids.join(", ")
+                        ),
+                    );
+                }
+                // 冲突②：锚点两侧炸弹张数相对序矛盾——小于锚点张数的炸弹必须在锚点下方、
+                // 大于的在上方（例：bomb-6 排到 bomb-5 前面）。
+                let bombs: Vec<(usize, u8, &str)> = ruleset
+                    .compare
+                    .ladder
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, pid)| {
+                        ladder::find_pattern(ruleset, pid).and_then(|p| match p.params {
+                            PrimitiveParams::Bomb { count } => Some((i, count, pid.0.as_str())),
+                            _ => None,
+                        })
+                    })
+                    .collect();
+                for &(i, count, id) in &bombs {
+                    let violates = if i < anchor_idx {
+                        count > anchor
+                    } else {
+                        count < anchor
+                    };
+                    if violates {
+                        push(
+                            ErrorCode::RsLadderConflict,
+                            "compare.ladder",
+                            format!(
+                                "位次矛盾：炸弹 `{id}`（{count} 张）与 {anchor} 张锚点炸弹相对序矛盾——小于锚点张数的炸弹必须排在锚点下方、大于的排在上方"
+                            ),
+                        );
+                    }
+                }
+            }
+        }
     }
 
     result
