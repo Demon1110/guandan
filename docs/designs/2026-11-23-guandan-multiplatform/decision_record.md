@@ -828,6 +828,17 @@
 - **代价**：客户端需自行 `+1`；空窗期断线要读 `phase`。
 - **未动**：序号跨局连续、`STALE_SEQ`、`settlementId` 构成、库侧 `round_no`、`stateHash`。
 
+## 第三十二次变更：`RoomSnapshot` 增 `roundNo`（2026-11-24）
+
+- **触发**：第三十一次变更以「空窗期快照 `roundNo` 仍为已结束那局」为前提，但 `RoomSnapshot` 字段表里没有 `roundNo`；`snapshotReset=true` 时客户端拿不到局号。
+- **用户裁定**：A —— 加进快照。
+- **落稿**：
+  - `RoomSnapshot` 字段序：`matchId, seat, roundNo, rulesetId, rulesetVersion, ...`。
+  - 取值 = `State.roundNo`（`deal` 才 +1）；空窗期为已结束那局；不进 `stateHash`。
+  - 快照头字段、不属于 `view` 白名单，不触发 `viewSchemaVersion` 升版（仍为 2）。
+  - 客户端据 `roundNo + phase` 判断局状态，不依赖增量事件推断。
+- **未动**：其余快照字段、`view` 编码与白名单、`viewHash`/`viewSchemaVersion` 口径、`stateHash` 与锚点。
+
 ## 未决问题（等用户拍板）
 
 | # | 问题 | 需要谁决定 | 状态 |
