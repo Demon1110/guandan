@@ -4,6 +4,7 @@ pub mod ladder;
 pub mod model;
 pub mod params;
 pub mod parse;
+pub mod shape_plan;
 pub mod validate;
 
 pub use model::RuleSetBody;

@@ -6,7 +6,8 @@
 use crate::contract::{ErrorCode, Finding, Level, Validation};
 use crate::ruleset::ladder;
 use crate::ruleset::model::{FlushRank, LegalFrom, RuleSetBody, ScoreDimension, UpgradeBasis};
-use crate::ruleset::params::PrimitiveParams;
+use crate::ruleset::params::{ComposeShape, PrimitiveParams};
+use crate::ruleset::shape_plan::ShapePlan;
 use std::collections::HashSet;
 
 /// 校验一个名次组合（`teamRanks` / `pass.combos` 共用同一套名次编码，§5.1）：
@@ -128,6 +129,24 @@ fn gate_primitive_params(
             }
         }
         _ => {}
+    }
+}
+
+fn report_range(
+    push: &mut impl FnMut(ErrorCode, &str, String),
+    location: &str,
+    field: &str,
+    value: u8,
+    lo: u8,
+    hi: u8,
+    what: &str,
+) {
+    if !(lo..=hi).contains(&value) {
+        push(
+            ErrorCode::RsSchemaInvalid,
+            &format!("{location}.{field}"),
+            format!("{what} 必须在 {lo}–{hi} 之间，实际 {value}"),
+        );
     }
 }
 
@@ -613,29 +632,92 @@ pub fn validate(ruleset: &RuleSetBody, levels: &[Level]) -> Validation {
 
     // —— patterns[].params 取值范围（§5.2 参数表第 513–518 行） ——
     for (i, pattern) in ruleset.patterns.iter().enumerate() {
-        let mut range = |field: &str, value: u8, lo: u8, hi: u8, what: &str| {
-            if !(lo..=hi).contains(&value) {
-                push(
-                    ErrorCode::RsSchemaInvalid,
-                    &format!("patterns[{i}].params.{field}"),
-                    format!("{what} 必须在 {lo}–{hi} 之间，实际 {value}"),
-                );
-            }
-        };
+        let loc = format!("patterns[{i}].params");
         match &pattern.params {
-            PrimitiveParams::SameRank { count } => range("count", *count, 1, 8, "same-rank count"),
+            PrimitiveParams::SameRank { count } => {
+                report_range(&mut push, &loc, "count", *count, 1, 8, "same-rank count")
+            }
             PrimitiveParams::Straight { length, .. } => {
-                range("length", *length, 5, 12, "straight length")
+                report_range(&mut push, &loc, "length", *length, 5, 12, "straight length")
             }
-            PrimitiveParams::ConsecutivePairs { pairs } => {
-                range("pairs", *pairs, 2, 10, "consecutive-pairs pairs")
+            PrimitiveParams::ConsecutivePairs { pairs } => report_range(
+                &mut push,
+                &loc,
+                "pairs",
+                *pairs,
+                2,
+                10,
+                "consecutive-pairs pairs",
+            ),
+            PrimitiveParams::ConsecutiveTriples { triples } => report_range(
+                &mut push,
+                &loc,
+                "triples",
+                *triples,
+                2,
+                6,
+                "consecutive-triples triples",
+            ),
+            PrimitiveParams::Bomb { count } => {
+                report_range(&mut push, &loc, "count", *count, 4, 8, "bomb count")
             }
-            PrimitiveParams::ConsecutiveTriples { triples } => {
-                range("triples", *triples, 2, 6, "consecutive-triples triples")
-            }
-            PrimitiveParams::Bomb { count } => range("count", *count, 4, 8, "bomb count"),
-            PrimitiveParams::StraightFlush { length } => {
-                range("length", *length, 5, 12, "straight-flush length")
+            PrimitiveParams::StraightFlush { length } => report_range(
+                &mut push,
+                &loc,
+                "length",
+                *length,
+                5,
+                12,
+                "straight-flush length",
+            ),
+            PrimitiveParams::Compose {
+                shape,
+                attach,
+                max_cards,
+                wheel,
+                ..
+            } => {
+                report_range(
+                    &mut push,
+                    &loc,
+                    "maxCards",
+                    *max_cards,
+                    2,
+                    20,
+                    "compose maxCards",
+                );
+                match shape {
+                    ComposeShape::RankSame { count } => {
+                        report_range(&mut push, &loc, "count", *count, 1, 8, "rank.same count")
+                    }
+                    ComposeShape::RankContiguous { steps, step } => {
+                        report_range(
+                            &mut push,
+                            &loc,
+                            "steps",
+                            *steps,
+                            2,
+                            12,
+                            "rank.contiguous steps",
+                        );
+                        report_range(&mut push, &loc, "step", *step, 1, 3, "rank.contiguous step");
+                    }
+                    ComposeShape::SuitSame => {}
+                    ComposeShape::JokerOnly { big, small } => {
+                        report_range(&mut push, &loc, "big", *big, 0, 2, "joker.only big");
+                        report_range(&mut push, &loc, "small", *small, 0, 2, "joker.only small");
+                    }
+                }
+                if let Some(a) = attach {
+                    report_range(&mut push, &loc, "count", a.count, 1, 10, "attach count");
+                }
+                if *wheel && !matches!(shape, ComposeShape::RankContiguous { step: 1, steps: 5 }) {
+                    push(
+                        ErrorCode::RsSchemaInvalid,
+                        &format!("{loc}.wheel"),
+                        "wheel: true 仅允许 shape=rank.contiguous 且 step=1 且 steps=5".to_owned(),
+                    );
+                }
             }
             _ => {}
         }
@@ -647,6 +729,24 @@ pub fn validate(ruleset: &RuleSetBody, levels: &[Level]) -> Validation {
             &mut push,
         );
     }
+
+    // —— 规范化形状去重（§5.2 身份与唯一性）：两个 id 同形状、或既有原语与 compose
+    // 撞形状，一律 RS_SCHEMA_INVALID；不新增错误码。 ——
+    let mut seen_shapes: HashSet<String> = HashSet::new();
+    for (i, pattern) in ruleset.patterns.iter().enumerate() {
+        let Some(plan) = ShapePlan::compile(&pattern.params) else {
+            continue;
+        };
+        let key = plan.fingerprint();
+        if !seen_shapes.insert(key.clone()) {
+            push(
+                ErrorCode::RsSchemaInvalid,
+                &format!("patterns[{i}].params"),
+                format!("规范化形状与前述牌型重复（{key}）；牌型身份不得匿名、形状不得重复"),
+            );
+        }
+    }
+
     for (i, action) in ruleset.actions.iter().enumerate() {
         if let PrimitiveParams::Reserved { primitive_id } = &action.params {
             push(
@@ -728,9 +828,14 @@ pub fn validate(ruleset: &RuleSetBody, levels: &[Level]) -> Validation {
                     .iter()
                     .enumerate()
                     .filter_map(|(i, pid)| {
-                        ladder::find_pattern(ruleset, pid).and_then(|p| match p.params {
-                            PrimitiveParams::Bomb { count } => Some((i, count, pid.0.as_str())),
-                            _ => None,
+                        ladder::find_pattern(ruleset, pid).and_then(|p| {
+                            match ShapePlan::compile(&p.params) {
+                                Some(ShapePlan::RankSame {
+                                    count,
+                                    attach: None,
+                                }) => Some((i, count, pid.0.as_str())),
+                                _ => None,
+                            }
                         })
                     })
                     .collect();

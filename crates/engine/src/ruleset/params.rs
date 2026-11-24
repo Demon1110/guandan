@@ -55,6 +55,39 @@ fn default_team() -> ScoreDimension {
     ScoreDimension::Team
 }
 
+/// 附件单位（§5.2 `attach.unit`）：单张 / 对子。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AttachUnit {
+    Single,
+    Pair,
+}
+
+/// `attach`：主牌之外携带的附件（三带一 / 三带二 / 四带二 / 飞机带翅膀）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttachParams {
+    pub count: u8,
+    pub unit: AttachUnit,
+    pub same_rank: bool,
+}
+
+/// 判断器闭集实例（§5.2 「判断器闭集与组合规则」段）。
+///
+/// 只有这四个形状判断器 + 顶层 `attach`；组合只允许「与」关系，没有 `or` / `not` /
+/// 变量 / 循环 / 表达式。闭集外的形状键在 `dispatch` 构造期即 `RS_SCHEMA_INVALID`。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ComposeShape {
+    /// `rank.same{count}`：全部牌同一点数，count 1–8。
+    RankSame { count: u8 },
+    /// `rank.contiguous{steps, step}`：按自然点数位连续；step 1/2/3 表示每张点数取
+    /// 1/2/3 张。
+    RankContiguous { steps: u8, step: u8 },
+    /// `suit.same`：全部牌同一花色（王不得入内），无参。
+    SuitSame,
+    /// `joker.only{big, small}`：全部牌都是王，big / small 各 0–2。
+    JokerOnly { big: u8, small: u8 },
+}
+
 /// 各原语的固定参数结构体（§5.2 第 508–545 行）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PrimitiveParams {
@@ -81,6 +114,16 @@ pub enum PrimitiveParams {
     JokerBomb,
     /// 三带二：3 张同点主牌 + 1 对，固定 5 张，无参（§5.13 第 930 行）。
     TriplePair,
+    /// 组合式牌型 `pattern.compose`（第三十三次变更）：判断器闭集 + 附件 + 花色 /
+    /// 轮子 / 上限 / 百搭开关；载入期编译为 `ShapePlan`（§5.12）。
+    Compose {
+        shape: ComposeShape,
+        attach: Option<AttachParams>,
+        same_suit: bool,
+        max_cards: u8,
+        wheel: bool,
+        wildcard_allowed: bool,
+    },
     // —— 比较 ——
     ByRank {
         direction: OrderDirection,
@@ -201,6 +244,29 @@ struct BombRaw {
 #[serde(deny_unknown_fields)]
 struct StraightFlushRaw {
     length: u8,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttachRaw {
+    count: u8,
+    unit: AttachUnit,
+    #[serde(rename = "sameRank", default = "default_true")]
+    same_rank: bool,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeRaw {
+    /// 形状判断器实例：映射里恰好一个闭集键。
+    shape: serde_yaml::Mapping,
+    attach: Option<AttachRaw>,
+    #[serde(rename = "sameSuit", default)]
+    same_suit: bool,
+    #[serde(rename = "maxCards")]
+    max_cards: u8,
+    #[serde(default)]
+    wheel: bool,
+    #[serde(rename = "wildcardAllowed", default = "default_true")]
+    wildcard_allowed: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -331,6 +397,24 @@ struct ShuffleRaw {
     reveal: Option<bool>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RankSameShapeRaw {
+    count: u8,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContiguousShapeRaw {
+    steps: u8,
+    step: u8,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JokerOnlyShapeRaw {
+    big: u8,
+    small: u8,
+}
+
 /// 无参原语：必须显式写空对象 `{}`，缺 `params` 键即拒绝（§5.1 第 392 行、§5.2 参数表）。
 const NO_PARAM_PRIMITIVES: [&str; 10] = [
     "pattern.joker-bomb",
@@ -370,6 +454,61 @@ fn parse_raw<T: serde::de::DeserializeOwned>(
     serde_yaml::from_value::<T>(serde_yaml::Value::Mapping(params.clone())).map_err(|e| {
         SchemaError::schema_invalid(format!("{location}.{primitive_id}"), e.to_string())
     })
+}
+
+/// 解析 `compose.shape`：映射里恰好一个闭集判断器实例；闭集外写法（如 `or`）、
+/// 空映射 / 多键一律构造期 `RS_SCHEMA_INVALID`（§5.4 L1 行）。
+fn parse_compose_shape(
+    shape: &serde_yaml::Mapping,
+    location: &str,
+) -> Result<ComposeShape, SchemaError> {
+    if shape.len() != 1 {
+        return Err(SchemaError::schema_invalid(
+            format!("{location}.shape"),
+            "shape 必须是判断器闭集里的恰好一个实例",
+        ));
+    }
+    let (key, value) = shape.iter().next().unwrap();
+    let key = key.as_str().unwrap_or("");
+    match key {
+        "rank.same" => {
+            let map = value.as_mapping().ok_or_else(|| {
+                SchemaError::schema_invalid(format!("{location}.shape.rank.same"), "必须是映射")
+            })?;
+            let r: RankSameShapeRaw = parse_raw(map, location, "rank.same")?;
+            Ok(ComposeShape::RankSame { count: r.count })
+        }
+        "rank.contiguous" => {
+            let map = value.as_mapping().ok_or_else(|| {
+                SchemaError::schema_invalid(
+                    format!("{location}.shape.rank.contiguous"),
+                    "必须是映射",
+                )
+            })?;
+            let r: ContiguousShapeRaw = parse_raw(map, location, "rank.contiguous")?;
+            Ok(ComposeShape::RankContiguous {
+                steps: r.steps,
+                step: r.step,
+            })
+        }
+        "suit.same" => Ok(ComposeShape::SuitSame),
+        "joker.only" => {
+            let map = value.as_mapping().ok_or_else(|| {
+                SchemaError::schema_invalid(format!("{location}.shape.joker.only"), "必须是映射")
+            })?;
+            let r: JokerOnlyShapeRaw = parse_raw(map, location, "joker.only")?;
+            Ok(ComposeShape::JokerOnly {
+                big: r.big,
+                small: r.small,
+            })
+        }
+        other => Err(SchemaError::schema_invalid(
+            format!("{location}.shape.{other}"),
+            format!(
+                "判断器 `{other}` 不在闭集（rank.same / rank.contiguous / suit.same / joker.only）"
+            ),
+        )),
+    }
 }
 
 /// 按 `primitiveId` 把局部 `params` 映射成分型参数结构体。
@@ -421,6 +560,22 @@ pub fn dispatch(
         "pattern.triple-pair" => {
             let _: EmptyRaw = parse_raw(params, location, primitive_id)?;
             PrimitiveParams::TriplePair
+        }
+        "pattern.compose" => {
+            let r: ComposeRaw = parse_raw(params, location, primitive_id)?;
+            let shape = parse_compose_shape(&r.shape, location)?;
+            PrimitiveParams::Compose {
+                shape,
+                attach: r.attach.map(|a| AttachParams {
+                    count: a.count,
+                    unit: a.unit,
+                    same_rank: a.same_rank,
+                }),
+                same_suit: r.same_suit,
+                max_cards: r.max_cards,
+                wheel: r.wheel,
+                wildcard_allowed: r.wildcard_allowed,
+            }
         }
         "compare.by-rank" => {
             let r: DirectionRaw = parse_raw(params, location, primitive_id)?;
