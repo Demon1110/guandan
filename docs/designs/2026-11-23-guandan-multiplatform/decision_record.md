@@ -871,6 +871,20 @@
 - **未动**：v1 四段集合与转移集合、`stateHash` 与锚点、ABI 布局、`RS_PHASE_UNIMPLEMENTED`、牌型与 `pattern.compose`。
 - **代价**：实现侧把「枚举 `match` 判阶段」改为「`u8` 编号透传 + `kind` 注解」，内部表示调整、不改协议。斗地主仍缺四关：竞价轮次语义、`action.claim`/`action.declare`、`deal.draw` 与底牌转移、乘算计分。
 
+## 第三十五次变更：局终清空 `lastPlay`（N17，2026-11-24）
+
+- **触发**：实现侧报 N17 —— 局终 `lastPlay` 现取清空 `None`，但设计稿从未定义「清空还是保留最后一墩」，也没定义 `None` 的哈希编码；⑥ 第一批写结算输出必须有定论。
+- **用户裁定**：清空成 `None`。
+- **落稿**：
+  - 清空时机 = `play → settle` 转移成立那一刻；`settle` 全段 `None`；下一局 `deal` 后重新累积。
+  - `stateHash` 第 5 项与快照的空值占位：`seat = 0xFF`、`patternId` 空串（u16 前缀 0）、`patternKey = (0,0)`、`cards` 空数组（u16 前缀 0）；`0xFF` 为座位保留值。
+  - 空值两种来源（领出态尚无 `lastPlay`、本局已终局）同编码，靠 `phase` 区分。
+  - 视图编码：`phase = settle` 期间 `lastPlay` 键不出现。
+  - 结算四步不读 `lastPlay`。
+- **作废**：保留最后一墩。
+- **未动**：结算四步顺序、名次口径、`levels`/`aFailStreak`、`SettleResult` 字段、`stateHash` 段集与锚点。
+- **代价**：断线重连落在 `settle → deal` 空窗期时快照不带最后一手，结算弹窗需从本地增量/回放取。
+
 ## 未决问题（等用户拍板）
 
 | # | 问题 | 需要谁决定 | 状态 |
