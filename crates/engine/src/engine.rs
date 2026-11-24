@@ -149,6 +149,18 @@ impl M0Engine {
             .unwrap_or(true)
     }
 
+    /// 安全局数上限（§5.13「场次终止」行 1008、§5.1 `matchCap.rounds`）：缺省 12，
+    /// 取值 1–99；仅防死循环，不是胜负判据。触达计数依赖场次局号（⑧ 跨局携带），
+    /// 本批只读配置与比较规则，不在 settle 内触发终止。
+    #[allow(dead_code)] // ⑧ 接线场次终止时在 settle / 房间层调用
+    pub(crate) fn match_cap_rounds(&self) -> u16 {
+        self.ruleset
+            .match_cap
+            .as_ref()
+            .map(|c| c.rounds)
+            .unwrap_or(12)
+    }
+
     /// `action.consume-cards` 参数（§5.2 第 525 行）：`zone` 扣牌区；`count` 在 v1
     /// 只允许 0（L1 闸门，count>0 标 v2 预留），运行期只取扣牌区。规则集未声明该动作时返回 `None`。
     fn consume_cards_zone(&self) -> Option<ZoneId> {
@@ -1241,6 +1253,16 @@ mod tests {
         engine.settle(&mut s3).expect("第 3 局 settle 失败");
         assert_eq!(s3.levels, vec![0, 0], "满 3 局未过，退回起点 2（下标 0）");
         assert_eq!(s3.a_fail_streak, vec![0, 0]);
+    }
+
+    // ---------- matchCap 安全局数上限（§5.13 行 1008） ----------
+
+    #[test]
+    fn match_cap_rounds_defaults_to_twelve_and_reads_fixture() {
+        // m0-minimal 未声明 matchCap → 缺省 12；classic 夹具 rounds=12。
+        assert_eq!(engine().match_cap_rounds(), 12);
+        let classic = crate::cases::classic_engine().expect("classic 构造失败");
+        assert_eq!(classic.match_cap_rounds(), 12);
     }
 
     // ---------- N17：settle 期视图屏蔽 lastPlay ----------

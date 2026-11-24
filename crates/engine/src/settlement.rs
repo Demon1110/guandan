@@ -59,6 +59,20 @@ pub struct SettleResult {
     pub ruleset_version: String,
 }
 
+/// 安全局数上限达限后的胜方判定（§5.13「场次终止」行 1008）：未过 A 触达
+/// `matchCap.rounds` 时，只比各队当前 `levels` 档位下标，较高者为胜方；档位相同记
+/// 平局（返回 `None`）；`aFailStreak` 不参与比较。纯函数，不读场次计数。
+pub fn safety_cap_winner(levels: &[u8]) -> Option<u8> {
+    let max = *levels.iter().max()?;
+    let winners: Vec<usize> = levels
+        .iter()
+        .enumerate()
+        .filter(|(_, &level)| level == max)
+        .map(|(i, _)| i)
+        .collect();
+    (winners.len() == 1).then_some(winners[0] as u8)
+}
+
 /// `reason` 是否在 §5.7 错误码全表内（ASCII 字面值逐条比对；表外即服务端违约）。
 pub fn is_valid_reason(reason: &str) -> bool {
     ErrorCode::all()
@@ -120,5 +134,14 @@ mod tests {
         let long = "a".repeat(33);
         assert!(!valid_ruleset_version(&long));
         assert!(valid_ruleset_version(&"a".repeat(32)));
+    }
+
+    #[test]
+    fn safety_cap_winner_compares_levels_only() {
+        // 档位较高者胜；平局返回 None；streak 不入比较（此处无 streak 入参）。
+        assert_eq!(safety_cap_winner(&[5, 3]), Some(0));
+        assert_eq!(safety_cap_winner(&[3, 7]), Some(1));
+        assert_eq!(safety_cap_winner(&[3, 3]), None, "档位相同记平局");
+        assert_eq!(safety_cap_winner(&[]), None);
     }
 }
