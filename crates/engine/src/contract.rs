@@ -61,6 +61,39 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
+    /// §5.7 全表 27 个错误码逐条枚举（reason 合法性校验遍历用，第二十四次变更）。
+    pub fn all() -> [ErrorCode; 27] {
+        [
+            ErrorCode::RsSchemaInvalid,
+            ErrorCode::RsFlushAnchorMissing,
+            ErrorCode::RsLadderConflict,
+            ErrorCode::RsRefMissing,
+            ErrorCode::RsNoTermination,
+            ErrorCode::RsIllegalActionRate,
+            ErrorCode::RsInterpreterTooOld,
+            ErrorCode::RsVersionLockedByRooms,
+            ErrorCode::RsCanaryBlocked,
+            ErrorCode::RsL4Mismatch,
+            ErrorCode::RsZoneConservation,
+            ErrorCode::RsZoneCapacity,
+            ErrorCode::RsPhaseUnimplemented,
+            ErrorCode::RsDeckCountMismatch,
+            ErrorCode::RsCapacityInvalid,
+            ErrorCode::RsTeamCoverageInvalid,
+            ErrorCode::RsQuotaExceeded,
+            ErrorCode::RsGoldenRegressionFailed,
+            ErrorCode::RsInternalPanic,
+            ErrorCode::RsSeatTaken,
+            ErrorCode::AuthInvalid,
+            ErrorCode::ClientTooOld,
+            ErrorCode::RateLimited,
+            ErrorCode::StaleSeq,
+            ErrorCode::TooLate,
+            ErrorCode::VersionConflict,
+            ErrorCode::RsNoActiveVersion,
+        ]
+    }
+
     /// 返回 §5.7 表中的字面值（协议 / 日志 / Finding.code 一律用这个串）。
     pub fn code_str(self) -> &'static str {
         match self {
@@ -200,6 +233,17 @@ pub struct State {
     /// N11 运行期记账：连续过牌数。§5.12 十段内没有对应字段，
     /// **不进 stateHash**；崩溃恢复需由动作日志重建（设计缺口，见回报 N11）。
     pub passes_since_last_play: u8,
+    /// 头游（`finish_order[0]`）所在队（升级用）。诊断字段，**不进 stateHash**
+    /// （§5.12 第 2–11 项字段集不含）；1+4 形态下与 `completed_team` 不是同一概念。
+    pub winner_team: Option<u8>,
+    /// 先全员出完的队（局终止判定用）。诊断字段，**不进 stateHash**。
+    pub completed_team: Option<u8>,
+    /// 名次序列：按名次 1→n 列 seat（与 `SettleResult.result.ranks` 同口径）。
+    /// 诊断字段，**不进 stateHash**。
+    pub ranks: Vec<u8>,
+    /// 本局升级档 `step`：按 `rankCombo` 查 `levelTable.upgrade[]`；score-only 局为 `None`。
+    /// 诊断字段，**不进 stateHash**；本批只计算不落 `levels`（跨 A / 过 A 属第二批）。
+    pub settle_step: Option<u8>,
 }
 
 /// 玩家提交的动作（§5.9 第 721–726 行 `SubmitAction.payload` 按 kind 分型）。
