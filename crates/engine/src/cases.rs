@@ -39,8 +39,7 @@ pub fn build_engine() -> Result<M0Engine, String> {
 }
 
 /// 固定策略：每步取 `legal_actions` 排序后的第一个（最小合法单张）；
-/// 无合法动作则停止（m0 路径下 Pass 只在跟牌阶段出现）。跑到 `settle` 为止。
-/// 策略固定即序列固定，日志可逐条复现。
+/// 跑到 `settle` 为止。策略固定即序列固定，日志可逐条复现。
 pub fn run_m0_golden() -> Result<GoldenOutcome, String> {
     let engine = build_engine()?;
     let mut state = engine.deal(M0_SEED).map_err(|e| e.to_string())?;
@@ -52,8 +51,13 @@ pub fn run_m0_golden() -> Result<GoldenOutcome, String> {
             break;
         }
         let legal = engine.legal_actions(&state).map_err(|e| e.to_string())?;
+        // N15：phase=PLAY 且非终局时 legal 为空，引擎必须报 Internal；用例侧不允许静默 break——
+        // 一旦守卫回归被绕过，静默停止会出一个假锚点。
         if legal.is_empty() {
-            break;
+            return Err(format!(
+                "phase=PLAY 下 legal_actions 返回空（应由引擎报 Internal）：turnSeat={} finishOrder={:?}",
+                state.turn_seat, state.finish_order
+            ));
         }
         let action = legal.into_iter().next().unwrap();
         let log = match &action {
@@ -86,15 +90,6 @@ pub fn run_m0_golden() -> Result<GoldenOutcome, String> {
 }
 
 // ---------- wasm C ABI 导出（仅 wasm32 目标） ----------
-
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub extern "C" fn gf_alloc(len: usize) -> *mut u8 {
-    let mut buf = Vec::<u8>::with_capacity(len);
-    let ptr = buf.as_mut_ptr();
-    std::mem::forget(buf);
-    ptr
-}
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]

@@ -132,6 +132,17 @@ impl M0Engine {
             .map(|p| p as usize)
             .unwrap_or(total / seat_count);
 
+        // §5.4 运行时牌数断言 / `RS_ZONE_CONSERVATION`（设计稿第 574、642 行）：
+        // 载入期就该拦下「perSeat × 座位数 ≠ 总张数」的配置；若整除兜底静默截断，
+        // 多出来的牌会被静默丢掉、zones 守恒当场破，引擎不做这种静默兜底。
+        if per_seat * seat_count != total {
+            return Err(EngineError::Internal {
+                message: format!(
+                    "发牌张数不守恒: perSeat={per_seat} seatCount={seat_count} total={total}（{per_seat}×{seat_count}≠{total}）"
+                ),
+            });
+        }
+
         // 牌 id 载入期一次性分配并冻结（§5.12 第 811 行）：suits 声明序 × ranks 自然序，
         // 同一基础牌的副本占相邻 id；王排在序尾。
         let mut deck: Vec<u16> = (0..total as u16).collect();
@@ -183,6 +194,9 @@ impl M0Engine {
                 card: None,
             },
             rng,
+            // TODO(M0-GAP-N18)：score-only 局 `levels` 为空序列（G4），而 `aFailStreak` 仍按队位数
+            // 保留 2 个队位；§5.13 第 892、894 行的 aFailStreak 推进依附于 level 过 A 判定，
+            // score-only 局该字段是清零、占位还是省略未定义。现按队位数填 0，待裁决，本批不改行为。
             a_fail_streak: vec![0; self.ruleset.seats.teams.len()],
             finish_order: Vec::new(),
             seed,
@@ -327,8 +341,9 @@ impl M0Engine {
         if state.last_play.is_some() {
             out.push(Action::Pass);
         }
-        // TODO(M1-GAP-pass-rule)：接风（partnerLead）、全过回最后出牌者之外的轮转分支
-        // 属 M1；本批只实现顺时针跳过已出完座位 + 全过回领头。
+        // TODO(M0-GAP-N16)：`flow.turn.partnerLead: true` 已在夹具声明（§5.1 第 409 行承载位；
+        // §5.10 接风行第 767、878 行），接风规则未实现——本批领头出完后只顺延下一未出完座位，
+        // 未做「队友是最后压牌者则队友在下一轮直接领出、跳过其余两家」。待裁决，本批不改行为。
 
         // N15（待裁决）：文档未写「无合法动作且非终局」的处置口径；取保守读法——
         // 报 Internal，不 invent 自动过牌 / 自动终局。静默结束会把轮转 bug 伪装成正常终局。
@@ -455,7 +470,8 @@ impl M0Engine {
                     // N14：新墩起始 lastPlay 清空为 None（§5.12 第 819 行：本回合无人出过牌时该键不出现）。
                     state.last_play = None;
                     state.passes_since_last_play = 0;
-                    // 领头已出完时，顺延到下一个未出完座位（接风/队友领出的完整规则属 M1）。
+                    // TODO(M0-GAP-N16)：领头已出完时，顺延到下一个未出完座位；
+                    // 接风（队友领出、跳过其余两家）规则未实现，见上方 N16 注释。
                     state.turn_seat = if state.finish_order.contains(&last_seat) {
                         self.next_seat(&state, last_seat)
                     } else {
@@ -487,6 +503,9 @@ impl M0Engine {
         }
         // G4：score-only 不挂等级表，levels 保持空序列；aFailStreak 不推进。
         state.phase = PHASE_SETTLE;
+        // TODO(M0-GAP-N17)：局终口径文档未定义——settle 时 `lastPlay` 应清空为 None 还是保留
+        // 最后一墩；§5.12 第 819 行只规定「本回合无人出过牌时该键不出现」，未写局终快照口径。
+        // 现取清空，待裁决，本批不改行为。
         state.last_play = None;
         Ok(())
     }
@@ -537,6 +556,7 @@ mod tests {
     use super::*;
     use crate::cases::M0_SEED;
     use crate::contract::Engine;
+    use crate::ruleset::from_yaml;
 
     fn engine() -> M0Engine {
         crate::cases::build_engine().expect("m0-minimal 夹具构造失败")
@@ -598,12 +618,29 @@ mod tests {
             let legal = engine
                 .legal_actions(&state)
                 .expect("对局中途不应出现非终局空候选");
-            if legal.is_empty() {
-                break;
-            }
-            let action = legal.into_iter().next().unwrap();
+            let action = legal
+                .into_iter()
+                .next()
+                .expect("非终局空候选应由引擎报 Internal");
             state = engine.apply(state, action).expect("落子失败");
         }
         assert_eq!(state.phase, PHASE_SETTLE, "应跑到 settle");
+    }
+
+    #[test]
+    fn deal_rejects_non_conservative_per_seat() {
+        // 把夹具 perSeat 27 改成 26：26×4=104 ≠ 108。L1 不拦（26 在 1–108 值域内），
+        // 引擎发牌期必须报 Internal，而不是整除兜底静默截断、丢牌破 zones 守恒
+        // （§5.4 `RS_ZONE_CONSERVATION` 口径）。
+        let yaml = crate::cases::m0_ruleset_yaml().replace("perSeat: 27", "perSeat: 26");
+        let body = from_yaml(&yaml).expect("修改后的夹具应能构造");
+        let engine = M0Engine { ruleset: body };
+        let err = engine
+            .deal(M0_SEED)
+            .expect_err("perSeat×座位数≠总张数必须报 Internal");
+        match err {
+            EngineError::Internal { .. } => {}
+            other => panic!("应为 Internal，实际 {other:?}"),
+        }
     }
 }
