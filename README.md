@@ -2,7 +2,7 @@
 
 一套**规则驱动**的掼蛋引擎与多端框架：玩法写进 YAML（RuleSet DSL），引擎只解释规则，不做硬编码分支；同一份 Rust 代码同时编出 **native**（服务端 / 测试）与 **wasm**（客户端）两个产物，两端对同一动作序列必须算出**逐字节相同**的 `stateHash`。
 
-> 当前阶段：**M1 进行中**。M0 五条硬 gate 已全部收口；M1 的牌型全表、枚举路径重构、结算第一批、进贡/还贡、跨局携带、房间快照 wire、组牌推荐（第三十七次变更）均已落地。
+> 当前阶段：**M1 进行中**。M0 五条硬 gate 已全部收口；M1 的牌型全表、枚举路径重构、结算第一批、进贡/还贡、跨局携带、房间快照 wire、组牌推荐（第三十七次变更）、房间主干（建桌→发牌→行动窗口→出牌→结算→再来一局）、AI-L0、Web 端 + IndexedDB 续局、校验器 L2–L4 均已落地。
 > 设计口径的唯一权威是 `docs/designs/2026-11-23-guandan-multiplatform/design_draft.md`（已签署冻结）；本文只做导览，不承载任何设计结论。
 
 ---
@@ -12,12 +12,12 @@
 | 项 | 值 |
 | --- | --- |
 | 语言 / 工具链 | Rust（`rust-toolchain.toml` 钉 `stable`，组件 `rustfmt` + `clippy`，target `wasm32-unknown-unknown`） |
-| 工作区 | 4 个 crate：`gf-engine`、`gf-protocol`、`gf-runtime-spike`、`gf-table-runtime` |
+| 工作区 | 6 个 crate：`gf-engine`、`gf-protocol`、`gf-runtime-spike`、`gf-table-runtime`、`gf-ai`、`gf-client-wasm`；外加静态 Web 端 `apps/client` |
 | 规则载体 | YAML RuleSet（牌型原语/组合、牌力序、阶段表、进贡、结算、AI 推荐权重） |
 | 确定性 | 判定链零浮点、零随机、零 IO、不依赖 `HashMap` 迭代序；排序键全部显式 |
 | 双产物 | native `rlib` + wasm `cdylib`（裸产物、零 import，Node 可直接加载） |
 | 文档 | `docs/`（设计稿、变更台账、施工计划、实测资产） |
-| 测试现状 | `cargo test --workspace` 276 通过 / 0 失败（2026-11-25） |
+| 测试现状 | `cargo test --workspace` **292 通过 / 0 失败**（2026-11-25） |
 
 **玩法要点（v1 已冻结口径，速查）**
 
@@ -283,17 +283,22 @@ $env:Path = "C:\Program Files\Git\cmd;$env:Path"
 
 ```
 guandan/
-├─ Cargo.toml                 # workspace（4 个 crate）
+├─ Cargo.toml                 # workspace（6 个 crate）
 ├─ rust-toolchain.toml        # stable + rustfmt/clippy + wasm32-unknown-unknown
 ├─ crates/
 │  ├─ engine/                 # 规则引擎（核心）
 │  │  ├─ src/                 # contract / engine / ruleset / patterns / hash / view / settlement / recommend
-│  │  ├─ tests/               # 黄金、牌型全表、L1 闸门、推荐、fixtures、wasm 脚本
+│  │  ├─ tests/               # 黄金、牌型全表、L1–L4 闸门、推荐、fixtures、wasm 脚本
 │  │  ├─ benches/             # m0_bench / idle_1500 / classic_bench / recommend_bench
-│  │  └─ examples/            # m0_golden / recommend_golden（双端摘要探针）
+│  │  └─ examples/            # m0_golden / recommend_golden / classic_golden（L4 黄金生成）
 │  ├─ protocol/               # proto + prost 生成代码（入库）
-│  ├─ runtime-spike/          # M0 断线恢复原型（recovery 待迁入 table-runtime）
-│  └─ table-runtime/          # 房间快照 wire 编解码 + viewHash 自证
+│  ├─ runtime-spike/          # M0 断线恢复原型（recovery 已迁入 table-runtime，只剩 harness 夹具）
+│  ├─ table-runtime/          # 房间主干（建桌/发牌/行动窗口/托管/断线恢复/续局重演）+ 快照 wire
+│  ├─ ai/                     # AI-L0（只读 view(seat)：领出打最小单张、跟牌一律过）
+│  └─ client-wasm/            # 浏览器 wasm 绑定层（零 import，裸加载）
+├─ apps/client/               # Web 端（静态站点 + IndexedDB 动作存档 + 杀进程续局）
+├─ scripts/                   # verify_dual_hash.ps1：native/wasm 双产物同解 gate
+├─ .github/workflows/ci.yml   # 单元 + 集成、双产物 stateHash 同解、Web 续局 gate
 ├─ docs/
 │  ├─ 开发计划.md              # 排期、任务分解、验收勾选（项目方维护）
 │  ├─ designs/2026-11-23-guandan-multiplatform/
@@ -312,7 +317,7 @@ guandan/
 | 阶段 | 状态 | 内容 |
 | --- | --- | --- |
 | M0 | ✅ 已收口 | 契约锁定、双端 `stateHash` 一致、断线恢复原型、非法 RuleSet 反证、空转与包体实测 |
-| M1 | 🚧 进行中 | 牌型全表、枚举路径重构、结算两批、进贡/还贡/抗贡、跨局携带、快照 wire、组牌推荐；剩余主项是**性能与容量 gate**与「再来一局」 |
+| M1 | 🚧 进行中 | 牌型全表、枚举路径重构、结算两批、进贡/还贡/抗贡、跨局携带、快照 wire、组牌推荐、房间主干（含计时/托管/断线恢复/再来一局）、AI-L0、Web 端 + IndexedDB 续局、校验器 L2–L4、CI 双产物 gate；剩余主项是**性能与容量 gate** |
 | M2 | 未开始 | 账号、联机内测、Tauri 桌面壳、回放只读观战 |
 | M3 / M4 | 未开始 | 见 `docs/开发计划.md` |
 
@@ -321,6 +326,7 @@ guandan/
 - 单动作延迟：`guandan-classic` 领出态 `legal_actions` P99 **251.3µs < 1ms**，已过线。
 - 容量：单核标度 native ≈527 / wasm ≈501 房间；整机折算（i7-13700KF，8P/16 物理核）≈ **4,216–8,432 房间**，已到 1500 整机线（口径见 `docs/assets/m1-bench-profile.md` §8.4；单核数只作标度，不得单独判过或判不过）。
 - `recommend`：1000 手随机 27 张冷调用 avg **315.4µs** / P99 **928µs**，未越 2ms 目标线。
+- 无人值守全流程：四 bot 两局 **372 动作**，终局 `stateHash` `3635e263…4de6`，native 与 wasm 逐字节同解；Web 端每手动作落 IndexedDB，刷新/杀进程后按日志回放，哈希一致。
 
 细节与实测账目见 `docs/assets/m1-bench-profile.md`。
 
