@@ -323,8 +323,8 @@ guandan/
 
 **M1 目前的硬账**
 
-- 单动作延迟：`guandan-classic` 领出态 `legal_actions` P99 **251.3µs < 1ms**，已过线。
-- 容量：单核标度 native ≈527 / wasm ≈501 房间；整机折算（i7-13700KF，8P/16 物理核）≈ **4,216–8,432 房间**，已到 1500 整机线（口径见 `docs/assets/m1-bench-profile.md` §8.4；单核数只作标度，不得单独判过或判不过）。
+- 单动作延迟：`guandan-classic` 领出态 `legal_actions` P99 **353.3µs（native）/ 359.7µs（wasm）< 1ms**，已过线；`apply` P99 4.2/4.9µs。
+- 容量：单核标度 native ≈494 / wasm ≈484 房间；整机折算（i7-13700KF，8P/16 物理核）≈ **3,952–7,904 房间**，已到 1500 整机线（口径见 `docs/assets/m1-bench-profile.md` §10；单核数只作标度，不得单独判过或判不过）。
 - `recommend`：1000 手随机 27 张冷调用 avg **315.4µs** / P99 **928µs**，未越 2ms 目标线。
 - 无人值守全流程：四 bot 两局 **372 动作**，终局 `stateHash` `3635e263…4de6`，native 与 wasm 逐字节同解；Web 端每手动作落 IndexedDB，刷新/杀进程后按日志回放，哈希一致。
 
