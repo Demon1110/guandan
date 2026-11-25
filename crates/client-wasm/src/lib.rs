@@ -146,6 +146,9 @@ fn summary_json(r: &Room) -> String {
 
 fn outcome_json(r: &Room, diff: StepOutcome) -> String {
     let round_no = r.state().map(|s| s.round_no).unwrap_or(0);
+    // 本条动作的真实 `roomSeq`（`ActionRecord.room_seq`）；`r.room_seq()` 是**下一条**序号，
+    // 直接拿它会让「逐手记录」与「结算补记（lastRecord 的真实序号）」差 1，同键覆盖丢一手。
+    let action_seq = r.log().last().map(|rec| rec.room_seq).unwrap_or(0);
     match diff {
         StepOutcome::Waiting { seat, deadline_ms } => format!(
             "{{\"kind\":\"waiting\",\"seat\":{seat},\"deadlineMs\":{deadline_ms},\"roundNo\":{round_no}}}"
@@ -156,12 +159,12 @@ fn outcome_json(r: &Room, diff: StepOutcome) -> String {
             action_json(&action),
             auto_json(auto),
             round_no,
-            r.room_seq()
+            action_seq
         ),
         StepOutcome::Settled(_) => format!(
             "{{\"kind\":\"settled\",\"roundNo\":{},\"roomSeq\":{},\"summary\":{}}}",
             round_no,
-            r.room_seq(),
+            action_seq,
             summary_json(r)
         ),
         StepOutcome::MatchEnded(end) => format!(

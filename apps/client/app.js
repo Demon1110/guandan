@@ -215,7 +215,8 @@ function renderTable() {
     b.className = 'card' + (state.selected.has(id) ? ' picked' : '');
     b.textContent = cardLabel(id);
     b.onclick = () => {
-      if (!state.waitingSeat) return;
+      // 座位 0 是 falsy，不能写成 `if (!state.waitingSeat)`：否则人类座位永远选不中牌。
+      if (state.waitingSeat !== state.humanSeat) return;
       if (state.selected.has(id)) state.selected.delete(id);
       else state.selected.add(id);
       renderTable();
@@ -333,12 +334,19 @@ async function boot() {
   if (saved && acts.length > 0) {
     // 杀进程续局：不复用任何旧内存，只按 IndexedDB 里的动作日志重演。
     let currentRound = 1;
-    for (const rec of acts) {
+    for (let i = 0; i < acts.length; i += 1) {
+      const rec = acts[i];
       while (rec.roundNo > currentRound) {
         if (!room.nextRound(0)) throw new Error('回放时续局失败');
         currentRound += 1;
       }
-      if (!room.replay(rec)) throw new Error(`回放动作失败 seq=${rec.seq}`);
+      if (!room.replay(rec)) {
+        // 带前四条上下文：定位「记录与实际动作序列不同步」的起点。
+        throw new Error(
+          `回放动作失败 idx=${i}/${acts.length} seq=${rec.seq} round=${rec.roundNo} seat=${rec.seat} pass=${rec.pass} cards=${rec.cards}`
+          + ` 前四条=${JSON.stringify(acts.slice(Math.max(0, i - 3), i + 1))}`,
+        );
+      }
     }
     const h = room.hash();
     const same = h === saved.lastHash;
