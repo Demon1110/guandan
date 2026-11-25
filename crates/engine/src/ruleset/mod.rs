@@ -6,7 +6,8 @@ pub mod params;
 pub mod parse;
 pub mod shape_plan;
 pub mod validate;
+pub mod validate_deep;
 
 pub use model::RuleSetBody;
 pub use parse::{from_yaml, SchemaError};
-pub use validate::validate;
+pub use validate::{validate, validate_with};

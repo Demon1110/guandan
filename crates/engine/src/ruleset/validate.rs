@@ -1,6 +1,7 @@
 //! L1 结构校验（§5.4 第 569 行、§5.1 / §5.2 取值范围）。
 //!
-//! 本轮只实现 L1；L2–L4 本轮不实现：请求了未实现的级别不记入 `ran_levels`
+//! 本模块只跑 L1；L2 / L3 / L4 在 [`crate::ruleset::validate_deep`] 里，入口统一为
+//! [`validate`]（按 `levels` 派发）。请求了某个级别就必须真跑完才记入 `ran_levels`
 //! （`ran_levels` 语义是「实际跑完的级别」，§5.4 第 578 行），不伪造通过。
 
 use crate::contract::{ErrorCode, Finding, Level, Validation};
@@ -8,6 +9,9 @@ use crate::ruleset::ladder;
 use crate::ruleset::model::{FlushRank, LegalFrom, RuleSetBody, ScoreDimension, UpgradeBasis};
 use crate::ruleset::params::{ComposeShape, PrimitiveParams};
 use crate::ruleset::shape_plan::ShapePlan;
+use crate::ruleset::validate_deep::{
+    validate_l2, validate_l3, validate_l4, GoldenCase, ValidateOptions,
+};
 use std::collections::HashSet;
 
 /// 校验一个名次组合（`teamRanks` / `pass.combos` 共用同一套名次编码，§5.1）：
@@ -150,7 +154,47 @@ fn report_range(
     }
 }
 
+/// 按 `levels` 派发：L1 结构、L2 引用与牌堆、L3 可玩性、L4 黄金回归。
+///
+/// L4 的黄金用例默认取编译期内嵌的 `guandan-classic/round1`（见
+/// [`crate::ruleset::validate_deep::builtin_golden`]）；L3 默认跑 200 局（§5.4 判据）。
 pub fn validate(ruleset: &RuleSetBody, levels: &[Level]) -> Validation {
+    validate_with(
+        ruleset,
+        levels,
+        &ValidateOptions::default(),
+        &crate::ruleset::validate_deep::builtin_golden(),
+    )
+}
+
+/// 可调版入口（测试用小批量局数、或换一套黄金用例）。
+pub fn validate_with(
+    ruleset: &RuleSetBody,
+    levels: &[Level],
+    opts: &ValidateOptions,
+    golden: &[GoldenCase],
+) -> Validation {
+    let mut result = run_l1(ruleset, levels);
+    if levels.contains(&Level::L2) {
+        validate_l2(ruleset, &mut result);
+    }
+    // L3 / L4 都以「L1 + L2 先通过」为前提：结构或引用有错时跑随机对局只会放大噪音。
+    let pre_deep_ok = result
+        .findings
+        .iter()
+        .all(|f| f.level != Level::L1 && f.level != Level::L2);
+    if pre_deep_ok {
+        if levels.contains(&Level::L3) {
+            validate_l3(ruleset, opts, &mut result);
+        }
+        if levels.contains(&Level::L4) {
+            validate_l4(ruleset, golden, &mut result);
+        }
+    }
+    result
+}
+
+fn run_l1(ruleset: &RuleSetBody, levels: &[Level]) -> Validation {
     let mut result = Validation::default();
 
     let run_l1 = levels.contains(&Level::L1);

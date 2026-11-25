@@ -67,13 +67,34 @@ fn guandan_compose_passes_l1() {
 }
 
 #[test]
-fn requested_unimplemented_level_is_not_recorded() {
-    // L2–L4 本轮未实现：请求了未实现的级别不得记入 ran_levels（§5.4 第 578 行语义）。
-    let src = read_fixture("m0-minimal/ruleset.yaml");
+fn deep_levels_run_and_are_recorded() {
+    // L2–L4 已实现：跑得完就记入 ran_levels；L3 用小局数（默认 200 局见 ValidateOptions）。
+    use gf_engine::ruleset::validate_deep::{builtin_golden, ValidateOptions};
+    use gf_engine::ruleset::validate_with;
+
+    let src = read_fixture("guandan-classic/ruleset.yaml");
     let body = from_yaml(&src).unwrap();
-    let validation = validate(&body, &[Level::L2, Level::L3, Level::L4]);
-    assert!(validation.ran_levels.is_empty());
-    assert!(validation.findings.is_empty());
+    let opts = ValidateOptions {
+        l3_rounds: 2,
+        ..ValidateOptions::default()
+    };
+    let validation = validate_with(
+        &body,
+        &[Level::L1, Level::L2, Level::L3, Level::L4],
+        &opts,
+        &builtin_golden(),
+    );
+    assert!(
+        validation.findings.is_empty(),
+        "classic 应四级全过：{:?}",
+        validation.findings
+    );
+    for level in [Level::L1, Level::L2, Level::L3, Level::L4] {
+        assert!(
+            validation.ran_levels.contains(&level),
+            "{level:?} 未记入 ran_levels"
+        );
+    }
 }
 
 #[test]
