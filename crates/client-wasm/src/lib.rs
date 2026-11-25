@@ -247,9 +247,7 @@ pub extern "C" fn gf_room_new(seed_hi: u32, seed_lo: u32, human_mask: u32) -> u8
         Err(_) => return 0,
     };
     for seat in 0..4u8 {
-        if human_mask & (1 << seat) == 0
-            && r.attach_bot(seat, Box::new(gf_ai::L0Bot)).is_err()
-        {
+        if human_mask & (1 << seat) == 0 && r.attach_bot(seat, Box::new(gf_ai::L0Bot)).is_err() {
             return 0;
         }
     }
