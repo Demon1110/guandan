@@ -47,7 +47,9 @@ enum GroupKind {
     Steel2,
     Pair,
     Single,
-    /// 裸三张同点（`rank.same{3}`、无附件）：默认权重表未单列键，按 `pair` 权重兜底。
+    /// 裸三张同点（`rank.same{3}`、无附件）：§5.11 权重表未单列键，暂按 `pair`
+    /// 权重兜底；**权重键归属待上级裁决**（维持 pair=0 还是归 Unknown=0），裁决前
+    /// 不自造权重键、不改评分口径。
     BareTriple,
     /// 未在权重表覆盖的形状（`suit.same` 等 v2 预留）：按 0 分兜底。
     Unknown,
@@ -181,15 +183,19 @@ struct Partial {
     enum_order: usize,
 }
 
-/// 从 `remaining` 中移除 `cards`（每张牌只移除一次）；任一牌不在剩余集合则返回 `None`。
+/// 分组牌面从 `remaining` 中按多重集移除（双指针；两序列均已升序）；任一牌不在
+/// 剩余集合则返回 `None`。
 fn remove_cards(remaining: &[u16], cards: &[u16]) -> Option<Vec<u16>> {
-    let mut rem: Vec<u16> = remaining.to_vec();
-    for &card in cards {
-        let pos = rem.iter().position(|c| *c == card)?;
-        rem.remove(pos);
+    let mut rem: Vec<u16> = Vec::with_capacity(remaining.len());
+    let mut j = 0usize;
+    for &card in remaining {
+        if j < cards.len() && cards[j] == card {
+            j += 1;
+        } else {
+            rem.push(card);
+        }
     }
-    rem.sort_unstable();
-    Some(rem)
+    (j == cards.len()).then_some(rem)
 }
 
 /// 分组序列的字典序键：`(ladder 位次降, patternKey 降, cards 升)`（tie-break 第 ④ 级）。
@@ -312,9 +318,10 @@ pub(crate) fn recommend_layout(
     let has_straight_flush = !flush_candidates.is_empty();
 
     // 拆分按「剩余手牌」枚举：三张同点可降成对子 + 散张，百搭也会随已消耗组重新配
-    // 位；整手候选池会丢这两类组合，属候选生成缺陷，不允许池化近似。按剩余集合签名
-    // 缓存枚举结果，避免同一中间态重复跑牌型识别（§5.11 第 859–863 行预算 ≤2ms）。
-    let mut enum_cache: BTreeMap<Vec<u16>, Vec<Recognized>> = BTreeMap::new();
+    // 位；整手候选池会丢这两类组合，属候选生成缺陷，不允许池化近似。剩余集合签名
+    // 记忆化由私有分解器 `Decompose` 持有（§5.11 第 859–863 行预算 ≤2ms）；候选解析
+    // 仍走共享 `enumerate`，legal 枚举路径不变。
+    let mut decompose = crate::recommend_decompose::Decompose::new(ladder, ruleset, ctx);
 
     let initial = Partial {
         groups: Vec::new(),
@@ -343,13 +350,7 @@ pub(crate) fn recommend_layout(
 
         let mut next: Vec<Partial> = Vec::new();
         for (pi, partial) in beam.iter().enumerate() {
-            if !enum_cache.contains_key(partial.remaining.as_slice()) {
-                let v = enumerate(ladder, ruleset, ctx, &partial.remaining, false);
-                enum_cache.insert(partial.remaining.clone(), v);
-            }
-            let candidates = enum_cache
-                .get(partial.remaining.as_slice())
-                .expect("刚写入的剩余集合");
+            let candidates = decompose.candidates(ladder, ruleset, ctx, &partial.remaining);
             for (ci, rec) in candidates.iter().enumerate() {
                 let plan = plans.get(&rec.pattern_id);
                 let kind = plan

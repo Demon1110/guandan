@@ -2815,4 +2815,28 @@ mod tests {
         eprintln!("compose 随机差分: {checked} 个 (手牌×4 座位×领出/跟牌) 全部一致");
         assert_eq!(checked, SAMPLES * 4 * 2);
     }
+
+    #[test]
+    fn decompose_private_matches_shared_enumerate() {
+        let cases = [
+            crate::cases::classic_lead_state(),
+            crate::cases::classic_mid_state(),
+        ];
+        for (engine, state) in cases {
+            for seat in 0..4u8 {
+                let Some(hand) = engine.hand_cards(&state, seat) else {
+                    continue;
+                };
+                let ctx = engine.rank_context(&state);
+                let ladder = engine.cached_ladder();
+                let mine =
+                    crate::recommend_decompose::debug_list(ladder, &engine.ruleset, &ctx, hand);
+                let shared = crate::patterns::enumerate(ladder, &engine.ruleset, &ctx, hand, false);
+                assert_eq!(
+                    mine, shared,
+                    "seat {seat} 私有直取候选与共享 enumerate 不等价"
+                );
+            }
+        }
+    }
 }

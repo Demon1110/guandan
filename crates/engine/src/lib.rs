@@ -14,6 +14,7 @@ pub mod engine;
 pub mod hash;
 pub mod patterns;
 pub mod recommend;
+mod recommend_decompose;
 pub mod ruleset;
 pub mod settlement;
 pub mod view;
