@@ -13,6 +13,7 @@ pub mod contract;
 pub mod engine;
 pub mod hash;
 pub mod patterns;
+pub mod recommend;
 pub mod ruleset;
 pub mod settlement;
 pub mod view;

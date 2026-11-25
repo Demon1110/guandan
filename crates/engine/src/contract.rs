@@ -331,4 +331,17 @@ pub trait Engine {
         let _ = (state, seat);
         todo!("M1 补原语实现，接口形状在 M0 锁定，不得改")
     }
+
+    /// 组牌推荐（只读旁路，§5.11「组牌推荐」段、第二十次变更）。
+    ///
+    /// 纯函数、只读、确定性：**不进 `stateHash`、不改 `legal_actions`、不进判定链**；
+    /// native 与 wasm 必须同解。
+    fn recommend(
+        &self,
+        state: &State,
+        seat: Seat,
+    ) -> Result<crate::recommend::Layout, EngineError> {
+        let _ = (state, seat);
+        todo!("M1 补原语实现，接口形状在 M0 锁定，不得改")
+    }
 }

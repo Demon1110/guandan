@@ -229,6 +229,7 @@ fn wildcard_flush_allowed(r: &RuleSetBody) -> bool {
 // ---------- 识别结果 ----------
 
 /// 一次识别出的成型牌型（服务端判定结果，§5.9 第 203 行：`patternId` 由服务端判定）。
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Recognized {
     pub pattern_id: String,
     /// `patternKey = (countKey, rankKey)`（§5.12 第 797、842 行）。
@@ -1092,6 +1093,7 @@ pub(crate) fn enumerate(
     r: &RuleSetBody,
     ctx: &RankContext,
     hand: &[u16],
+    include_single: bool,
 ) -> Vec<Recognized> {
     let g = HandGroups::build(r, ctx, hand);
     let mut out: Vec<Recognized> = Vec::new();
@@ -1124,6 +1126,7 @@ pub(crate) fn enumerate(
     defs.sort_by_key(|(_, pos)| std::cmp::Reverse(*pos));
     for (def, _) in defs {
         let recs = match ShapePlan::compile(&def.params) {
+            Some(ShapePlan::RankSame { count: 1, .. }) if !include_single => Vec::new(),
             Some(ShapePlan::RankSame {
                 count,
                 attach: None,

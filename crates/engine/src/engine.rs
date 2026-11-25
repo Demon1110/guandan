@@ -638,7 +638,7 @@ impl M0Engine {
         let ctx = self.rank_context(state);
         let ladder = self.cached_ladder();
         let wild_ids = patterns::wildcard_ids(&self.ruleset, &ctx);
-        let records = patterns::enumerate(ladder, &self.ruleset, &ctx, &hand);
+        let records = patterns::enumerate(ladder, &self.ruleset, &ctx, &hand, true);
         let out = self.actions_from_records(records, state, force, &wild_ids, ladder);
         // 接风（`flow.turn.partnerLead`）是出牌落子后的领出座位解析，不在候选枚举侧展开；
         // 判定见 `apply_impl` 的 Play 分支。
@@ -1045,6 +1045,27 @@ impl Engine for M0Engine {
 
     fn view(&self, state: &State, seat: Seat) -> View {
         self.view_impl(state, seat)
+    }
+
+    fn recommend(
+        &self,
+        state: &State,
+        seat: Seat,
+    ) -> Result<crate::recommend::Layout, EngineError> {
+        let hand = self
+            .hand_cards(state, seat.0)
+            .ok_or_else(|| EngineError::Internal {
+                message: format!("seat {} 手牌区缺失", seat.0),
+            })?
+            .clone();
+        let ctx = self.rank_context(state);
+        let ladder = self.cached_ladder();
+        Ok(crate::recommend::recommend_layout(
+            &self.ruleset,
+            ladder,
+            &ctx,
+            &hand,
+        ))
     }
 }
 
