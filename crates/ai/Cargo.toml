@@ -1,0 +1,9 @@
+[package]
+name = "gf-ai"
+version = "0.1.0"
+edition = "2021"
+description = "M1 本地 bot（AI-L0）：决策只读 view(seat) 字节，不读 State"
+
+[dependencies]
+gf-engine = { path = "../engine" }
+gf-table-runtime = { path = "../table-runtime" }

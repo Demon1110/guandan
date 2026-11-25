@@ -179,6 +179,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gf-ai"
+version = "0.1.0"
+dependencies = [
+ "gf-engine",
+ "gf-table-runtime",
+]
+
+[[package]]
 name = "gf-engine"
 version = "0.1.0"
 dependencies = [
