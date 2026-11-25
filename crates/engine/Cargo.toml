@@ -27,3 +27,7 @@ harness = false
 [[bench]]
 name = "classic_bench"
 harness = false
+
+[[bench]]
+name = "recommend_bench"
+harness = false

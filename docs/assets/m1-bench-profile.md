@@ -207,3 +207,51 @@ rooms       = 1_000_000 / (20 × avg_action)
 
 - `stateHash = 9b2ff28b384e8d125f925005fdef659fb8abddd45cbf270e58e2d984d0907ab0`、`steps=148`、`phase=3`、`finishOrder=[1,3,0,2]`、`completedTeam=1`、`winnerTeam=1`、`discardCount=104`、`handsTotal=4`：native ↔ wasm 双端逐字段一致，**本批收口时锚点未漂移**。此后 ⑥ 第一批按 N17 `lastPlay` 空值占位与 §5.13 `attackingTeam` 交接漂至 `f65cfb2f9c598fe0…1037d`，成因见 `docs/开发计划.md` §0 gate 1。
 - 测试：`cargo test --workspace` **197 passed / 0 failed**（基线 195 + 本批 2 条差分用例）；`fmt --check` exit 0；`clippy --workspace --all-targets` 0 告警；测试只增不减。
+
+---
+
+## 9. `recommend` 第三十七次变更后的耗时（2026-11-25，`70edfdd` + 未提交重构）
+
+> 口径按 §5.11（第三十七次变更第 7 条）：**主指标 = 1000 手随机 27 张手牌的单次冷调用耗时**；`P99 ≤ 2ms` 仅作目标线，超线只记 P2、不判错。
+> 基准文件 `crates/engine/benches/recommend_bench.rs`（`harness = false`），复跑：`cargo bench -p gf-engine --bench recommend_bench`。
+> 样本：250 个种子 × 4 座位 = 1000 手，每手先 `deal(seed)` 再调一次 `recommend`，计时只包 `recommend` 本身（含两条后处理 + 独立同花顺候选枚举），记忆化表不跨调用 → 冷调用。
+
+### 9.1 实测（native，release/bench 档）
+
+| 口径 | n | avg | P50 | P90 | P99 | max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 改前（束搜索 `beamWidth=64`） | 1000 | 7–8 ms 量级 | — | — | — | — |
+| **改后（计数向量精确 DFS）** | 1000 | **499.780** | 391.600 | 896.000 | **1318.000** | 1841.700 |
+
+- `checksum = 174420`（各手 `score + groups.len()` 累加，用于跨轮比对是否同一批手牌同一解）。
+- P99 1318.0 µs **未越 2 ms 目标线**；相对改前（7–8 ms）avg 约 **15×**。
+- 结论：已达 §5.11 预算，但距用户参考实现的「微秒级」仍有量差——分解见 9.2。
+
+### 9.2 耗时拆账（临时实验，已回滚，交付树不含探针）
+
+做法：临时把 `straight_flush_candidates` 的 `enumerate` 调用替换为空候选集，跑同一套基准；跑完立即还原。
+
+| 口径 | avg | P50 | P90 | P99 | checksum |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 完整（含候选枚举） | 499.780 | 391.600 | 896.000 | 1318.000 | 174420 |
+| 去掉候选枚举 | 288.180 | 231.000 | 538.500 | 865.700 | 174420 |
+
+- 两次 `checksum` 相同 → 候选枚举确实独立于最优拆分（只读旁路成立），删它不影响推荐结果。
+- 拆账：**搜索 + 后处理 ≈ 288 µs（58%）**，**独立同花顺候选枚举（`enumerate` 全量 78 条级）≈ 212 µs（42%）**。
+- 未做改动：候选生成仍走 `enumerate`。改成「按 (花色, 窗口) 构造 + `recognize` 确认」可望省掉这 42%，但候选集合在「同点多副本」时可能比 `enumerate` 少若干变体，属可见输出差异，需按第三十次变更的「同输出」纪律先做差分锁定——暂不动，列为 backlog。
+
+### 9.3 双端同解
+
+`crates/engine/tests/wasm/verify_recommend_solution.ps1`（native + `wasm32-unknown-unknown` release + node 宿主逐值比对）：
+
+```
+native: digest=10284298271306087631 score=190 singles=3 groups=5
+wasm  : digest=10284298271306087631
+OK: recommend native/wasm 同解（digest=10284298271306087631）
+```
+
+### 9.4 回归
+
+- `cargo test --workspace` **271 passed / 0 failed**；`cargo fmt --all -- --check` exit 0；`cargo clippy -p gf-engine --all-targets -- -D warnings` 0 告警。
+  （`clippy --workspace --all-targets` 在本机因缺 `protoc` 会在 `gf-protocol` 构建脚本处失败，非本次改动引入。）
+- `stateHash` 锚点未漂移：锚点用例在全量测试内通过（`recommend` 不进 `stateHash`）。

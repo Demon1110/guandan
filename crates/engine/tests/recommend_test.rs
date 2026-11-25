@@ -224,3 +224,273 @@ fn custom_weights_override_single_score() {
     assert_eq!(layout.single_count as usize, hand.len());
     assert_eq!(layout.score, 0, "single=0 时全散张局不得扣分");
 }
+
+// ---------- 第三十七次变更：黄金用例（两种 mode 各一组） ----------
+
+const CLASSIC_YAML: &str = include_str!("fixtures/guandan-classic/ruleset.yaml");
+
+/// 用 classic 夹具加一段 `ai.recommend` 构造引擎；`mode = None` 即省略 `mode`（默认 weighted）。
+fn engine_with_mode(mode: Option<&str>) -> M0Engine {
+    let src = match mode {
+        None => format!("{CLASSIC_YAML}\nai:\n  recommend: {{ enabled: true }}"),
+        Some(m) => format!("{CLASSIC_YAML}\nai:\n  recommend: {{ enabled: true, mode: {m} }}"),
+    };
+    let body = from_yaml(&src).expect("classic + ai.recommend 夹具应构造成功");
+    M0Engine::new(body)
+}
+
+/// 把 seat 0 的手牌换成给定牌，并置为领出态（`last_play = None`）。
+fn with_hand(engine: &M0Engine, hand: Vec<u16>) -> gf_engine::contract::State {
+    let mut state = engine.deal(M0_SEED).expect("发牌失败");
+    let hand_idx = engine
+        .ruleset
+        .zones
+        .iter()
+        .position(|z| z.scope == ZoneScope::Private)
+        .unwrap_or(0) as u16;
+    let zone = state
+        .zones
+        .iter_mut()
+        .find(|z| z.seat == 0 && z.zone_id == hand_idx)
+        .expect("seat 0 手牌区");
+    zone.cards = hand;
+    state.turn_seat = 0;
+    state.last_play = None;
+    state
+}
+
+/// 第三十七次变更第 8 条的用户手牌（示意手牌，28 张，不按 27 张裁）：
+/// 炸弹 2×5、炸弹 5×5、顺子 10JQKA、三带二（三张 6 + 一对 8）、两对（一对 3、一对 7）、
+/// 4 单（4、9、小王、大王）。花色刻意打散，避免意外凑出同花顺。
+fn user_shape_hand(engine: &M0Engine) -> Vec<u16> {
+    use gf_engine::patterns::card_id;
+    let r = &engine.ruleset;
+    let mut hand: Vec<u16> = Vec::new();
+    // 炸弹 2（点数位 0）：避开红桃级牌（百搭），取 5 张真牌。
+    for (rank, suit, copy) in [(0, 0, 0), (0, 0, 1), (0, 2, 0), (0, 2, 1), (0, 3, 0)] {
+        hand.push(card_id(r, rank, suit, copy));
+    }
+    // 炸弹 5（点数位 3）：5 张。
+    for (rank, suit, copy) in [(3, 0, 0), (3, 1, 0), (3, 2, 0), (3, 3, 0), (3, 0, 1)] {
+        hand.push(card_id(r, rank, suit, copy));
+    }
+    // 顺子 10-J-Q-K-A（点数位 8..12），不同花色。
+    for (rank, suit) in [(8, 0), (9, 1), (10, 2), (11, 3), (12, 0)] {
+        hand.push(card_id(r, rank, suit, 0));
+    }
+    // 三带二：三张 6（点数位 4）+ 一对 8（点数位 6）。
+    for (rank, suit, copy) in [(4, 1, 0), (4, 2, 0), (4, 3, 0), (6, 0, 0), (6, 1, 0)] {
+        hand.push(card_id(r, rank, suit, copy));
+    }
+    // 两对：一对 3（点数位 1）、一对 7（点数位 5）。
+    for (rank, suit, copy) in [(1, 0, 0), (1, 0, 1), (5, 3, 0), (5, 3, 1)] {
+        hand.push(card_id(r, rank, suit, copy));
+    }
+    // 4 单：4（点数位 2）、9（点数位 7）+ 小王 + 大王。
+    let base_total = r.deck.ranks.len() * r.deck.suits.len() * r.deck.copies as usize;
+    hand.push(card_id(r, 2, 1, 0));
+    hand.push(card_id(r, 7, 2, 0));
+    hand.push(base_total as u16); // 小王 copy 0
+    hand.push((base_total + r.deck.copies as usize) as u16); // 大王 copy 0
+    assert_eq!(hand.len(), 28, "用户示意手牌 28 张");
+    hand
+}
+
+/// 干净黄金手（23 张）：点数位刻意留空，任何 5 张连续窗口都缺一个点数，因此不存在
+/// 意外顺子/同花顺/连对/钢板，最优拆分逐组可算（级牌 2、`levelInsert = above-A`，
+/// 牌力序 3…A、2，故 2 的 `rankKey = 13`、5 = 3）：
+///
+/// - 炸弹 5（点数位 0 = 2）→ 50；炸弹 5（点数位 12 = A）→ 50
+/// - 三带二（主牌三张 5：点数位 3、`rankKey = 3` → `30 + ⌊20×2/12⌋ = 33`）
+/// - 三对（点数位 6、7、9）→ 0 ×3，其中点数位 6 的对接被后处理吸收进三带二
+/// - 4 单（点数位 1、11、小王、大王）→ −10 ×4
+///
+/// 合计 `50 + 50 + 33 − 40 = 93`；手数 `2 炸 + 1 三带二 + 2 对 + 4 散张 = 9`。
+fn clean_hand(engine: &M0Engine) -> (Vec<u16>, i64, usize) {
+    use gf_engine::patterns::card_id;
+    let r = &engine.ruleset;
+    let mut hand: Vec<u16> = Vec::new();
+    // 炸弹 2（点数位 0）5 张、炸弹 A（点数位 12）5 张。
+    for (rank, suit, copy) in [(0, 0, 0), (0, 0, 1), (0, 2, 0), (0, 2, 1), (0, 3, 0)] {
+        hand.push(card_id(r, rank, suit, copy));
+    }
+    for (rank, suit, copy) in [(12, 0, 0), (12, 0, 1), (12, 1, 0), (12, 2, 0), (12, 3, 0)] {
+        hand.push(card_id(r, rank, suit, copy));
+    }
+    // 三带二：三张 5（点数位 3）+ 一对 8（点数位 6）。
+    for (rank, suit, copy) in [(3, 0, 0), (3, 1, 0), (3, 3, 0), (6, 0, 0), (6, 2, 0)] {
+        hand.push(card_id(r, rank, suit, copy));
+    }
+    // 余下两对：一对 9（点数位 7）、一对 J（点数位 9）。
+    for (rank, suit, copy) in [(7, 0, 0), (7, 3, 0), (9, 1, 0), (9, 2, 0)] {
+        hand.push(card_id(r, rank, suit, copy));
+    }
+    // 4 单：3（点数位 1）、K（点数位 11）+ 小王 + 大王。
+    let base_total = r.deck.ranks.len() * r.deck.suits.len() * r.deck.copies as usize;
+    hand.push(card_id(r, 1, 0, 0));
+    hand.push(card_id(r, 11, 2, 0));
+    hand.push(base_total as u16);
+    hand.push((base_total + r.deck.copies as usize) as u16);
+    assert_eq!(hand.len(), 23, "干净黄金手 23 张");
+    (hand, 93, 9)
+}
+
+/// 分组身份签名：`(patternId, patternKey, 张数)`，按字典序。
+fn layout_signature(layout: &gf_engine::recommend::Layout) -> Vec<(String, (u32, u32), usize)> {
+    let mut sig: Vec<(String, (u32, u32), usize)> = layout
+        .groups
+        .iter()
+        .map(|g| (g.pattern_id.clone(), g.pattern_key, g.cards.len()))
+        .collect();
+    sig.sort();
+    sig
+}
+
+/// 用户示意手（28 张）的黄金向量。**实现结论与「10 手」口述不一致，属权重表的必然结果**：
+/// 默认权重下把 5 张炸拆成「炸 4 + 喂一张给顺子」比留 5 张炸更高分（`50` vs `40 + 46`），
+/// 故 DFS 给出的最优是 `bomb-4 ×2 + plate-3 + straight-5 ×2 + 4 散张 = 9 手 / 181 分`。
+/// 这条差异已记入交付说明，是否改权重（让 5 张炸压过「炸 4 + 顺子」）需上级裁决，代码不擅自改。
+#[test]
+fn golden_user_shape_hand() {
+    let mut expected = vec![
+        ("bomb-4".to_owned(), (4, 3), 4),
+        ("bomb-4".to_owned(), (4, 13), 4),
+        ("plate-3".to_owned(), (6, 7), 6),
+        ("straight-5".to_owned(), (5, 5), 5),
+        ("straight-5".to_owned(), (5, 13), 5),
+    ];
+    expected.sort();
+
+    for mode in [None, Some("least-hands")] {
+        let engine = engine_with_mode(mode);
+        let hand = user_shape_hand(&engine);
+        let state = with_hand(&engine, hand.clone());
+        let layout = engine
+            .recommend(&state, Seat(0))
+            .expect("用户示意手 recommend 不应报错");
+
+        assert_conservation(&layout, &hand);
+        assert_groups_sorted(&layout);
+        assert_eq!(
+            layout_signature(&layout),
+            expected,
+            "mode={mode:?} 实际：{:?}",
+            layout_signature(&layout)
+        );
+        assert_eq!(layout.single_count, 4);
+        assert_eq!(layout.groups.len() + layout.single_count as usize, 9);
+        assert_eq!(layout.score, 181, "mode={mode:?}：Σ 分组分 + 散张分");
+    }
+}
+
+/// 干净黄金手：加权 / 手数两种 mode 各断言一次（这手牌两者同解，
+/// 因为权重表里「合并成型组」总是既提分又减手，两套序在此不冲突）。
+#[test]
+fn golden_clean_hand_both_modes() {
+    let mut expected = vec![
+        ("bomb-5".to_owned(), (5, 12), 5),
+        ("bomb-5".to_owned(), (5, 13), 5),
+        ("pair".to_owned(), (2, 7), 2),
+        ("pair".to_owned(), (2, 9), 2),
+        ("triple-pair".to_owned(), (5, 3), 5),
+    ];
+    expected.sort();
+
+    for mode in [None, Some("least-hands")] {
+        let engine = engine_with_mode(mode);
+        let (hand, expected_score, expected_hands) = clean_hand(&engine);
+        let state = with_hand(&engine, hand.clone());
+        let layout = engine
+            .recommend(&state, Seat(0))
+            .expect("干净黄金手 recommend 不应报错");
+
+        assert_conservation(&layout, &hand);
+        assert_groups_sorted(&layout);
+        assert_eq!(
+            layout_signature(&layout),
+            expected,
+            "mode={mode:?} 实际：{:?}",
+            layout_signature(&layout)
+        );
+        assert_eq!(layout.single_count, 4, "mode={mode:?}");
+        assert_eq!(
+            layout.groups.len() + layout.single_count as usize,
+            expected_hands,
+            "mode={mode:?}：应为 9 手"
+        );
+        assert_eq!(
+            layout.score, expected_score,
+            "mode={mode:?}：Σ 分组分 + 散张分"
+        );
+        assert!(!layout.has_straight_flush);
+    }
+}
+
+/// 同花顺后处理必须回原手牌做花色层检测：搜索落地的 5 张可以不是同一花色，
+/// 只要手牌里存在「同一点数、同一花色」的另一套选牌（含百搭补孔），该组就该升级。
+#[test]
+fn straight_flush_upgrades_from_suit_layer() {
+    use gf_engine::patterns::card_id;
+    let engine = classic_engine().expect("classic 构造失败");
+    let r = &engine.ruleset;
+
+    let mut hand: Vec<u16> = Vec::new();
+    // 炸弹 4：点数 3（位 1）的 4 张最小副本（♠♠♥♥），把黑桃 3 占掉。
+    for (rank, suit, copy) in [(1, 0, 0), (1, 0, 1), (1, 1, 0), (1, 1, 1)] {
+        hand.push(card_id(r, rank, suit, copy));
+    }
+    // 黑桃 4-5-6-7：落地时按牌 id 最小取，必然先取这四张。
+    for rank in 2..=5usize {
+        hand.push(card_id(r, rank, 0, 0));
+    }
+    // 方块 3-4-5-6-7：真正能成同花的那一套。
+    for rank in 1..=5usize {
+        hand.push(card_id(r, rank, 2, 0));
+    }
+
+    let state = with_hand(&engine, hand.clone());
+    let layout = engine
+        .recommend(&state, Seat(0))
+        .expect("花色层用例 recommend 不应报错");
+
+    assert_conservation(&layout, &hand);
+    let flush = layout
+        .groups
+        .iter()
+        .find(|g| g.pattern_id == "straight-flush-5")
+        .unwrap_or_else(|| panic!("应有 3-7 同花顺组，实际：{:?}", layout.groups));
+    let expected: Vec<u16> = (1..=5usize).map(|rank| card_id(r, rank, 2, 0)).collect();
+    assert_eq!(
+        flush.cards, expected,
+        "同花顺应落到方块那一套，而不是落地序取到的混花"
+    );
+    assert!(layout.has_straight_flush);
+}
+
+/// `score` 必须是**后处理之后**的分组分数之和（同花顺升级会把 46 抬到 55）。
+#[test]
+fn score_reflects_postprocessing() {
+    use gf_engine::patterns::card_id;
+    let engine = classic_engine().expect("classic 构造失败");
+    let r = &engine.ruleset;
+    // 黑桃 3-4-5-6-7 一手同花顺，另加 2 张散张。
+    let mut hand: Vec<u16> = (1..=5usize).map(|rank| card_id(r, rank, 0, 0)).collect();
+    hand.push(card_id(r, 8, 2, 0));
+    hand.push(card_id(r, 10, 3, 0));
+
+    let state = with_hand(&engine, hand.clone());
+    let layout = engine
+        .recommend(&state, Seat(0))
+        .expect("同花顺计分用例 recommend 不应报错");
+
+    assert_conservation(&layout, &hand);
+    assert_eq!(
+        layout.groups.len(),
+        1,
+        "应只保留一组同花顺，实际：{:?}",
+        layout.groups
+    );
+    assert_eq!(layout.groups[0].pattern_id, "straight-flush-5");
+    // 1 组同花顺 55 + 2 张散张 (−10 × 2) = 35；若取升级前的杂顺则是 46 − 20 = 26。
+    assert_eq!(layout.score, 35);
+}

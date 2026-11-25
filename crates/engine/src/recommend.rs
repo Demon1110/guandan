@@ -1,19 +1,18 @@
-//! 组牌推荐（`recommend`，§5.11「组牌推荐」段、第二十/二十八/二十九次变更）。
+//! 组牌推荐（`recommend`，§5.11「组牌推荐」段、第三十七次变更）。
 //!
 //! - 纯函数、只读、确定性（同输入同输出）；**不进 `stateHash`、不改 `legal_actions`、
 //!   不进双端比对的判定链**；native 与 wasm 必须同解。
 //! - 评分全整数（禁浮点）；权重按刻度 10 书写，引擎按原值直接比较、不再换算。
-//! - 搜索为确定性束搜索，`beamWidth = 64` 写死在引擎、不进 RuleSet。
+//! - 搜索为计数向量精确 DFS + 调用内局部记忆化 + 最低位锚定；旧束搜索（`beamWidth`）
+//!   已作废。搜索闭集 8 类，`triple-pair` / `straight-flush-5` 走两条后处理。
+//! - `score` 是**后处理之后**的实际分组分数之和（+ 散张），不是搜索中间值。
 
-use crate::patterns::{enumerate, RankContext, Recognized};
+use crate::patterns::{enumerate, recognize, RankContext};
+use crate::recommend_key::KeyCounts;
 use crate::ruleset::model::{AiConfig, RecommendMode, RecommendWeights};
 use crate::ruleset::shape_plan::{BombRole, ShapePlan};
 use crate::ruleset::RuleSetBody;
 use std::collections::{BTreeMap, HashSet};
-
-/// 束宽（§5.11 第 858 行）：固定常数，写死引擎、不进 RuleSet；束宽变更只影响推荐
-/// 向量，不影响 `stateHash`。
-pub const BEAM_WIDTH: usize = 64;
 
 /// 推荐出的一个分组（§5.11 第 833–834 行）。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,25 +33,29 @@ pub struct Layout {
     pub disabled: bool,
 }
 
-/// 分组牌型族：评分键分类用，对应默认权重表的各档。
+/// 搜索闭集牌型族（§5.11 第 842 行）。`TriplePair` 仅在后处理吸收后出现，不进搜索。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum GroupKind {
-    /// 普通炸弹，张数 4–8。
+enum Family {
+    Single,
+    Pair,
+    Triple,
     Bomb(u8),
-    JokerBomb,
-    StraightFlush,
     Straight,
-    TriplePair,
     Plate3,
     Steel2,
-    Pair,
-    Single,
-    /// 裸三张同点（`rank.same{3}`、无附件）：§5.11 权重表未单列键，暂按 `pair`
-    /// 权重兜底；**权重键归属待上级裁决**（维持 pair=0 还是归 Unknown=0），裁决前
-    /// 不自造权重键、不改评分口径。
-    BareTriple,
-    /// 未在权重表覆盖的形状（`suit.same` 等 v2 预留）：按 0 分兜底。
-    Unknown,
+    JokerBomb,
+    TriplePair,
+}
+
+/// 载入期从已声明牌型裁出的搜索闭集条目。
+#[derive(Clone)]
+struct Closure {
+    pattern_id: String,
+    family: Family,
+    /// 同点组张数 / 连续组每点张数。
+    count: u8,
+    /// 连续组窗口点数个数（同点组为 0）。
+    steps: u8,
 }
 
 /// 解析 `ai.recommend` 配置：返回 `(enabled, weights, mode)`；段省略 / `weights` 省略 =
@@ -62,53 +65,6 @@ pub fn resolve_config(ai: Option<&AiConfig>) -> (bool, RecommendWeights, Recomme
         None => (true, RecommendWeights::default(), RecommendMode::Weighted),
         Some(rec) => (rec.enabled, rec.weights.unwrap_or_default(), rec.mode),
     }
-}
-
-/// 载入期按 `patternId` 索引的形状计划（评分族分类用）。
-fn plan_index(r: &RuleSetBody) -> BTreeMap<String, ShapePlan> {
-    r.patterns
-        .iter()
-        .filter_map(|p| ShapePlan::compile(&p.params).map(|plan| (p.id.0.clone(), plan)))
-        .collect()
-}
-
-fn classify(plan: &ShapePlan, role: BombRole, count_key: u32) -> GroupKind {
-    match plan {
-        ShapePlan::JokerOnly { .. } => GroupKind::JokerBomb,
-        ShapePlan::RankContiguous { flush: true, .. } => GroupKind::StraightFlush,
-        ShapePlan::RankContiguous { step: 1, .. } => GroupKind::Straight,
-        ShapePlan::RankContiguous { step: 2, .. } => GroupKind::Plate3,
-        ShapePlan::RankContiguous { step: 3, .. } => GroupKind::Steel2,
-        ShapePlan::RankSame {
-            attach: Some(_), ..
-        } => GroupKind::TriplePair,
-        ShapePlan::RankSame {
-            count,
-            attach: None,
-        } => match (*count, role) {
-            (1, _) => GroupKind::Single,
-            (2, _) => GroupKind::Pair,
-            (3, _) => GroupKind::BareTriple,
-            (c @ 4..=8, _) => GroupKind::Bomb(c),
-            _ => GroupKind::Unknown,
-        },
-        ShapePlan::SuitSame => GroupKind::Unknown,
-        _ => match count_key {
-            4..=8 => GroupKind::Bomb(count_key as u8),
-            _ => GroupKind::Unknown,
-        },
-    }
-}
-
-fn is_single(kind: GroupKind) -> bool {
-    matches!(kind, GroupKind::Single)
-}
-
-fn is_bomb_family(role: BombRole) -> bool {
-    matches!(
-        role,
-        BombRole::SameRankBomb | BombRole::JokerBomb | BombRole::Flush
-    )
 }
 
 /// 位次加分（§5.11 第 843–844、854–855 行）：
@@ -121,175 +77,616 @@ fn rank_bonus(bonus: i16, rank_key: u32, n_non_joker: usize) -> i64 {
     bonus as i64 * (rank_key as i64 - 1) / (n_non_joker as i64 - 1)
 }
 
-/// 单个分组的整数评分（§5.11 第 837–844 行）。
-fn group_score(
-    plan: Option<&ShapePlan>,
-    rec: &Recognized,
-    w: &RecommendWeights,
-    n_non_joker: usize,
-) -> i64 {
-    let kind = match plan {
-        Some(plan) => classify(plan, rec.role, rec.pattern_key.0),
-        None => GroupKind::Unknown,
-    };
-    let rank_key = rec.pattern_key.1;
-    match kind {
-        GroupKind::Bomb(4) => w.bomb4 as i64,
-        GroupKind::Bomb(5) => w.bomb5 as i64,
-        GroupKind::Bomb(6) => w.bomb6 as i64,
-        GroupKind::Bomb(7) => w.bomb7 as i64,
-        GroupKind::Bomb(8) => w.bomb8 as i64,
-        GroupKind::Bomb(_) => 0,
-        GroupKind::JokerBomb => w.joker_bomb as i64,
-        GroupKind::StraightFlush => w.straight_flush as i64,
-        GroupKind::Straight => {
-            w.straight_base as i64 + rank_bonus(w.straight_rank_bonus, rank_key, n_non_joker)
+/// 从规则集声明牌型裁出搜索闭集。`triple-pair`（`attach`）与 `straight-flush-5`
+/// （`flush: true`）不进搜索，留给后处理。
+fn build_closure(r: &RuleSetBody) -> Vec<Closure> {
+    let mut out = Vec::new();
+    for p in &r.patterns {
+        let Some(plan) = ShapePlan::compile(&p.params) else {
+            continue;
+        };
+        match plan {
+            ShapePlan::RankSame {
+                count,
+                attach: None,
+            } => {
+                let family = match count {
+                    1 => Family::Single,
+                    2 => Family::Pair,
+                    3 => Family::Triple,
+                    c @ 4..=8 => Family::Bomb(c),
+                    _ => continue,
+                };
+                out.push(Closure {
+                    pattern_id: p.id.0.clone(),
+                    family,
+                    count,
+                    steps: 0,
+                });
+            }
+            ShapePlan::RankSame {
+                attach: Some(_), ..
+            } => continue,
+            ShapePlan::RankContiguous {
+                steps, step, flush, ..
+            } if !flush => {
+                let family = match step {
+                    1 => Family::Straight,
+                    2 => Family::Plate3,
+                    3 => Family::Steel2,
+                    _ => continue,
+                };
+                out.push(Closure {
+                    pattern_id: p.id.0.clone(),
+                    family,
+                    count: step,
+                    steps,
+                });
+            }
+            ShapePlan::RankContiguous { flush: true, .. } => continue,
+            ShapePlan::JokerOnly { big: 2, small: 2 } => out.push(Closure {
+                pattern_id: p.id.0.clone(),
+                family: Family::JokerBomb,
+                count: 4,
+                steps: 0,
+            }),
+            _ => continue,
         }
-        GroupKind::TriplePair => {
-            w.triple_pair_base as i64 + rank_bonus(w.triple_pair_rank_bonus, rank_key, n_non_joker)
-        }
-        GroupKind::Plate3 => {
-            w.plate3_base as i64 + rank_bonus(w.plate3_rank_bonus, rank_key, n_non_joker)
-        }
-        GroupKind::Steel2 => {
-            w.steel2_base as i64 + rank_bonus(w.steel2_rank_bonus, rank_key, n_non_joker)
-        }
-        GroupKind::Pair | GroupKind::BareTriple => w.pair as i64,
-        GroupKind::Single => w.single as i64,
-        GroupKind::Unknown => 0,
     }
+    out
 }
 
-impl From<&Recognized> for LayoutGroup {
-    fn from(rec: &Recognized) -> Self {
-        Self {
-            pattern_id: rec.pattern_id.clone(),
-            pattern_key: rec.pattern_key,
-            cards: rec.cards.clone(),
-        }
-    }
+/// 三带二在规则集中的 patternId（后处理吸收用）。
+fn triple_pair_id(r: &RuleSetBody) -> String {
+    r.patterns
+        .iter()
+        .find(|p| {
+            matches!(
+                ShapePlan::compile(&p.params),
+                Some(ShapePlan::RankSame {
+                    count: 3,
+                    attach: Some(_)
+                })
+            )
+        })
+        .map(|p| p.id.0.clone())
+        .unwrap_or_else(|| "triple-pair".to_owned())
 }
 
-/// 束搜索中的中间拆分状态。
+/// 记忆化首组选择：只存标量与首组描述，不存整条 `groups` 序列。
 #[derive(Clone, Debug)]
-struct Partial {
-    groups: Vec<Recognized>,
-    remaining: Vec<u16>,
-    /// 已选分组累计评分（不含散张单张扣分）。
-    group_score: i64,
-    /// 炸弹族（含王炸、同花顺）累计张数。
-    bomb_cards: usize,
-    /// 枚举序兜底：同级 tie-break 时取最先枚举到的一条（§5.11 第 857 行）。
-    enum_order: usize,
+struct Choice {
+    family: Family,
+    pattern_id: String,
+    count_key: u32,
+    rank_key: u32,
+    ranks: Vec<u8>,
+    score: i64,
 }
 
-/// 分组牌面从 `remaining` 中按多重集移除（双指针；两序列均已升序）；任一牌不在
-/// 剩余集合则返回 `None`。
-fn remove_cards(remaining: &[u16], cards: &[u16]) -> Option<Vec<u16>> {
-    let mut rem: Vec<u16> = Vec::with_capacity(remaining.len());
-    let mut j = 0usize;
-    for &card in remaining {
-        if j < cards.len() && cards[j] == card {
-            j += 1;
-        } else {
-            rem.push(card);
-        }
-    }
-    (j == cards.len()).then_some(rem)
+/// 一个剩余状态的最优子结构：累计分、手数、首组选择。
+#[derive(Clone, Debug)]
+struct Opt {
+    score: i64,
+    hands: u32,
+    first: Option<Box<Choice>>,
 }
 
-/// 分组序列的字典序键：`(ladder 位次降, patternKey 降, cards 升)`（tie-break 第 ④ 级）。
-fn group_tuple(
-    ladder: &[crate::contract::PatternId],
-    rec: &Recognized,
-) -> (
-    std::cmp::Reverse<usize>,
-    std::cmp::Reverse<u32>,
-    std::cmp::Reverse<u32>,
-    Vec<u16>,
-) {
-    let pos = ladder
-        .iter()
-        .position(|p| *p == crate::contract::PatternId(rec.pattern_id.clone()))
-        .unwrap_or(usize::MAX);
-    (
-        std::cmp::Reverse(pos),
-        std::cmp::Reverse(rec.pattern_key.0),
-        std::cmp::Reverse(rec.pattern_key.1),
-        rec.cards.clone(),
-    )
+/// 开放寻址记忆化表（u64 键 → 标量 + 首组索引），线性探测、按需扩容；不用 `HashMap`。
+struct Memo {
+    keys: Vec<u64>,
+    vals: Vec<Opt>,
+    used: Vec<bool>,
+    cap: usize,
+    len: usize,
 }
 
-struct Finalist<'a> {
-    partial: Partial,
-    ladder: &'a [crate::contract::PatternId],
-    single_count: usize,
-    total_score: i64,
-}
-
-impl<'a> Finalist<'a> {
-    fn new(partial: Partial, ladder: &'a [crate::contract::PatternId], single_weight: i16) -> Self {
-        let single_count = partial.remaining.len();
-        let total_score = partial.group_score + single_count as i64 * single_weight as i64;
+impl Memo {
+    fn new(cap: usize) -> Self {
+        let cap = cap.max(16).next_power_of_two();
         Self {
-            partial,
-            ladder,
-            single_count,
-            total_score,
+            keys: vec![0; cap],
+            vals: vec![
+                Opt {
+                    score: 0,
+                    hands: 0,
+                    first: None,
+                };
+                cap
+            ],
+            used: vec![false; cap],
+            cap,
+            len: 0,
+        }
+    }
+
+    fn hash(key: u64) -> u64 {
+        // splitmix64 低位混淆，开放寻址探测用。
+        let mut z = key.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+
+    fn get(&self, key: u64) -> Option<&Opt> {
+        let mut idx = (Self::hash(key) as usize) & (self.cap - 1);
+        for _ in 0..self.cap {
+            if !self.used[idx] {
+                return None;
+            }
+            if self.keys[idx] == key {
+                return Some(&self.vals[idx]);
+            }
+            idx = (idx + 1) & (self.cap - 1);
+        }
+        None
+    }
+
+    fn insert(&mut self, key: u64, opt: Opt) {
+        // 载荷超过 1/2 先扩容，避免探测表塞满后退化成 O(cap) 并静默丢条目。
+        if (self.len + 1) * 2 > self.cap {
+            self.grow();
+        }
+        self.insert_raw(key, opt);
+    }
+
+    fn insert_raw(&mut self, key: u64, opt: Opt) {
+        let mut idx = (Self::hash(key) as usize) & (self.cap - 1);
+        for _ in 0..self.cap {
+            if !self.used[idx] {
+                self.used[idx] = true;
+                self.keys[idx] = key;
+                self.vals[idx] = opt;
+                self.len += 1;
+                return;
+            }
+            if self.keys[idx] == key {
+                self.vals[idx] = opt;
+                return;
+            }
+            idx = (idx + 1) & (self.cap - 1);
+        }
+        // 理论不可达（载荷 < cap 且已扩容）；真到这里说明扩容逻辑被改坏。
+        debug_assert!(false, "记忆化表探测满且插入失败");
+    }
+
+    fn grow(&mut self) {
+        let old: Vec<(u64, Opt)> = self
+            .used
+            .iter()
+            .enumerate()
+            .filter(|(_, used)| **used)
+            .map(|(i, _)| (self.keys[i], self.vals[i].clone()))
+            .collect();
+        self.cap *= 2;
+        self.keys = vec![0; self.cap];
+        self.vals = vec![
+            Opt {
+                score: 0,
+                hands: 0,
+                first: None,
+            };
+            self.cap
+        ];
+        self.used = vec![false; self.cap];
+        self.len = 0;
+        for (k, v) in old {
+            self.insert_raw(k, v);
         }
     }
 }
 
-/// tie-break（§5.11 第 856–857 行，固定双端同序）：
-/// 分数高 → 散张少 → 炸弹族总张数多 → 分组序列字典序小 → 枚举序最先。
-fn finalist_better(a: &Finalist, b: &Finalist) -> bool {
-    if a.total_score != b.total_score {
-        return a.total_score > b.total_score;
+/// 搜索的不变参数（与记忆化表分开持有，避免递归时借用冲突、也不必每层克隆闭集）。
+struct SearchParams<'a> {
+    ruleset: &'a RuleSetBody,
+    ctx: &'a RankContext,
+    weights: &'a RecommendWeights,
+    mode: RecommendMode,
+    closure: &'a [Closure],
+    n_non_joker: usize,
+}
+
+impl SearchParams<'_> {
+    fn group_score(&self, family: Family, rank_key: u32) -> i64 {
+        let w = self.weights;
+        match family {
+            Family::Bomb(4) => w.bomb4 as i64,
+            Family::Bomb(5) => w.bomb5 as i64,
+            Family::Bomb(6) => w.bomb6 as i64,
+            Family::Bomb(7) => w.bomb7 as i64,
+            Family::Bomb(8) => w.bomb8 as i64,
+            Family::Bomb(_) => 0,
+            Family::JokerBomb => w.joker_bomb as i64,
+            Family::Straight => {
+                w.straight_base as i64
+                    + rank_bonus(w.straight_rank_bonus, rank_key, self.n_non_joker)
+            }
+            Family::Plate3 => {
+                w.plate3_base as i64 + rank_bonus(w.plate3_rank_bonus, rank_key, self.n_non_joker)
+            }
+            Family::Steel2 => {
+                w.steel2_base as i64 + rank_bonus(w.steel2_rank_bonus, rank_key, self.n_non_joker)
+            }
+            // 裸三张同点：权重表未单列键（§5.11 无 `triple` 档），暂按 `pair` 兜底。
+            // **权重键归属待上级裁决**，裁决前不自造权重键、不改评分口径。
+            Family::Triple | Family::Pair => w.pair as i64,
+            Family::TriplePair => {
+                w.triple_pair_base as i64
+                    + rank_bonus(w.triple_pair_rank_bonus, rank_key, self.n_non_joker)
+            }
+            Family::Single => w.single as i64,
+        }
     }
-    if a.single_count != b.single_count {
-        return a.single_count < b.single_count;
+
+    /// `a` 是否严格优于 `b`（tie-break 三级；相等不替换，即取枚举顺序最先者）。
+    fn strictly_better(&self, a: &Opt, b: &Opt) -> bool {
+        match self.mode {
+            RecommendMode::Weighted => {
+                if a.score != b.score {
+                    return a.score > b.score;
+                }
+                if a.hands != b.hands {
+                    return a.hands < b.hands;
+                }
+                false
+            }
+            RecommendMode::LeastHands => {
+                if a.hands != b.hands {
+                    return a.hands < b.hands;
+                }
+                if a.score != b.score {
+                    return a.score > b.score;
+                }
+                false
+            }
+        }
     }
-    if a.partial.bomb_cards != b.partial.bomb_cards {
-        return a.partial.bomb_cards > b.partial.bomb_cards;
+
+    fn rank_key_same(&self, rank: usize) -> u32 {
+        self.ctx.rank_key(self.ruleset, rank)
     }
-    let cmp = a
-        .partial
-        .groups
-        .iter()
-        .map(|g| group_tuple(a.ladder, g))
-        .cmp(b.partial.groups.iter().map(|g| group_tuple(b.ladder, g)));
-    match cmp {
-        std::cmp::Ordering::Less => true,
-        std::cmp::Ordering::Greater => false,
-        std::cmp::Ordering::Equal => a.partial.enum_order < b.partial.enum_order,
+
+    fn rank_key_natural(&self, top: usize) -> u32 {
+        self.ctx.natural_rank_key(self.ruleset, top)
+    }
+
+    fn keep_best(&self, best: &mut Option<Opt>, cand: Opt) {
+        match best {
+            Some(cur) if !self.strictly_better(&cand, cur) => {}
+            _ => *best = Some(cand),
+        }
     }
 }
 
-/// 束内剪枝序：中间态只看已选分组累计分与炸弹张数；散张数要到终态才定。
-fn beam_cmp(a: &Partial, b: &Partial) -> std::cmp::Ordering {
-    match a.group_score.cmp(&b.group_score) {
-        std::cmp::Ordering::Equal => {}
-        other => return other.reverse(),
+/// 计数向量精确 DFS：每步只枚举「包含最小非空点数」的组，同状态只算一次。
+fn solve(params: &SearchParams, memo: &mut Memo, counts: &KeyCounts) -> Opt {
+    if counts.is_empty() {
+        return Opt {
+            score: 0,
+            hands: 0,
+            first: None,
+        };
     }
-    match a.bomb_cards.cmp(&b.bomb_cards) {
-        std::cmp::Ordering::Equal => {}
-        other => return other.reverse(),
+    let key = counts.pack();
+    if let Some(hit) = memo.get(key).cloned() {
+        return hit;
     }
-    a.enum_order.cmp(&b.enum_order)
+
+    let mut best: Option<Opt> = None;
+    let anchor = counts.anchor_base();
+    let single_score = params.weights.single as i64;
+
+    // 散张候选：锚点一张单张（不与其他牌成型）。仍记为 `Single` 首组选择，
+    // 供还原链穿过散张继续到达其后的成型组。
+    if let Some(a) = anchor {
+        let mut rest = counts.clone();
+        if rest.consume_single_base(a) {
+            let tail = solve(params, memo, &rest);
+            let choice = Choice {
+                family: Family::Single,
+                pattern_id: String::new(),
+                count_key: 1,
+                rank_key: 0,
+                ranks: vec![a as u8],
+                score: single_score,
+            };
+            let cand = Opt {
+                score: tail.score + single_score,
+                hands: tail.hands + 1,
+                first: Some(Box::new(choice)),
+            };
+            params.keep_best(&mut best, cand);
+        }
+    } else if counts.little() + counts.big() > 0 {
+        // 只剩王：取一张小王 / 大王作散张（王不成对，只能单出或组王炸）。
+        let mut rest = counts.clone();
+        if rest.little() > 0 {
+            rest.take_little(1);
+        } else {
+            rest.take_big(1);
+        }
+        let tail = solve(params, memo, &rest);
+        let choice = Choice {
+            family: Family::Single,
+            pattern_id: String::new(),
+            count_key: 1,
+            rank_key: 0,
+            ranks: Vec::new(),
+            score: single_score,
+        };
+        let cand = Opt {
+            score: tail.score + single_score,
+            hands: tail.hands + 1,
+            first: Some(Box::new(choice)),
+        };
+        params.keep_best(&mut best, cand);
+    }
+
+    // 成型组候选：每个闭集条目在锚点上展开同点组 / 合法窗口。
+    for closure in params.closure {
+        match closure.family {
+            Family::Single => continue,
+            Family::Pair | Family::Triple | Family::Bomb(_) => {
+                let Some(a) = anchor else { continue };
+                if counts.real(a) + counts.wild() < closure.count {
+                    continue;
+                }
+                let mut rest = counts.clone();
+                if !rest.consume_same(a, closure.count) {
+                    continue;
+                }
+                let tail = solve(params, memo, &rest);
+                let rank_key = params.rank_key_same(a);
+                let score = params.group_score(closure.family, rank_key);
+                let choice = Choice {
+                    family: closure.family,
+                    pattern_id: closure.pattern_id.clone(),
+                    count_key: closure.count as u32,
+                    rank_key,
+                    ranks: vec![a as u8],
+                    score,
+                };
+                let cand = Opt {
+                    score: tail.score + score,
+                    hands: tail.hands + 1,
+                    first: Some(Box::new(choice)),
+                };
+                params.keep_best(&mut best, cand);
+            }
+            Family::Straight | Family::Plate3 | Family::Steel2 => {
+                let Some(a) = anchor else { continue };
+                let steps = closure.steps as usize;
+                let per = closure.count as usize;
+                let n = counts.n();
+                if steps == 0 || n < steps {
+                    continue;
+                }
+                let mut windows: Vec<Vec<usize>> = Vec::new();
+                for start in 0..=n - steps {
+                    let w: Vec<usize> = (start..start + steps).collect();
+                    if w.contains(&a) {
+                        windows.push(w);
+                    }
+                }
+                // 轮子顺 A-2-3-4-5（仅 `straight-5`，第十七次变更）。
+                if closure.family == Family::Straight && steps == 5 {
+                    let wheel = vec![n - 1, 0, 1, 2, 3];
+                    if wheel.contains(&a) && !windows.contains(&wheel) {
+                        windows.push(wheel);
+                    }
+                }
+                for window in windows {
+                    let mut rest = counts.clone();
+                    if !rest.consume_window(&window, per as u8) {
+                        continue;
+                    }
+                    let tail = solve(params, memo, &rest);
+                    let mut sorted = window.clone();
+                    sorted.sort_unstable();
+                    let is_wheel = closure.family == Family::Straight
+                        && steps == 5
+                        && sorted == vec![0, 1, 2, 3, n - 1];
+                    let top = *sorted.last().unwrap_or(&0);
+                    let rank_key = if is_wheel {
+                        0
+                    } else {
+                        params.rank_key_natural(top)
+                    };
+                    let count_key = (steps * per) as u32;
+                    let score = params.group_score(closure.family, rank_key);
+                    let choice = Choice {
+                        family: closure.family,
+                        pattern_id: closure.pattern_id.clone(),
+                        count_key,
+                        rank_key,
+                        ranks: window.iter().map(|&r| r as u8).collect(),
+                        score,
+                    };
+                    let cand = Opt {
+                        score: tail.score + score,
+                        hands: tail.hands + 1,
+                        first: Some(Box::new(choice)),
+                    };
+                    params.keep_best(&mut best, cand);
+                }
+            }
+            Family::JokerBomb => {
+                if anchor.is_some() {
+                    continue;
+                }
+                let mut rest = counts.clone();
+                if !rest.consume_joker_bomb() {
+                    continue;
+                }
+                let tail = solve(params, memo, &rest);
+                let rank_key = params.ctx.joker_key(params.ruleset, true);
+                let score = params.group_score(Family::JokerBomb, rank_key);
+                let choice = Choice {
+                    family: Family::JokerBomb,
+                    pattern_id: closure.pattern_id.clone(),
+                    count_key: 4,
+                    rank_key,
+                    ranks: Vec::new(),
+                    score,
+                };
+                let cand = Opt {
+                    score: tail.score + score,
+                    hands: tail.hands + 1,
+                    first: Some(Box::new(choice)),
+                };
+                params.keep_best(&mut best, cand);
+            }
+            Family::TriplePair => continue,
+        }
+    }
+
+    let result = best.unwrap_or(Opt {
+        score: 0,
+        hands: 0,
+        first: None,
+    });
+    memo.insert(key, result.clone());
+    result
 }
 
-fn partial_better(a: &Partial, b: &Partial) -> bool {
-    beam_cmp(a, b) == std::cmp::Ordering::Less
+/// 手牌分桶（选牌落地用）：真牌按点数升序、百搭 / 小王 / 大王各自成桶。
+struct HandBuckets {
+    real: BTreeMap<usize, Vec<u16>>,
+    wild: Vec<u16>,
+    little: Vec<u16>,
+    big: Vec<u16>,
 }
 
-/// 推荐主入口：对给定手牌做确定性束搜索拆分。纯函数、只读、不回写状态。
+impl HandBuckets {
+    fn build(r: &RuleSetBody, wild_ids: &HashSet<u16>, hand: &[u16]) -> Self {
+        let rank_count = r.deck.ranks.len();
+        let suit_count = r.deck.suits.len();
+        let copies = r.deck.copies as usize;
+        let base_total = rank_count * suit_count * copies;
+        let mut real: BTreeMap<usize, Vec<u16>> = BTreeMap::new();
+        let mut wild = Vec::new();
+        let mut little = Vec::new();
+        let mut big = Vec::new();
+        for &card in hand {
+            let c = card as usize;
+            if wild_ids.contains(&card) {
+                wild.push(card);
+                continue;
+            }
+            if c >= base_total {
+                let slot = (c - base_total) / copies;
+                if slot == 0 {
+                    little.push(card);
+                } else {
+                    big.push(card);
+                }
+                continue;
+            }
+            let b = c / copies;
+            let rank_idx = b % rank_count;
+            real.entry(rank_idx).or_default().push(card);
+        }
+        for v in real.values_mut() {
+            v.sort_unstable();
+        }
+        wild.sort_unstable();
+        little.sort_unstable();
+        big.sort_unstable();
+        Self {
+            real,
+            wild,
+            little,
+            big,
+        }
+    }
+
+    /// 取某点数前 `want` 张真牌，不足从百搭补；返回凑齐的牌（真牌优先，§5.11「落地」）。
+    fn take_same(&mut self, rank: usize, want: usize) -> Vec<u16> {
+        let mut cards = Vec::new();
+        let bucket = self.real.entry(rank).or_default();
+        let take = want.min(bucket.len());
+        cards.extend_from_slice(&bucket[..take]);
+        bucket.drain(..take);
+        let need = want - cards.len();
+        let wild_take = need.min(self.wild.len());
+        cards.extend_from_slice(&self.wild[..wild_take]);
+        self.wild.drain(..wild_take);
+        cards
+    }
+
+    /// 连续组：窗口每点 `per` 张，真牌优先、百搭补孔。
+    fn take_window(&mut self, window: &[usize], per: usize) -> Vec<u16> {
+        let mut cards = Vec::new();
+        for &r in window {
+            cards.extend(self.take_same(r, per));
+        }
+        cards
+    }
+
+    fn take_joker_bomb(&mut self) -> Vec<u16> {
+        let mut cards = Vec::new();
+        let lt = 2.min(self.little.len());
+        cards.extend_from_slice(&self.little[..lt]);
+        self.little.drain(..lt);
+        let bg = 2.min(self.big.len());
+        cards.extend_from_slice(&self.big[..bg]);
+        self.big.drain(..bg);
+        cards
+    }
+}
+
+/// 内部成型分组（携带族 / 点数 / 窗口供后处理判定）。
+#[derive(Clone)]
+struct Built {
+    layout: LayoutGroup,
+    family: Family,
+    rank: usize,
+    ranks: Vec<usize>,
+    rank_key: u32,
+    score: i64,
+}
+
+fn apply_choice(counts: &mut KeyCounts, choice: &Choice) {
+    match choice.family {
+        Family::Pair | Family::Triple | Family::Bomb(_) => {
+            if let Some(&r) = choice.ranks.first() {
+                counts.consume_same(r as usize, choice.count_key as u8);
+            }
+        }
+        Family::Straight | Family::Plate3 | Family::Steel2 => {
+            let window: Vec<usize> = choice.ranks.iter().map(|&r| r as usize).collect();
+            let per = match choice.family {
+                Family::Straight => 1,
+                Family::Plate3 => 2,
+                Family::Steel2 => 3,
+                _ => 1,
+            };
+            counts.consume_window(&window, per);
+        }
+        Family::JokerBomb => {
+            counts.consume_joker_bomb();
+        }
+        Family::Single => {
+            if let Some(&r) = choice.ranks.first() {
+                counts.consume_single_base(r as usize);
+            } else if counts.little() > 0 {
+                counts.take_little(1);
+            } else if counts.big() > 0 {
+                counts.take_big(1);
+            }
+        }
+        Family::TriplePair => {}
+    }
+}
+
+/// 推荐主入口：计数向量精确 DFS + 两条后处理。纯函数、只读、不回写状态。
 pub(crate) fn recommend_layout(
     ruleset: &RuleSetBody,
     ladder: &[crate::contract::PatternId],
     ctx: &RankContext,
     hand: &[u16],
 ) -> Layout {
-    let (enabled, weights, _mode) = resolve_config(ruleset.ai.as_ref());
+    let (enabled, weights, mode) = resolve_config(ruleset.ai.as_ref());
     if !enabled {
         return Layout {
             groups: Vec::new(),
@@ -301,12 +698,8 @@ pub(crate) fn recommend_layout(
         };
     }
 
-    let plans = plan_index(ruleset);
-    let n_non_joker = ruleset.deck.ranks.len();
-
-    // 整手枚举一次：同花顺候选独立于最优拆分（§5.11 第 835–836 行），含百搭方案、
-    // 按 cards 升序去重；最优拆分没走同花顺也要列出。
-    let all: Vec<Recognized> = enumerate(ladder, ruleset, ctx, hand, false);
+    // 同花顺候选独立于最优拆分（§5.11 第 835–836 行），含百搭方案、去重、按 cards 升序。
+    let all: Vec<crate::patterns::Recognized> = enumerate(ladder, ruleset, ctx, hand, false);
     let mut flush_seen: HashSet<Vec<u16>> = HashSet::new();
     let mut flush_candidates: Vec<Vec<u16>> = Vec::new();
     for rec in &all {
@@ -317,106 +710,94 @@ pub(crate) fn recommend_layout(
     flush_candidates.sort();
     let has_straight_flush = !flush_candidates.is_empty();
 
-    // 拆分按「剩余手牌」枚举：三张同点可降成对子 + 散张，百搭也会随已消耗组重新配
-    // 位；整手候选池会丢这两类组合，属候选生成缺陷，不允许池化近似。剩余集合签名
-    // 记忆化由私有分解器 `Decompose` 持有（§5.11 第 859–863 行预算 ≤2ms）；候选解析
-    // 仍走共享 `enumerate`，legal 枚举路径不变。
-    let mut decompose = crate::recommend_decompose::Decompose::new(ladder, ruleset, ctx);
-
-    let initial = Partial {
-        groups: Vec::new(),
-        remaining: {
-            let mut h: Vec<u16> = hand.to_vec();
-            h.sort_unstable();
-            h
-        },
-        group_score: 0,
-        bomb_cards: 0,
-        enum_order: 0,
+    let wild_ids = crate::patterns::wildcard_ids(ruleset, ctx);
+    let counts = KeyCounts::build(ruleset, ctx, hand);
+    let closure = build_closure(ruleset);
+    let params = SearchParams {
+        ruleset,
+        ctx,
+        weights: &weights,
+        mode,
+        closure: &closure,
+        n_non_joker: ruleset.deck.ranks.len(),
     };
+    let mut memo = Memo::new(1024);
+    let root = solve(&params, &mut memo, &counts);
 
-    let mut beam: Vec<Partial> = vec![initial];
-    let mut best: Option<Finalist> = None;
-
-    while !beam.is_empty() {
-        // 当前束内每个中间态本身就是一条终态拆分（剩余全算散张单张）。
-        for partial in &beam {
-            let cand = Finalist::new(partial.clone(), ladder, weights.single);
-            match &best {
-                Some(cur) if !finalist_better(&cand, cur) => {}
-                _ => best = Some(cand),
+    // 沿首组选择链还原成型分组描述（不克隆整条序列，只走记忆化首组指针）。
+    let mut cur = counts.clone();
+    let mut choices: Vec<Choice> = Vec::new();
+    let mut opt = root.clone();
+    while let Some(choice) = opt.first.take() {
+        choices.push((*choice).clone());
+        apply_choice(&mut cur, choices.last().expect("刚压入"));
+        if cur.is_empty() {
+            break;
+        }
+        match memo.get(cur.pack()).cloned() {
+            Some(next) => opt = next,
+            None => {
+                debug_assert!(false, "还原链在记忆化表里断了");
+                break;
             }
         }
-
-        let mut next: Vec<Partial> = Vec::new();
-        for (pi, partial) in beam.iter().enumerate() {
-            let candidates = decompose.candidates(ladder, ruleset, ctx, &partial.remaining);
-            for (ci, rec) in candidates.iter().enumerate() {
-                let plan = plans.get(&rec.pattern_id);
-                let kind = plan
-                    .map(|p| classify(p, rec.role, rec.pattern_key.0))
-                    .unwrap_or(GroupKind::Unknown);
-                if is_single(kind) {
-                    continue;
-                }
-                let Some(remaining) = remove_cards(&partial.remaining, &rec.cards) else {
-                    continue;
-                };
-                let gscore = group_score(plan, rec, &weights, n_non_joker);
-                let bomb_cards = partial.bomb_cards
-                    + if is_bomb_family(rec.role) {
-                        rec.cards.len()
-                    } else {
-                        0
-                    };
-                let groups = {
-                    let mut g = partial.groups.clone();
-                    g.push(rec.clone());
-                    g
-                };
-                next.push(Partial {
-                    groups,
-                    remaining,
-                    group_score: partial.group_score + gscore,
-                    bomb_cards,
-                    enum_order: pi * candidates.len() + ci,
-                });
-            }
-        }
-
-        // 同一剩余牌集合的不同拆法只留 tie-break 最优一条（§5.11 第 859 行剪枝），
-        // 既收敛束内重复，也减少按剩余手牌重复枚举的次数。
-        let mut seen: BTreeMap<Vec<u16>, Partial> = BTreeMap::new();
-        for p in next {
-            match seen.get(&p.remaining) {
-                Some(cur) if !partial_better(&p, cur) => {}
-                _ => {
-                    seen.insert(p.remaining.clone(), p);
-                }
-            }
-        }
-        let mut next: Vec<Partial> = seen.into_values().collect();
-        next.sort_by(beam_cmp);
-        next.truncate(BEAM_WIDTH);
-        beam = next;
     }
 
-    let best = match best {
-        Some(b) => b,
-        None => {
-            return Layout {
-                groups: Vec::new(),
-                score: 0,
-                single_count: 0,
-                straight_flush_candidates: flush_candidates,
-                has_straight_flush,
-                disabled: false,
-            };
+    let mut buckets = HandBuckets::build(ruleset, &wild_ids, hand);
+    let mut built: Vec<Built> = Vec::new();
+    for choice in &choices {
+        if choice.family == Family::Single {
+            continue;
         }
-    };
+        let cards = match choice.family {
+            Family::Pair | Family::Triple | Family::Bomb(_) => {
+                let r = choice.ranks.first().copied().unwrap_or(0) as usize;
+                buckets.take_same(r, choice.count_key as usize)
+            }
+            Family::Straight | Family::Plate3 | Family::Steel2 => {
+                let window: Vec<usize> = choice.ranks.iter().map(|&r| r as usize).collect();
+                let per = match choice.family {
+                    Family::Straight => 1,
+                    Family::Plate3 => 2,
+                    Family::Steel2 => 3,
+                    _ => 1,
+                };
+                buckets.take_window(&window, per)
+            }
+            Family::JokerBomb => buckets.take_joker_bomb(),
+            Family::Single | Family::TriplePair => Vec::new(),
+        };
+        let ranks: Vec<usize> = choice.ranks.iter().map(|&r| r as usize).collect();
+        let rank = ranks.first().copied().unwrap_or(0);
+        built.push(Built {
+            layout: LayoutGroup {
+                pattern_id: choice.pattern_id.clone(),
+                pattern_key: (choice.count_key, choice.rank_key),
+                cards,
+            },
+            family: choice.family,
+            rank,
+            ranks,
+            rank_key: choice.rank_key,
+            score: choice.score,
+        });
+    }
 
-    let mut groups: Vec<LayoutGroup> = best.partial.groups.iter().map(LayoutGroup::from).collect();
-    // `groups` 排序键：`(patternId 字典序升, patternKey 降, cards 升)`。
+    // 散张数按**后处理之前**的搜索手数计（后处理只合并成型组，不改散张）。
+    let single_count = root.hands as usize - built.len();
+
+    postprocess_triple_pair(ruleset, &weights, params.n_non_joker, &mut built);
+    postprocess_straight_flush(ladder, ruleset, ctx, &weights, hand, &wild_ids, &mut built);
+
+    // `score` 必须是后处理之后的实际分组分数之和（§5.11「score = Σ groupScore」）。
+    let mut score: i64 = single_count as i64 * weights.single as i64;
+    let mut groups: Vec<LayoutGroup> = Vec::with_capacity(built.len());
+    for b in built {
+        score += b.score;
+        let mut group = b.layout;
+        group.cards.sort_unstable();
+        groups.push(group);
+    }
     groups.sort_by(|a, b| {
         (&a.pattern_id, std::cmp::Reverse(a.pattern_key), &a.cards).cmp(&(
             &b.pattern_id,
@@ -427,11 +808,178 @@ pub(crate) fn recommend_layout(
 
     Layout {
         groups,
-        score: best.total_score,
-        single_count: best.single_count as u8,
+        score,
+        single_count: single_count as u8,
         straight_flush_candidates: flush_candidates,
         has_straight_flush,
         disabled: false,
+    }
+}
+
+/// 后处理 ①：三带二贪心吸收（§5.11 第 853–856 行）。
+///
+/// 顺序固定：**点数最小的对子**优先，吸收进**点数最小的三张**；接受条件为「手数减 1
+/// （合并必然满足）且 `score` 不降」，不满足则回退该次吸收、换下一个对子。无随机。
+fn postprocess_triple_pair(
+    ruleset: &RuleSetBody,
+    weights: &RecommendWeights,
+    n_non_joker: usize,
+    built: &mut Vec<Built>,
+) {
+    let tp_id = triple_pair_id(ruleset);
+    // 被否决的对子（按落地牌 id 序列记录），不再重复尝试。
+    let mut rejected: Vec<Vec<u16>> = Vec::new();
+    loop {
+        let pair_idx = built
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.family == Family::Pair && !rejected.contains(&b.layout.cards))
+            .min_by(|a, b| {
+                a.1.rank
+                    .cmp(&b.1.rank)
+                    .then_with(|| a.1.layout.cards.cmp(&b.1.layout.cards))
+            })
+            .map(|(i, _)| i);
+        let Some(pi) = pair_idx else { break };
+
+        let triple_idx = built
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.family == Family::Triple)
+            .min_by(|a, b| {
+                a.1.rank
+                    .cmp(&b.1.rank)
+                    .then_with(|| a.1.layout.cards.cmp(&b.1.layout.cards))
+            })
+            .map(|(i, _)| i);
+        let Some(ti) = triple_idx else { break };
+
+        let triple_rank_key = built[ti].rank_key;
+        let new_score = weights.triple_pair_base as i64
+            + rank_bonus(weights.triple_pair_rank_bonus, triple_rank_key, n_non_joker);
+        let old_score = built[pi].score + built[ti].score;
+        if new_score < old_score {
+            rejected.push(built[pi].layout.cards.clone());
+            continue;
+        }
+
+        let mut cards = built[ti].layout.cards.clone();
+        cards.extend_from_slice(&built[pi].layout.cards);
+        cards.sort_unstable();
+        let triple = built[ti].clone();
+        built[ti] = Built {
+            layout: LayoutGroup {
+                pattern_id: tp_id.clone(),
+                pattern_key: (5, triple.rank_key),
+                cards,
+            },
+            family: Family::TriplePair,
+            rank: triple.rank,
+            ranks: triple.ranks.clone(),
+            rank_key: triple.rank_key,
+            score: new_score,
+        };
+        built.remove(pi);
+    }
+}
+
+/// 后处理 ②：同花顺升级（§5.11 第 857–861 行）。
+///
+/// 计数向量层不含花色，故对每个 5 张顺子**回原手牌做花色层检测**：按「同一点数 × 同一
+/// 花色」找真牌（跳过其它分组已占用的牌），不足的孔位由百搭补；找到即把该组的牌换成同花
+/// 那一套（同点数、不同副本，张数不变，守恒不受影响），再用 `recognize` 确认身份并按
+/// `straightFlush` 计分。找不到就保持杂顺，不降级、不改别的组。
+fn postprocess_straight_flush(
+    ladder: &[crate::contract::PatternId],
+    ruleset: &RuleSetBody,
+    ctx: &RankContext,
+    weights: &RecommendWeights,
+    hand: &[u16],
+    wild_ids: &HashSet<u16>,
+    built: &mut [Built],
+) {
+    let suit_count = ruleset.deck.suits.len();
+    for i in 0..built.len() {
+        if built[i].family != Family::Straight || built[i].layout.cards.len() != 5 {
+            continue;
+        }
+        let mut window = built[i].ranks.clone();
+        window.sort_unstable();
+        if window.len() != 5 {
+            continue;
+        }
+
+        // 其它分组已占用的牌（本组自身除外）与仍可用的百搭。
+        let mut occupied: HashSet<u16> = HashSet::new();
+        for (j, b) in built.iter().enumerate() {
+            if j == i {
+                continue;
+            }
+            occupied.extend(b.layout.cards.iter().copied());
+        }
+        let mut wild_free: Vec<u16> = hand
+            .iter()
+            .filter(|c| wild_ids.contains(c) && !occupied.contains(c))
+            .copied()
+            .collect();
+        wild_free.sort_unstable();
+
+        // (rank, suit) → 最小可用真牌 id。
+        let mut avail: BTreeMap<(usize, usize), u16> = BTreeMap::new();
+        let rank_count = ruleset.deck.ranks.len();
+        let copies = ruleset.deck.copies as usize;
+        let base_total = rank_count * suit_count * copies;
+        for &card in hand {
+            let c = card as usize;
+            if wild_ids.contains(&card) || occupied.contains(&card) || c >= base_total {
+                continue;
+            }
+            let b = c / copies;
+            let entry = avail
+                .entry((b % rank_count, b / rank_count))
+                .or_insert(card);
+            if *entry > card {
+                *entry = card;
+            }
+        }
+
+        // 逐花色试：真牌优先（百搭用得越少越好）、同分取牌 id 序列字典序小者。
+        let mut best: Option<(usize, Vec<u16>)> = None;
+        for suit in 0..suit_count {
+            let mut cards = Vec::with_capacity(5);
+            let mut need_wild = 0usize;
+            for &r in &window {
+                match avail.get(&(r, suit)) {
+                    Some(&id) => cards.push(id),
+                    None => need_wild += 1,
+                }
+            }
+            if need_wild > wild_free.len() {
+                continue;
+            }
+            cards.extend_from_slice(&wild_free[..need_wild]);
+            cards.sort_unstable();
+            let better = match &best {
+                None => true,
+                Some((w, current)) => (need_wild, &cards) < (*w, current),
+            };
+            if better {
+                best = Some((need_wild, cards));
+            }
+        }
+
+        let Some((_, cards)) = best else { continue };
+        let Some(rec) = recognize(ladder, ruleset, ctx, &cards) else {
+            continue;
+        };
+        // 身份确认：必须真的判成同花顺，否则不动（不改搜索树、不猜牌型）。
+        if rec.role != BombRole::Flush {
+            continue;
+        }
+        built[i].layout.pattern_id = rec.pattern_id;
+        built[i].layout.pattern_key = rec.pattern_key;
+        built[i].layout.cards = cards;
+        built[i].score = weights.straight_flush as i64;
     }
 }
 
@@ -537,5 +1085,25 @@ mod tests {
         assert!(enabled);
         assert_eq!(w, RecommendWeights::default());
         assert_eq!(mode, RecommendMode::Weighted);
+    }
+
+    #[test]
+    fn memo_grows_and_keeps_entries() {
+        let mut memo = Memo::new(16);
+        for key in 0u64..200 {
+            memo.insert(
+                key,
+                Opt {
+                    score: key as i64,
+                    hands: 1,
+                    first: None,
+                },
+            );
+        }
+        for key in 0u64..200 {
+            let hit = memo.get(key).expect("扩容后条目不得丢失");
+            assert_eq!(hit.score, key as i64);
+        }
+        assert!(memo.cap >= 512, "载荷破 1/2 必须扩容：cap={}", memo.cap);
     }
 }

@@ -13,10 +13,6 @@
 //!
 //! > 待设计稿追认：§5.11 正文仍写 58bit（15 档），本实现按方案 A 落 60bit（含 2bit
 //! > 百搭计数）；设计稿归用户维护，代码不擅自改文档，此处留一行指向追认事项。
-//!
-//! TODO(第四十次变更 DFS 接线)：`KeyCounts` 由计数向量 DFS 主搜索消费；在 DFS 落地前
-//! 仅被单元测试构造，临时放行 dead_code，接线后移除本属性。
-#![allow(dead_code)]
 
 use crate::patterns::RankContext;
 use crate::ruleset::RuleSetBody;
@@ -97,7 +93,132 @@ impl KeyCounts {
         key
     }
 
-    /// 单位测试 / 断言用的受控构造。
+    pub(crate) fn n(&self) -> usize {
+        self.n
+    }
+
+    pub(crate) fn real(&self, r: usize) -> u8 {
+        self.rank.get(r).copied().unwrap_or(0)
+    }
+
+    pub(crate) fn wild(&self) -> u8 {
+        self.wild
+    }
+
+    pub(crate) fn little(&self) -> u8 {
+        self.little
+    }
+
+    pub(crate) fn big(&self) -> u8 {
+        self.big
+    }
+
+    pub(crate) fn total(&self) -> usize {
+        self.rank.iter().map(|&c| c as usize).sum::<usize>()
+            + self.wild as usize
+            + self.little as usize
+            + self.big as usize
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.total() == 0
+    }
+
+    /// 最小非空基础点数锚点：有真牌取最小真牌点数；真牌耗尽但还有百搭，锚到级牌；
+    /// 都没有返回 `None`（只剩王）。
+    pub(crate) fn anchor_base(&self) -> Option<usize> {
+        for r in 0..self.n {
+            if self.rank[r] > 0 {
+                return Some(r);
+            }
+        }
+        if self.wild > 0 {
+            Some(self.level)
+        } else {
+            None
+        }
+    }
+
+    /// 从某点数取 `want` 张真牌，返回实际取到的张数。
+    fn take_real(&mut self, r: usize, want: u8) -> u8 {
+        let have = self.rank.get_mut(r).copied().unwrap_or(0);
+        let take = want.min(have);
+        if let Some(slot) = self.rank.get_mut(r) {
+            *slot -= take;
+        }
+        take
+    }
+
+    fn take_wild(&mut self, want: u8) -> u8 {
+        let take = want.min(self.wild);
+        self.wild -= take;
+        take
+    }
+
+    pub(crate) fn take_little(&mut self, want: u8) -> u8 {
+        let take = want.min(self.little);
+        self.little -= take;
+        take
+    }
+
+    pub(crate) fn take_big(&mut self, want: u8) -> u8 {
+        let take = want.min(self.big);
+        self.big -= take;
+        take
+    }
+
+    /// 同点组消费：先取该点数真牌，不足由百搭补。返回是否凑齐 `size` 张。
+    pub(crate) fn consume_same(&mut self, r: usize, size: u8) -> bool {
+        let real = self.take_real(r, size);
+        let wild = self.take_wild(size - real);
+        real + wild == size
+    }
+
+    /// 连续组消费：窗口内每点 `per` 张，真牌优先、百搭补孔。返回是否凑齐。
+    pub(crate) fn consume_window(&mut self, window: &[usize], per: u8) -> bool {
+        let mut need_wild = 0u8;
+        let mut taken: Vec<(usize, u8)> = Vec::new();
+        for &r in window {
+            let real = self.take_real(r, per);
+            taken.push((r, real));
+            need_wild += per - real;
+        }
+        if need_wild > self.wild {
+            // 回滚：取不到足量百搭，还原已取真牌。
+            for (r, real) in taken {
+                if let Some(slot) = self.rank.get_mut(r) {
+                    *slot += real;
+                }
+            }
+            return false;
+        }
+        self.take_wild(need_wild);
+        true
+    }
+
+    /// 王炸消费：2 小王 + 2 大王。
+    pub(crate) fn consume_joker_bomb(&mut self) -> bool {
+        if self.little != 2 || self.big != 2 {
+            return false;
+        }
+        self.take_little(2);
+        self.take_big(2);
+        true
+    }
+
+    /// 单张消费：锚点真牌优先，其次百搭；王由调用方单独处理。
+    pub(crate) fn consume_single_base(&mut self, r: usize) -> bool {
+        if self.rank.get(r).copied().unwrap_or(0) > 0 {
+            self.take_real(r, 1);
+            true
+        } else if self.wild > 0 {
+            self.take_wild(1);
+            true
+        } else {
+            false
+        }
+    }
+
     #[cfg(test)]
     fn manual(level: usize, rank: [u8; 13], wild: u8, little: u8, big: u8) -> Self {
         Self {
