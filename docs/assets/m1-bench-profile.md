@@ -238,7 +238,18 @@ rooms       = 1_000_000 / (20 × avg_action)
 
 - 两次 `checksum` 相同 → 候选枚举确实独立于最优拆分（只读旁路成立），删它不影响推荐结果。
 - 拆账：**搜索 + 后处理 ≈ 288 µs（58%）**，**独立同花顺候选枚举（`enumerate` 全量 78 条级）≈ 212 µs（42%）**。
-- 未做改动：候选生成仍走 `enumerate`。改成「按 (花色, 窗口) 构造 + `recognize` 确认」可望省掉这 42%，但候选集合在「同点多副本」时可能比 `enumerate` 少若干变体，属可见输出差异，需按第三十次变更的「同输出」纪律先做差分锁定——暂不动，列为 backlog。
+- 处置（2026-11-25，用户裁定「换成按 (花色, 窗口) 构造」后已落地）：候选生成改为 `patterns::straight_flush_candidates`——只走「花色桶 × `all_windows` 窗口 + 百搭补位 + `recognize` 确认 + 按牌 id 去重」这一支，**不再整手 `enumerate`**（单张 / 对子 / 三张 / 炸弹 / 杂顺 / 连对 / 钢板全不构造）。
+- 同输出锁：`engine.rs` 新增差分用例 `straight_flush_candidates_match_enumerate`，对「64 种子 × 4 座位 = 256 手随机 + 5 手定向牌（缺孔补百搭、同点双副本、跨花色择优、级牌落窗内、整手全百搭）」逐条比对构造集与 `enumerate` 同花顺子集，**全部相同**（同序、同集合）。
+
+### 9.2b 改成构造式之后的实测（2026-11-25）
+
+| 口径 | n | avg | P50 | P90 | P99 | max | checksum |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 候选走 `enumerate`（改前） | 1000 | 499.780 | 391.600 | 896.000 | 1318.000 | 1841.700 | 174420 |
+| **候选按 (花色, 窗口) 构造（改后）** | 1000 | **315.439** | 252.900 | 603.300 | 928.000 | 1724.900 | 175214 |
+
+- avg 降 **37%**（499.8 → 315.4 µs），P99 降 **30%**（1318 → 928 µs），与 9.2 里「去掉候选枚举」的 288 µs 基本重合——说明剩下的 288 µs 就是搜索 + 两条后处理本身。
+- `checksum` 由 174420 变 175214，成因是**同一批改动里还接了「三带二可带同色王对」**（用户裁定：两张小王或两张大王可作为三带二附件，一大一小不成对）。随机手里有若干手因王对被吸收而分数上升；`recommend_golden` 的 `digest=10284298271306087631 / score=190 / groups=5` 未变，说明经典夹具那手不含同色王对、不受影响。
 
 ### 9.3 双端同解
 
@@ -252,6 +263,6 @@ OK: recommend native/wasm 同解（digest=10284298271306087631）
 
 ### 9.4 回归
 
-- `cargo test --workspace` **271 passed / 0 failed**；`cargo fmt --all -- --check` exit 0；`cargo clippy -p gf-engine --all-targets -- -D warnings` 0 告警。
+- `cargo test --workspace` **274 passed / 0 failed**（+1 条候选同输出差分、+2 条王对用例：`gf-engine` 库测试 64→65、`recommend_test` 10→12）；`cargo fmt --all -- --check` exit 0；`cargo clippy -p gf-engine --all-targets -- -D warnings` 0 告警。
   （`clippy --workspace --all-targets` 在本机因缺 `protoc` 会在 `gf-protocol` 构建脚本处失败，非本次改动引入。）
 - `stateHash` 锚点未漂移：锚点用例在全量测试内通过（`recommend` 不进 `stateHash`）。

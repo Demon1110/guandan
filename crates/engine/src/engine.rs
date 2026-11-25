@@ -2503,6 +2503,101 @@ mod tests {
         );
     }
 
+    /// 同花顺候选差分锁（第三十次变更「同输出」纪律）：`patterns::straight_flush_candidates`
+    /// （按花色 × 窗口构造）必须与 `enumerate` 全量枚举的同花顺子集**逐条相同**。
+    fn assert_flush_candidates_equivalent(engine: &M0Engine, state: &State, hand: &[u16]) {
+        use crate::ruleset::shape_plan::BombRole;
+        let ctx = engine.rank_context(state);
+        let ladder = engine.cached_ladder();
+        let mut reference: Vec<Vec<u16>> =
+            patterns::enumerate(ladder, &engine.ruleset, &ctx, hand, false)
+                .into_iter()
+                .filter(|rec| rec.role == BombRole::Flush)
+                .map(|rec| rec.cards)
+                .collect();
+        reference.sort();
+        reference.dedup();
+        let constructed = patterns::straight_flush_candidates(ladder, &engine.ruleset, &ctx, hand);
+        assert_eq!(constructed, reference, "同花顺候选不一致: hand={hand:?}");
+    }
+
+    #[test]
+    fn straight_flush_candidates_match_enumerate() {
+        let engine = classic_engine();
+        let r = &engine.ruleset;
+        let idx = engine.hand_zone_index();
+
+        // ① 随机发牌：64 种子 × 4 座位 = 256 手。
+        let mut checked = 0usize;
+        for seed in 0..64u64 {
+            let state = engine
+                .deal(M0_SEED ^ seed.wrapping_mul(0x9e37_79b9))
+                .expect("发牌失败");
+            for seat in 0..4u8 {
+                let hand: Vec<u16> = state
+                    .zones
+                    .iter()
+                    .find(|z| z.seat == seat && z.zone_id == idx)
+                    .map(|z| z.cards.clone())
+                    .unwrap_or_default();
+                assert_flush_candidates_equivalent(&engine, &state, &hand);
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 256);
+
+        // ② 定向手牌：同花成窗、缺孔靠百搭补、同点多副本、百搭本身在窗内、整手全百搭。
+        let cards_of = |spec: &[(usize, usize, u8)]| -> Vec<u16> {
+            spec.iter()
+                .map(|&(rank, suit, copy)| diff_card(r, rank, suit, copy))
+                .collect()
+        };
+        let wild_only: Vec<u16> = (0..2u8).map(|c| diff_wild(r, c)).collect();
+        let cases: Vec<Vec<u16>> = vec![
+            // ♠3-4-5-6 缺 7：7 由百搭（♥2 级牌）补。
+            cards_of(&[(1, 0, 0), (2, 0, 0), (3, 0, 0), (4, 0, 0), (0, 1, 0)]),
+            // ♠3-4-5-6-7 双副本齐全。
+            cards_of(&[
+                (1, 0, 0),
+                (1, 0, 1),
+                (2, 0, 0),
+                (2, 0, 1),
+                (3, 0, 0),
+                (3, 0, 1),
+                (4, 0, 0),
+                (4, 0, 1),
+                (5, 0, 0),
+                (5, 0, 1),
+            ]),
+            // 四个花色各一段，逼出跨花色择优。
+            cards_of(&[
+                (1, 0, 0),
+                (2, 0, 0),
+                (3, 1, 0),
+                (4, 1, 0),
+                (5, 2, 0),
+                (6, 2, 0),
+                (7, 3, 0),
+                (8, 3, 0),
+            ]),
+            // 级牌（♥2）本身落在窗内 + 另有一张百搭。
+            cards_of(&[
+                (1, 0, 0),
+                (2, 0, 0),
+                (3, 0, 0),
+                (4, 0, 0),
+                (0, 1, 0),
+                (0, 1, 1),
+            ]),
+            // 整手全百搭：无花可定，候选必须为空。
+            wild_only,
+        ];
+        for hand in &cases {
+            let state = diff_state_with(&engine, 0, hand.clone(), None);
+            assert_flush_candidates_equivalent(&engine, &state, hand);
+        }
+    }
+
     struct DiffRng(u64);
 
     impl DiffRng {

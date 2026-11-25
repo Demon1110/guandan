@@ -494,3 +494,85 @@ fn score_reflects_postprocessing() {
     // 1 组同花顺 55 + 2 张散张 (−10 × 2) = 35；若取升级前的杂顺则是 46 − 20 = 26。
     assert_eq!(layout.score, 35);
 }
+
+/// 三带二可带**同色王对**（两张小王或两张大王；§5.13「双副牌下两张小王 / 两张大王成对
+/// 亦可」）。搜索侧王只作单张 / 王炸，故王对由三带二后处理兜底：吸收后散张减 2。
+///
+/// 手牌 = 三张 6（点数位 4、`rankKey = 4`）+ 两张小王 + 2 张散张：
+/// 三带二分 = `30 + ⌊20×3/12⌋ = 35`，散张 2 张 = −20 → 合计 15；手数 1 组 + 2 散张 = 3。
+#[test]
+fn triple_pair_absorbs_same_kind_joker_pair() {
+    use gf_engine::patterns::{card_id, joker_id};
+    for mode in [None, Some("least-hands")] {
+        let engine = engine_with_mode(mode);
+        let r = &engine.ruleset;
+        let mut hand: Vec<u16> = vec![
+            card_id(r, 4, 0, 0),
+            card_id(r, 4, 1, 0),
+            card_id(r, 4, 3, 0),
+            joker_id(r, false, 0),
+            joker_id(r, false, 1),
+            card_id(r, 9, 2, 0),
+            card_id(r, 11, 3, 0),
+        ];
+        hand.sort_unstable();
+
+        let state = with_hand(&engine, hand.clone());
+        let layout = engine
+            .recommend(&state, Seat(0))
+            .expect("王对用例 recommend 不应报错");
+
+        assert_conservation(&layout, &hand);
+        assert_groups_sorted(&layout);
+        assert_eq!(layout.groups.len(), 1, "mode={mode:?}：{:?}", layout.groups);
+        let g = &layout.groups[0];
+        assert_eq!(g.pattern_id, "triple-pair", "mode={mode:?}");
+        assert_eq!(g.pattern_key, (5, 4), "mode={mode:?}：只按主牌三张的点数");
+        let mut expected: Vec<u16> = vec![
+            card_id(r, 4, 0, 0),
+            card_id(r, 4, 1, 0),
+            card_id(r, 4, 3, 0),
+            joker_id(r, false, 0),
+            joker_id(r, false, 1),
+        ];
+        expected.sort_unstable();
+        assert_eq!(g.cards, expected, "mode={mode:?}：两张小王应进三带二");
+        assert_eq!(layout.single_count, 2, "mode={mode:?}：王对不再算散张");
+        assert_eq!(layout.score, 15, "mode={mode:?}：35 + 2 × (−10)");
+    }
+}
+
+/// 一大一小**不成对**：两张不同色的王在双副牌里既不是对子、也不是王炸（王炸要两张小王
+/// + 两张大王共 4 张），只能各算一张散张，三张也保持裸三张。
+#[test]
+fn triple_pair_rejects_mixed_jokers() {
+    use gf_engine::patterns::{card_id, joker_id};
+    let engine = engine_with_mode(None);
+    let r = &engine.ruleset;
+    let mut hand: Vec<u16> = vec![
+        card_id(r, 4, 0, 0),
+        card_id(r, 4, 1, 0),
+        card_id(r, 4, 3, 0),
+        joker_id(r, false, 0),
+        joker_id(r, true, 0),
+        card_id(r, 9, 2, 0),
+        card_id(r, 11, 3, 0),
+    ];
+    hand.sort_unstable();
+
+    let state = with_hand(&engine, hand.clone());
+    let layout = engine
+        .recommend(&state, Seat(0))
+        .expect("混王用例 recommend 不应报错");
+
+    assert_conservation(&layout, &hand);
+    assert!(
+        !layout.groups.iter().any(|g| g.pattern_id == "triple-pair"),
+        "一大一小不得进三带二，实际：{:?}",
+        layout.groups
+    );
+    assert_eq!(layout.groups.len(), 1, "实际：{:?}", layout.groups);
+    assert_eq!(layout.groups[0].pattern_id, "triple");
+    assert_eq!(layout.single_count, 4, "两张异色王只能各算散张");
+    assert_eq!(layout.score, -40, "裸三张 0 + 4 张散张 (−10 × 4)");
+}

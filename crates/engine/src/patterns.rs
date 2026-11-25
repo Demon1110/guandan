@@ -946,6 +946,54 @@ fn same_rank_candidates(
     out
 }
 
+/// 只输出**同花顺候选**（§5.11 第 835–836 行给 `recommend` 用的独立候选集）。
+///
+/// 与 [`enumerate`] 里 `straight_candidates(flush = true)` 产出的那部分逐条等价：同
+/// 花色桶、同窗集合（含轮子）、同百搭补位、同 `recognize` 确认、同按牌 id 去重；区别
+/// 只在于**不构造其它牌型候选**（单张 / 对子 / 三张 / 炸弹 / 杂顺 / 连对 / 钢板全不
+/// 枚举），因此成本只与「花色 × 窗口」数有关，与其它牌型规模无关。
+///
+/// 等价性由 `engine.rs` 的 `straight_flush_candidates_match_enumerate` 差分用例锁死；
+/// 若将来改动任一分支，该用例会先失败。
+pub(crate) fn straight_flush_candidates(
+    ladder: &[PatternId],
+    r: &RuleSetBody,
+    ctx: &RankContext,
+    hand: &[u16],
+) -> Vec<Vec<u16>> {
+    let g = HandGroups::build(r, ctx, hand);
+    let mut out: Vec<Vec<u16>> = Vec::new();
+    let mut seen: HashSet<Vec<u16>> = HashSet::new();
+    // 全百搭同花顺无花色可定；gate 关闭时百搭不入同花顺。两条与枚举侧同判。
+    if !wildcard_flush_allowed(r) && !g.wild.is_empty() {
+        return Vec::new();
+    }
+    for suit_buckets in g.by_suit.values() {
+        if suit_buckets.is_empty() {
+            continue;
+        }
+        for window in all_windows(rank_count(r), 5) {
+            let missing = window
+                .iter()
+                .copied()
+                .filter(|p| !suit_buckets.contains_key(p))
+                .count();
+            if missing > g.wild.len() {
+                continue;
+            }
+            let mut cards = pick_one_per_rank(suit_buckets, &window);
+            cards.extend_from_slice(&g.wild[..missing]);
+            if let Some(rec) = recognize(ladder, r, ctx, &cards) {
+                if rec.role == BombRole::Flush && seen.insert(rec.cards.clone()) {
+                    out.push(rec.cards);
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 fn straight_candidates(
     g: &HandGroups,
     r: &RuleSetBody,

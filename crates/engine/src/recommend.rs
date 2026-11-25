@@ -5,9 +5,12 @@
 //! - 评分全整数（禁浮点）；权重按刻度 10 书写，引擎按原值直接比较、不再换算。
 //! - 搜索为计数向量精确 DFS + 调用内局部记忆化 + 最低位锚定；旧束搜索（`beamWidth`）
 //!   已作废。搜索闭集 8 类，`triple-pair` / `straight-flush-5` 走两条后处理。
+//! - 三带二的附件除真牌对子外，也接受**剩余的两张同色王**（§5.13）；一大一小不成对。
+//! - 同花顺候选只跑「花色 × 窗口」这一支（[`crate::patterns::straight_flush_candidates`]），
+//!   不再整手 `enumerate`。
 //! - `score` 是**后处理之后**的实际分组分数之和（+ 散张），不是搜索中间值。
 
-use crate::patterns::{enumerate, recognize, RankContext};
+use crate::patterns::{recognize, RankContext};
 use crate::recommend_key::KeyCounts;
 use crate::ruleset::model::{AiConfig, RecommendMode, RecommendWeights};
 use crate::ruleset::shape_plan::{BombRole, ShapePlan};
@@ -699,15 +702,9 @@ pub(crate) fn recommend_layout(
     }
 
     // 同花顺候选独立于最优拆分（§5.11 第 835–836 行），含百搭方案、去重、按 cards 升序。
-    let all: Vec<crate::patterns::Recognized> = enumerate(ladder, ruleset, ctx, hand, false);
-    let mut flush_seen: HashSet<Vec<u16>> = HashSet::new();
-    let mut flush_candidates: Vec<Vec<u16>> = Vec::new();
-    for rec in &all {
-        if rec.role == BombRole::Flush && flush_seen.insert(rec.cards.clone()) {
-            flush_candidates.push(rec.cards.clone());
-        }
-    }
-    flush_candidates.sort();
+    // 只跑同花顺这一支（按花色 × 窗口构造），不整手枚举全部牌型：与 `enumerate` 的同花顺
+    // 子集逐条等价，差分用例见 `engine.rs` 的 `straight_flush_candidates_match_enumerate`。
+    let flush_candidates = crate::patterns::straight_flush_candidates(ladder, ruleset, ctx, hand);
     let has_straight_flush = !flush_candidates.is_empty();
 
     let wild_ids = crate::patterns::wildcard_ids(ruleset, ctx);
@@ -783,10 +780,18 @@ pub(crate) fn recommend_layout(
         });
     }
 
-    // 散张数按**后处理之前**的搜索手数计（后处理只合并成型组，不改散张）。
-    let single_count = root.hands as usize - built.len();
+    // 散张数按**后处理之前**的搜索手数计（后处理只合并成型组，不改散张）；王对被
+    // 三带二吸收时由后处理回吐 2 张（那两张原本按散张算）。
+    let mut single_count = root.hands as usize - built.len();
 
-    postprocess_triple_pair(ruleset, &weights, params.n_non_joker, &mut built);
+    postprocess_triple_pair(
+        ruleset,
+        &weights,
+        params.n_non_joker,
+        hand,
+        &mut built,
+        &mut single_count,
+    );
     postprocess_straight_flush(ladder, ruleset, ctx, &weights, hand, &wild_ids, &mut built);
 
     // `score` 必须是后处理之后的实际分组分数之和（§5.11「score = Σ groupScore」）。
@@ -818,29 +823,72 @@ pub(crate) fn recommend_layout(
 
 /// 后处理 ①：三带二贪心吸收（§5.11 第 853–856 行）。
 ///
-/// 顺序固定：**点数最小的对子**优先，吸收进**点数最小的三张**；接受条件为「手数减 1
-/// （合并必然满足）且 `score` 不降」，不满足则回退该次吸收、换下一个对子。无随机。
+/// 附件（「对子」）来源两类：
+/// - 搜索产出的真牌对子（`Family::Pair`），点数按搜索侧口径；
+/// - **剩余的两张同色王**（两张小王或两张大王，§5.13 第 930 行「双副牌下两张小王 / 两张
+///   大王成对亦可」；一大一小不成对、也就走不了这条），搜索侧王只作单张 / 王炸，故在此
+///   兜底。两个王原先各算一张散张，吸收后 `single_count` 相应减 2。
+///
+/// 顺序固定：**点数最小的对子**优先（真牌对子按点数升序在前，小王对、大王对排在最后，
+/// 因此只在没有更小真牌对子可试时才动用王对），吸收进**点数最小的三张**；接受条件为
+/// 「手数减 1（合并必然满足）且 `score` 不降」，不满足则回退该次吸收、换下一个对子。
+/// 无随机。
 fn postprocess_triple_pair(
     ruleset: &RuleSetBody,
     weights: &RecommendWeights,
     n_non_joker: usize,
+    hand: &[u16],
     built: &mut Vec<Built>,
+    single_count: &mut usize,
 ) {
     let tp_id = triple_pair_id(ruleset);
+    let copies = ruleset.deck.copies as usize;
+    let base_total = n_non_joker * ruleset.deck.suits.len() * copies;
+    // 王对候选的点数键：排在所有真牌对子之后（小王 < 大王）。
+    let little_rank = n_non_joker;
+    let big_rank = n_non_joker + 1;
     // 被否决的对子（按落地牌 id 序列记录），不再重复尝试。
     let mut rejected: Vec<Vec<u16>> = Vec::new();
     loop {
-        let pair_idx = built
+        // 真牌对子（当前仍未被吸收的）+ 剩余同色王对。
+        let mut attachments: Vec<(usize, Vec<u16>, i64, Option<usize>)> = built
             .iter()
             .enumerate()
-            .filter(|(_, b)| b.family == Family::Pair && !rejected.contains(&b.layout.cards))
-            .min_by(|a, b| {
-                a.1.rank
-                    .cmp(&b.1.rank)
-                    .then_with(|| a.1.layout.cards.cmp(&b.1.layout.cards))
-            })
-            .map(|(i, _)| i);
-        let Some(pi) = pair_idx else { break };
+            .filter(|(_, b)| b.family == Family::Pair)
+            .map(|(i, b)| (b.rank, b.layout.cards.clone(), b.score, Some(i)))
+            .collect();
+        {
+            let occupied: HashSet<u16> = built
+                .iter()
+                .flat_map(|b| b.layout.cards.iter().copied())
+                .collect();
+            let mut jokers: Vec<u16> = hand
+                .iter()
+                .copied()
+                .filter(|&c| (c as usize) >= base_total && !occupied.contains(&c))
+                .collect();
+            jokers.sort_unstable();
+            for (rank, lo, hi) in [
+                (little_rank, base_total, base_total + copies),
+                (big_rank, base_total + copies, base_total + 2 * copies),
+            ] {
+                let kind: Vec<u16> = jokers
+                    .iter()
+                    .copied()
+                    .filter(|&c| (c as usize) >= lo && (c as usize) < hi)
+                    .collect();
+                if kind.len() == 2 {
+                    attachments.push((rank, kind, 2 * weights.single as i64, None));
+                }
+            }
+        }
+        let Some((_, pair_cards, pair_score, pair_group)) = attachments
+            .into_iter()
+            .filter(|(_, cards, _, _)| !rejected.contains(cards))
+            .min_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)))
+        else {
+            break;
+        };
 
         let triple_idx = built
             .iter()
@@ -857,14 +905,14 @@ fn postprocess_triple_pair(
         let triple_rank_key = built[ti].rank_key;
         let new_score = weights.triple_pair_base as i64
             + rank_bonus(weights.triple_pair_rank_bonus, triple_rank_key, n_non_joker);
-        let old_score = built[pi].score + built[ti].score;
+        let old_score = pair_score + built[ti].score;
         if new_score < old_score {
-            rejected.push(built[pi].layout.cards.clone());
+            rejected.push(pair_cards);
             continue;
         }
 
         let mut cards = built[ti].layout.cards.clone();
-        cards.extend_from_slice(&built[pi].layout.cards);
+        cards.extend_from_slice(&pair_cards);
         cards.sort_unstable();
         let triple = built[ti].clone();
         built[ti] = Built {
@@ -879,7 +927,13 @@ fn postprocess_triple_pair(
             rank_key: triple.rank_key,
             score: new_score,
         };
-        built.remove(pi);
+        match pair_group {
+            Some(pi) => {
+                built.remove(pi);
+            }
+            // 王对原本是两张散张：并进组后散张数减 2。
+            None => *single_count = single_count.saturating_sub(2),
+        }
     }
 }
 
