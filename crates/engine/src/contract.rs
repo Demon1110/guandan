@@ -245,6 +245,27 @@ pub struct State {
     /// 本局升级档 `step`：按 `rankCombo` 查 `levelTable.upgrade[]`；score-only 局为 `None`。
     /// 诊断字段，**不进 stateHash**。
     pub settle_step: Option<u8>,
+    /// 诊断字段，**不进 stateHash**：本局抗贡判定成立（§5.13 抗贡行）。抗贡 / 首局 /
+    /// `enabled=false` 时为 `false`；抗贡成立时进贡与还贡均不发生、事件列为空。
+    pub tribute_resisted: bool,
+    /// 诊断字段，**不进 stateHash**：本局进贡 / 还贡逐条转移记录（§5.9 `TributeEvent`）。
+    pub tribute_events: Vec<TributeEventRecord>,
+}
+
+/// 进贡 / 还贡逐条转移记录（§5.9 `TributeEvent{from,to,card}` 回传口径）。
+///
+/// 诊断字段，**不进 `stateHash`**（§5.12 第 7 段只载单组 `TributeState`）；双下两对的
+/// 配对 / 选牌 / 还贡逐条落在这里，供房间层广播与测试断言。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TributeEventRecord {
+    /// 贡方（进贡）或受贡方（还贡）座位。
+    pub from: u8,
+    /// 受贡方（进贡）或贡方（还贡）座位。
+    pub to: u8,
+    /// 转移的牌 id（u16）。
+    pub card: u16,
+    /// `true` = 还贡（受贡方→贡方）；`false` = 进贡（贡方→受贡方）。
+    pub is_return: bool,
 }
 
 /// 玩家提交的动作（§5.9 第 721–726 行 `SubmitAction.payload` 按 kind 分型）。

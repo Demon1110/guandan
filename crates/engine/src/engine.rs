@@ -9,10 +9,14 @@
 //! 确定性纪律（§3.3 约束 2）：纯整数、无浮点、无 `SystemTime`/线程 RNG/文件网络 I/O；
 //! 排序给全序；RNG 唯一来源是引擎注入的种子与计数器。
 
-use crate::contract::{Action, Engine, EngineError, PatternId, Seat, State, View, ZoneId};
+use crate::contract::{
+    Action, Engine, EngineError, PatternId, Seat, State, TributeEventRecord, View, ZoneId,
+};
 use crate::hash::{seed_digest, LastPlay, RngState, TributeState, ZoneEntry};
 use crate::patterns;
-use crate::ruleset::model::{AfterAllPass, LevelTable, Settle, TurnDirection, ZoneScope};
+use crate::ruleset::model::{
+    AfterAllPass, LevelTable, Settle, TributeResist, TributeWhen, TurnDirection, ZoneScope,
+};
 use crate::ruleset::params::PrimitiveParams;
 use crate::ruleset::RuleSetBody;
 use crate::view::{encode_canonical, ViewData, ViewLastPlay};
@@ -296,6 +300,8 @@ impl M0Engine {
             completed_team: None,
             ranks: Vec::new(),
             settle_step: None,
+            tribute_resisted: false,
+            tribute_events: Vec::new(),
             round_no: 1,
         };
 
@@ -312,7 +318,17 @@ impl M0Engine {
     ///   座位水位不在换局时复位（否则第 2 局开头会被误判 `STALE_SEQ`）。
     /// - 非首局不抽牌、不额外消耗随机字；首出座位 = 上一局头游（`finishOrder[0]`）。
     /// - 牌区 / `lastPlay` / 名次 / 进贡占位 / 过牌计数按新局清空；RNG 按本局重新起算。
+    /// - 发牌后进入 [`Self::resolve_tribute`]：`enabled=true` 且未抗贡走 `deal→tribute→play`，
+    ///   抗贡 / `enabled=false` / 无上局名次走 `deal→play` 直转。
     pub fn deal_next_round(&self, prev: &State, seed: u64) -> Result<State, EngineError> {
+        let mut state = self.build_round_state(prev, seed)?;
+        self.resolve_tribute(&mut state, prev)?;
+        Ok(state)
+    }
+
+    /// 续发局的发牌骨架：洗牌切分到各座位，相位停在 `PHASE_DEAL`，尚未做相位转移与进贡。
+    /// 测试可先据此替换受控手牌，再调 [`Self::resolve_tribute`] 复现指定配对 / 抗贡局面。
+    fn build_round_state(&self, prev: &State, seed: u64) -> Result<State, EngineError> {
         if prev.phase != PHASE_SETTLE {
             return Err(EngineError::Internal {
                 message: "只有 settle 结束的局才能续发下一局".to_owned(),
@@ -339,7 +355,7 @@ impl M0Engine {
                 message: "settle 结束却没有名次序列".to_owned(),
             })?;
 
-        let mut state = State {
+        let state = State {
             phase: PHASE_DEAL,
             turn_seat: head_seat,
             attacking_team: prev.attacking_team,
@@ -358,10 +374,261 @@ impl M0Engine {
             completed_team: None,
             ranks: Vec::new(),
             settle_step: None,
+            tribute_resisted: false,
+            tribute_events: Vec::new(),
             round_no: prev.round_no.saturating_add(1),
         };
-        self.transition(&mut state, PHASE_PLAY)?;
         Ok(state)
+    }
+
+    // ---------- 进贡 / 还贡 / 抗贡（§5.13 行 954–964、§6.3 行 1114–1116） ----------
+
+    /// 进贡相位自动执行（零动作相位，玩家不提交 `tribute`/`return`）。
+    ///
+    /// - `enabled=false`、无上局名次（首局口径）：`deal → play` 直转，第 7 段保持占位；
+    /// - 抗贡成立：进贡与还贡均不发生、不发事件、`deal → play` 直转，`tribute_resisted=true`；
+    /// - 正常：按 `pairs[]` 的 `when` 分支逐对进贡 → 还贡，`deal → tribute → play`，首出 = 头游。
+    ///
+    /// 双下两对的第 7 段（单组 vs 序列）编码冲突未裁决：这里只把第一对写入 `state.tribute`
+    /// 哈希段，第二对仅落在 `tribute_events`（诊断、不进哈希），见批次挂账。
+    fn resolve_tribute(&self, state: &mut State, prev: &State) -> Result<(), EngineError> {
+        let Some(cfg) = self.ruleset.tribute.as_ref() else {
+            return self.transition(state, PHASE_PLAY);
+        };
+        if !cfg.enabled {
+            return self.transition(state, PHASE_PLAY);
+        }
+
+        // 名次 `r`（1-based，1 = 头游）→ 座位；无上局名次返回 `None`（首局口径）。
+        let rank_seat = |r: u8| prev.finish_order.get((r - 1) as usize).copied();
+        let Some(head_seat) = rank_seat(1) else {
+            return self.transition(state, PHASE_PLAY);
+        };
+
+        // 双下判据：上局第 3、4 名同队（§5.13 行 960）。
+        let double_loss = match (rank_seat(3), rank_seat(4)) {
+            (Some(a), Some(b)) => self.team_of(a) == self.team_of(b),
+            _ => false,
+        };
+        let when = if double_loss {
+            TributeWhen::DoubleLoss
+        } else {
+            TributeWhen::SingleLoss
+        };
+
+        let Some(all_pairs) = cfg.pairs.as_ref() else {
+            return self.transition(state, PHASE_PLAY);
+        };
+        let active: Vec<&crate::ruleset::model::TributePair> =
+            all_pairs.iter().filter(|p| p.when == when).collect();
+        if active.is_empty() {
+            return self.transition(state, PHASE_PLAY);
+        }
+
+        // 抗贡：贡方（本分支所有 payer）合计持 2 张大王即抗贡，不要求同一人手里。
+        let payers: Vec<u8> = match active
+            .iter()
+            .map(|p| rank_seat(p.payer))
+            .collect::<Option<Vec<_>>>()
+        {
+            Some(payers) => payers,
+            None => return self.transition(state, PHASE_PLAY),
+        };
+        let resisted = matches!(cfg.resist, Some(TributeResist::TwoBigJokers))
+            && payers
+                .iter()
+                .map(|&s| self.big_joker_count(state, s))
+                .sum::<usize>()
+                >= 2;
+        if resisted {
+            state.tribute_resisted = true;
+            // 整段跳过：不发事件、第 7 段占位保持；deal → play 直转。
+            return self.transition(state, PHASE_PLAY);
+        }
+
+        let ctx = self.rank_context(state);
+        let wild = patterns::wildcard_ids(&self.ruleset, &ctx);
+
+        for pair in active {
+            let payer = rank_seat(pair.payer).ok_or_else(|| EngineError::Internal {
+                message: format!("进贡配对名次 {} 在上局名次序列中缺失", pair.payer),
+            })?;
+            let receiver = rank_seat(pair.receiver).ok_or_else(|| EngineError::Internal {
+                message: format!("进贡配对名次 {} 在上局名次序列中缺失", pair.receiver),
+            })?;
+
+            let pay_card =
+                self.select_pay_card(state, payer, &wild)
+                    .ok_or_else(|| EngineError::Internal {
+                        message: format!("seat {payer} 无牌可进贡",),
+                    })?;
+            self.move_card(state, payer, receiver, pay_card)?;
+            state.tribute_events.push(TributeEventRecord {
+                from: payer,
+                to: receiver,
+                card: pay_card,
+                is_return: false,
+            });
+            // 第 7 段单组：仅记第一对（双下第二对的哈希承载待上级裁决）。
+            if state.tribute.card.is_none() {
+                state.tribute = TributeState {
+                    from_seat: payer,
+                    to_seat: receiver,
+                    card: Some(pay_card),
+                };
+            }
+
+            let ret_card = self
+                .select_return_card(state, receiver, cfg)
+                .ok_or_else(|| EngineError::Internal {
+                    message: format!("seat {receiver} 无牌可还贡"),
+                })?;
+            self.move_card(state, receiver, payer, ret_card)?;
+            state.tribute_events.push(TributeEventRecord {
+                from: receiver,
+                to: payer,
+                card: ret_card,
+                is_return: true,
+            });
+        }
+
+        // 正常路径：deal → tribute → play；首出座位保持上局头游。
+        self.transition(state, PHASE_TRIBUTE)?;
+        self.transition(state, PHASE_PLAY)?;
+        state.turn_seat = head_seat;
+        Ok(())
+    }
+
+    /// 座位手牌区大王张数（抗贡判定用，§5.13 行 962）。
+    fn big_joker_count(&self, state: &State, seat: u8) -> usize {
+        let Some(hand) = self.hand_cards(state, seat) else {
+            return 0;
+        };
+        let big0 = patterns::joker_id(&self.ruleset, true, 0);
+        let big1 = patterns::joker_id(&self.ruleset, true, 1);
+        hand.iter().filter(|&&c| c == big0 || c == big1).count()
+    }
+
+    /// 选贡牌：除红桃级牌（百搭）外点数最大，同点数取牌 id 最小（§5.13 行 961）。
+    fn select_pay_card(
+        &self,
+        state: &State,
+        seat: u8,
+        wild: &std::collections::HashSet<u16>,
+    ) -> Option<u16> {
+        let hand = self.hand_cards(state, seat)?;
+        // 同点数取牌 id 最小：权重降序，权重相同再按 `MAX-c` 降序（即 id 升序）。
+        hand.iter()
+            .copied()
+            .filter(|c| !wild.contains(c))
+            .max_by_key(|&c| (self.card_weight(c), u32::from(u16::MAX - c)))
+    }
+
+    /// 还贡选牌：`ceiling=under-ten` 取不大于 10 的牌；全大于 10 按 `fallback`
+    /// （`smallest` / `largest`）兜底（§5.13 行 963）。
+    fn select_return_card(
+        &self,
+        state: &State,
+        seat: u8,
+        cfg: &crate::ruleset::model::TributeConfig,
+    ) -> Option<u16> {
+        let hand = self.hand_cards(state, seat)?;
+        let Some(ret) = cfg.return_.as_ref() else {
+            return hand.first().copied();
+        };
+        let ten_index = self
+            .ruleset
+            .deck
+            .ranks
+            .iter()
+            .position(|k| k.as_str() == "10")
+            .unwrap_or(8);
+        let under_ten: Vec<u16> = hand
+            .iter()
+            .copied()
+            .filter(|c| match self.card_rank_index(*c) {
+                Some(ri) => ri <= ten_index,
+                None => false, // 王不参与 under-ten 兜底
+            })
+            .collect();
+        let pool = match ret.ceiling {
+            crate::ruleset::model::ReturnCeiling::UnderTen => {
+                if under_ten.is_empty() {
+                    hand.clone()
+                } else {
+                    under_ten
+                }
+            }
+            crate::ruleset::model::ReturnCeiling::None => hand.clone(),
+        };
+        match ret.fallback {
+            crate::ruleset::model::ReturnFallback::Smallest => pool
+                .iter()
+                .min_by_key(|&&c| (self.card_weight(c), u32::from(c)))
+                .copied(),
+            crate::ruleset::model::ReturnFallback::Largest => pool
+                .iter()
+                .max_by_key(|&&c| (self.card_weight(c), u32::from(u16::MAX - c)))
+                .copied(),
+        }
+    }
+
+    /// 把一张牌从 `from` 手牌区移到 `to` 手牌区；牌不在源区报 `Internal`。
+    fn move_card(&self, state: &mut State, from: u8, to: u8, card: u16) -> Result<(), EngineError> {
+        let idx = self.hand_zone_index();
+        let from_pos = state
+            .zones
+            .iter()
+            .position(|z| z.seat == from && z.zone_id == idx)
+            .ok_or_else(|| EngineError::Internal {
+                message: format!("seat {from} 手牌区缺失"),
+            })?;
+        let pos = state.zones[from_pos]
+            .cards
+            .iter()
+            .position(|&c| c == card)
+            .ok_or_else(|| EngineError::Internal {
+                message: format!("牌 {card} 不在 seat {from} 手牌区"),
+            })?;
+        state.zones[from_pos].cards.remove(pos);
+        let to_zone = state
+            .zones
+            .iter_mut()
+            .find(|z| z.seat == to && z.zone_id == idx)
+            .ok_or_else(|| EngineError::Internal {
+                message: format!("seat {to} 手牌区缺失"),
+            })?;
+        to_zone.cards.push(card);
+        Ok(())
+    }
+
+    /// 基础牌点数下标；王返回 `None`。
+    fn card_rank_index(&self, card: u16) -> Option<usize> {
+        if card as usize >= self.base_total() {
+            return None;
+        }
+        let b = card as usize / self.copies();
+        Some(b % self.rank_count())
+    }
+
+    /// 牌力权重：基础牌取 `naturalOrder` 位置，小王 / 大王居尾；用于选贡牌 / 还贡兜底比较。
+    fn card_weight(&self, card: u16) -> u32 {
+        match self.card_rank_index(card) {
+            Some(ri) => {
+                let key = &self.ruleset.deck.ranks[ri];
+                self.ruleset
+                    .natural_order
+                    .iter()
+                    .position(|k| k == key)
+                    .unwrap_or(ri) as u32
+            }
+            None => {
+                let base = self.base_total();
+                let slot = (card as usize - base) / self.copies();
+                let tail = self.ruleset.natural_order.len();
+                (tail - 2 + slot) as u32
+            }
+        }
     }
 
     /// 每局每座发牌张数；不守恒直接按内部不变量报错。
@@ -1293,6 +1560,187 @@ mod tests {
         state.levels = levels;
         state.a_fail_streak = streak;
         (engine, state)
+    }
+
+    // ---------- 进贡 / 还贡 / 抗贡（§5.13 行 954–964） ----------
+
+    /// 构造一局已结算的前驱局：`phase=settle`，名次序列按 `finish_order`（名次 1→n）。
+    fn settled_prev(engine: &M0Engine, finish_order: Vec<u8>) -> State {
+        let mut state = engine.deal(M0_SEED).expect("前驱局发牌失败");
+        state.phase = PHASE_SETTLE;
+        state.finish_order = finish_order;
+        state
+    }
+
+    /// 替换指定座位手牌区（测试受控局面用）。
+    fn set_hand(engine: &M0Engine, state: &mut State, seat: u8, cards: Vec<u16>) {
+        let idx = engine.hand_zone_index();
+        for zone in state.zones.iter_mut() {
+            if zone.seat == seat && zone.zone_id == idx {
+                zone.cards = cards.clone();
+            }
+        }
+    }
+
+    /// 黑桃基础牌（花色 0、副本 0），rank 为 `deck.ranks` 下标。
+    fn tcard(engine: &M0Engine, rank: usize) -> u16 {
+        patterns::card_id(&engine.ruleset, rank, 0, 0)
+    }
+
+    #[test]
+    fn tribute_single_loss_pays_max_then_returns_under_ten() {
+        // 名次 1=0、2=1、3=2、4=3；3、4 不同队 → 单贡：第 4 名 seat3 → 第 1 名 seat0。
+        let engine = classic_engine();
+        let prev = settled_prev(&engine, vec![0, 1, 2, 3]);
+        let mut state = engine.build_round_state(&prev, M0_SEED).expect("续发骨架");
+        // 贡方 seat3：3(1)、7(5)、K(11)；受贡方 seat0：2(0)、J(9)。
+        set_hand(
+            &engine,
+            &mut state,
+            3,
+            vec![tcard(&engine, 1), tcard(&engine, 5), tcard(&engine, 11)],
+        );
+        set_hand(
+            &engine,
+            &mut state,
+            0,
+            vec![tcard(&engine, 0), tcard(&engine, 9)],
+        );
+
+        engine
+            .resolve_tribute(&mut state, &prev)
+            .expect("进贡 / 还贡");
+
+        assert_eq!(state.phase, PHASE_PLAY);
+        assert_eq!(state.turn_seat, 0, "进贡后首出 = 上局头游");
+        assert!(!state.tribute_resisted);
+        assert_eq!(state.tribute_events.len(), 2);
+
+        let pay = &state.tribute_events[0];
+        assert_eq!((pay.from, pay.to, pay.is_return), (3, 0, false));
+        assert_eq!(pay.card, tcard(&engine, 11), "贡牌 = 除百搭外点数最大（K）");
+
+        let ret = &state.tribute_events[1];
+        assert_eq!((ret.from, ret.to, ret.is_return), (0, 3, true));
+        assert_eq!(ret.card, tcard(&engine, 0), "还贡 = under-ten 内最小（2）");
+
+        assert_eq!(state.tribute.from_seat, 3);
+        assert_eq!(state.tribute.to_seat, 0);
+        assert_eq!(state.tribute.card, Some(tcard(&engine, 11)));
+    }
+
+    #[test]
+    fn tribute_resist_two_big_jokers_skips_whole_segment() {
+        // 单贡：贡方 seat3 合计持 2 张大王 → 抗贡，进贡 / 还贡均不发生。
+        let engine = classic_engine();
+        let prev = settled_prev(&engine, vec![0, 1, 2, 3]);
+        let mut state = engine.build_round_state(&prev, M0_SEED).expect("续发骨架");
+        let big0 = patterns::joker_id(&engine.ruleset, true, 0);
+        let big1 = patterns::joker_id(&engine.ruleset, true, 1);
+        set_hand(&engine, &mut state, 3, vec![big0, big1]);
+
+        engine.resolve_tribute(&mut state, &prev).expect("抗贡判定");
+
+        assert!(state.tribute_resisted, "两张大王 → 抗贡成立");
+        assert!(state.tribute_events.is_empty(), "抗贡不发 TributeEvent");
+        assert_eq!(
+            state.tribute,
+            TributeState {
+                from_seat: 0,
+                to_seat: 0,
+                card: None
+            },
+            "第 7 段取占位值"
+        );
+        assert_eq!(state.phase, PHASE_PLAY, "抗贡：deal → play 直转");
+        assert_eq!(state.turn_seat, 0);
+    }
+
+    #[test]
+    fn tribute_double_loss_pairs_positionally_without_crossing() {
+        // 名次 1=1、2=3、3=0、4=2；3、4（seat0、seat2）同队 → 双下，对位进贡：
+        // 第 4 名 seat2 → 第 1 名 seat1；第 3 名 seat0 → 第 2 名 seat3。
+        let engine = classic_engine();
+        let prev = settled_prev(&engine, vec![1, 3, 0, 2]);
+        let mut state = engine.build_round_state(&prev, M0_SEED).expect("续发骨架");
+        // payer seat2（名次4）：3(1)、K(11)；receiver seat1（名次1）：2(0)。
+        set_hand(
+            &engine,
+            &mut state,
+            2,
+            vec![tcard(&engine, 1), tcard(&engine, 11)],
+        );
+        set_hand(&engine, &mut state, 1, vec![tcard(&engine, 0)]);
+        // payer seat0（名次3）：7(5)、A(12)；receiver seat3（名次2）：2(0)。
+        set_hand(
+            &engine,
+            &mut state,
+            0,
+            vec![tcard(&engine, 5), tcard(&engine, 12)],
+        );
+        set_hand(&engine, &mut state, 3, vec![tcard(&engine, 0)]);
+
+        engine
+            .resolve_tribute(&mut state, &prev)
+            .expect("双下进贡 / 还贡");
+
+        assert_eq!(state.phase, PHASE_PLAY);
+        assert_eq!(state.turn_seat, 1, "头游 seat1 先出");
+        assert!(!state.tribute_resisted);
+        assert_eq!(state.tribute_events.len(), 4, "两对：各一贡一还");
+
+        // 第一对：seat2 → seat1（K），还 2 回 seat2。
+        assert_eq!(
+            (
+                state.tribute_events[0].from,
+                state.tribute_events[0].to,
+                state.tribute_events[0].card
+            ),
+            (2, 1, tcard(&engine, 11))
+        );
+        assert_eq!(
+            (
+                state.tribute_events[1].from,
+                state.tribute_events[1].to,
+                state.tribute_events[1].card
+            ),
+            (1, 2, tcard(&engine, 0))
+        );
+        // 第二对：seat0 → seat3（A），还 2 回 seat0。
+        assert_eq!(
+            (
+                state.tribute_events[2].from,
+                state.tribute_events[2].to,
+                state.tribute_events[2].card
+            ),
+            (0, 3, tcard(&engine, 12))
+        );
+        assert_eq!(
+            (
+                state.tribute_events[3].from,
+                state.tribute_events[3].to,
+                state.tribute_events[3].card
+            ),
+            (3, 0, tcard(&engine, 0))
+        );
+        // 第 7 段单组：仅记第一对；第二对的哈希承载属待裁决冲突，此处不断言第二对入哈希。
+        assert_eq!(state.tribute.from_seat, 2);
+        assert_eq!(state.tribute.to_seat, 1);
+        assert_eq!(state.tribute.card, Some(tcard(&engine, 11)));
+    }
+
+    #[test]
+    fn tribute_disabled_skips_entire_segment() {
+        // m0-minimal：`tribute.enabled=false`，deal → play 直转，无事件、无抗贡标记。
+        let engine = engine();
+        let prev = settled_prev(&engine, vec![0, 1, 2, 3]);
+        let state = engine
+            .deal_next_round(&prev, M0_SEED)
+            .expect("禁用口径续发");
+        assert_eq!(state.phase, PHASE_PLAY);
+        assert!(state.tribute_events.is_empty());
+        assert!(!state.tribute_resisted);
+        assert_eq!(state.tribute.card, None);
     }
 
     #[test]
