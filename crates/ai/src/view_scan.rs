@@ -57,6 +57,24 @@ pub fn last_play_seat(view: &[u8]) -> Option<u8> {
     std::str::from_utf8(&view[start..end]).ok()?.parse().ok()
 }
 
+/// `discard.cards`：公共弃牌堆（已出的所有牌 id）。无该字段时为空。
+pub fn discard_cards(view: &[u8]) -> Vec<u16> {
+    let anchor = b"\"discard\":";
+    let Some(pos) = view.windows(anchor.len()).position(|w| w == anchor) else {
+        return Vec::new();
+    };
+    let rest = &view[pos..];
+    let needle = b"\"cards\":[";
+    let Some(start) = rest
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|p| p + needle.len())
+    else {
+        return Vec::new();
+    };
+    parse_u16_list(&rest[start..])
+}
+
 /// `lastPlay.patternId`：上一手牌型 id（`bomb-4` / `joker-bomb` / `straight-5` …）。
 pub fn last_play_pattern_id(view: &[u8]) -> Option<String> {
     let anchor = b"\"lastPlay\":";

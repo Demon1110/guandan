@@ -74,6 +74,62 @@ pub fn is_bomb_shape(action: &Action) -> bool {
     cards.iter().all(|c| !is_joker(*c) && rank_of(*c) == first)
 }
 
+/// 该点数在整副牌里的总张数（两副牌：非王每点 8 张，大小王各 2 张）。
+pub fn total_of_rank(rank: u16) -> usize {
+    if rank >= 13 {
+        2
+    } else {
+        8
+    }
+}
+
+/// 记牌：按点数统计 `discard`（公共弃牌堆）里已出的张数，返回长度 15 的计数（下标即点数）。
+///
+/// 这是 AI-L2「记牌」的唯一数据来源——`discard` 是公开信息，不含任何人的手牌。
+pub fn dealt_rank_counts(discarded: &[u16]) -> [u16; 15] {
+    let mut counts = [0u16; 15];
+    for &card in discarded {
+        counts[rank_of(card) as usize] += 1;
+    }
+    counts
+}
+
+/// 记牌：估算「除自己手牌外，场上还剩多少张比 `rank` 大的牌」。
+///
+/// `discarded` 为公共弃牌堆，`hand` 为自己的手牌。返回 0 即：这手牌出去以后没人能压
+/// （自己手里更大的牌不算对手的）。级牌/逢人配不参与张数统计，只按自然点数近似。
+pub fn remaining_bigger(discarded: &[u16], hand: &[u16], rank: u16) -> usize {
+    let dealt = dealt_rank_counts(discarded);
+    let mut remain = 0usize;
+    for r in (rank + 1)..=14u16 {
+        remain += total_of_rank(r).saturating_sub(dealt[r as usize] as usize);
+    }
+    let own_bigger = hand.iter().filter(|c| rank_of(**c) > rank).count();
+    remain.saturating_sub(own_bigger)
+}
+
+/// 记牌：这条动作出手后是否「无人能压」（顶牌点数是当前场上最大）。
+pub fn is_controller(discarded: &[u16], hand: &[u16], action: &Action) -> bool {
+    if cards_of(action).is_empty() {
+        return false;
+    }
+    remaining_bigger(discarded, hand, top_rank_of(action)) == 0
+}
+
+/// 手牌里的炸弹个数（按点数 ≥4 张计，四王另算）。用于 AI-L2 的炸弹时机判断。
+pub fn bomb_count_in_hand(hand: &[u16]) -> usize {
+    if hand.is_empty() {
+        return 0;
+    }
+    let mut by_rank = [0u8; 15];
+    for &card in hand {
+        by_rank[rank_of(card) as usize] += 1;
+    }
+    let same_rank = by_rank.iter().filter(|&&n| n >= 4).count();
+    let jokers = by_rank[13] + by_rank[14];
+    same_rank + usize::from(jokers >= 4)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

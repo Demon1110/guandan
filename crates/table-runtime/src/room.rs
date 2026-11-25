@@ -48,6 +48,20 @@ pub enum PlayerStatus {
     Offline,
 }
 
+/// bot 决策上下文：设计 §5.11 的 `partner.state` 特征（AI-L1 档位起可用）。
+///
+/// 只含**本座位阵营可见**的信息——搭档座位号与搭档剩余手牌张数。对手手牌数、对手手牌内容
+/// 一律不给（§3.3 约束 3）。没有队伍信息的规则集里 `partner` 为 `None`。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BotContext {
+    /// 搭档座位号（`teams` 里与 `seat` 同队的另一座）。
+    pub partner: Option<u8>,
+    /// 搭档剩余手牌张数。
+    pub partner_hand: Option<usize>,
+    /// 本座位剩余手牌张数（与 `view.hand` 一致）。
+    pub own_hand: usize,
+}
+
 /// 本地 bot 策略。**只给 view 字节与座位号**，不给 `State`（信息隔离，§3.3 约束 3）。
 pub trait BotPolicy {
     /// 按本座位视图决策；返回的动作由房间做合法性复核。
@@ -61,6 +75,20 @@ pub trait BotPolicy {
     fn decide_with_legal(&self, view_bytes: &[u8], seat: u8, legal: &[Action]) -> Action {
         let _ = legal;
         self.decide(view_bytes, seat)
+    }
+
+    /// 带合法集与搭档状态的决策入口（AI-L2 用）。
+    ///
+    /// 默认实现忽略上下文，回落到 [`BotPolicy::decide_with_legal`]。
+    fn decide_with_ctx(
+        &self,
+        view_bytes: &[u8],
+        seat: u8,
+        legal: &[Action],
+        ctx: &BotContext,
+    ) -> Action {
+        let _ = ctx;
+        self.decide_with_legal(view_bytes, seat, legal)
     }
 }
 
@@ -361,6 +389,43 @@ impl Room {
         self.legal_normalized()
     }
 
+    /// 本座位 bot 的决策上下文（`partner.state`）：搭档座位与搭档剩余手牌张数。
+    pub fn bot_context(&self, seat: u8) -> BotContext {
+        let teams = &self.engine.ruleset.seats.teams;
+        let partner = teams
+            .iter()
+            .find(|team| team.contains(&seat))
+            .and_then(|team| team.iter().copied().find(|&s| s != seat));
+        let own_hand = self.own_hand_len(seat);
+        let partner_hand = partner.map(|p| self.own_hand_len(p));
+        BotContext {
+            partner,
+            partner_hand,
+            own_hand,
+        }
+    }
+
+    /// 某座位的剩余手牌张数（读 `hand` 区；座位未入座或未发牌时为 0）。
+    fn own_hand_len(&self, seat: u8) -> usize {
+        let Ok(state) = self.state() else {
+            return 0;
+        };
+        // `hand` 区在规则集 `zones` 里的下标即 zoneId（`ZoneDef` 顺序实例化）。
+        let hand_zone = self
+            .engine
+            .ruleset
+            .zones
+            .iter()
+            .position(|z| z.id.0 == "hand")
+            .unwrap_or(0) as u16;
+        state
+            .zones
+            .iter()
+            .find(|z| z.seat == seat && z.zone_id == hand_zone)
+            .map(|z| z.cards.len())
+            .unwrap_or(0)
+    }
+
     /// 托管记录（诊断）。
     pub fn auto_actions(&self) -> &[AutoAction] {
         &self.auto
@@ -471,7 +536,10 @@ impl Room {
             let view = self.view_bytes(seat)?;
             let legal = self.legal_normalized()?;
             let action = match &self.bots[idx] {
-                Some(bot) => bot.decide_with_legal(&view, seat, &legal),
+                Some(bot) => {
+                    let ctx = self.bot_context(seat);
+                    bot.decide_with_ctx(&view, seat, &legal, &ctx)
+                }
                 // 没装实现也不能直接 `Pass`（领出态非法）：退到合法首条。
                 None => legal.first().cloned().unwrap_or(Action::Pass),
             };

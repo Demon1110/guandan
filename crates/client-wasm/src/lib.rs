@@ -250,7 +250,7 @@ pub extern "C" fn gf_room_new(seed_hi: u32, seed_lo: u32, human_mask: u32) -> u8
         Err(_) => return 0,
     };
     for seat in 0..4u8 {
-        if human_mask & (1 << seat) == 0 && r.attach_bot(seat, Box::new(gf_ai::L1Bot)).is_err() {
+        if human_mask & (1 << seat) == 0 && r.attach_bot(seat, Box::new(gf_ai::L2Bot)).is_err() {
             return 0;
         }
     }
@@ -427,7 +427,8 @@ pub extern "C" fn gf_room_seats() -> *mut u8 {
     out(s)
 }
 
-/// bot 决策入口自证：对指定座位当前视图 + 合法集走 AI-L1 决策，返回动作 JSON（诊断 / 离线代打用）。
+/// bot 决策入口自证：对指定座位当前视图 + 合法集 + 搭档状态走 AI-L2 决策，返回动作 JSON
+/// （诊断 / 离线代打用）。
 #[no_mangle]
 pub extern "C" fn gf_l0_probe(seat: u8) -> *mut u8 {
     let Some(r) = room() else {
@@ -441,7 +442,8 @@ pub extern "C" fn gf_l0_probe(seat: u8) -> *mut u8 {
         Ok(l) => l,
         Err(e) => return err(e),
     };
-    let bot = gf_ai::L1Bot;
-    let action = bot.decide_with_legal(&view, seat, &legal);
+    let ctx = r.bot_context(seat);
+    let bot = gf_ai::L2Bot;
+    let action = bot.decide_with_ctx(&view, seat, &legal, &ctx);
     out(action_json(&action))
 }

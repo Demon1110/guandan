@@ -1,6 +1,6 @@
 //! AI-L1（`normal` 档，§5.11）：评估 + 有限扫描，保留大牌、配合队友。
 //!
-//! 与 L0 的差别只在**在合法集里怎么挑**（不改变合法性，也不看其他座位的手牌）：
+//! 与 L0 的差别只在**在合法集里怎么挑**（不改变合法性，也不看对手手牌）：
 //!
 //! - **能一把走完就出完**（候选张数 == 手牌张数）——优先结束自己的回合；
 //! - **领出**：排除炸弹后在候选里取「张数最多、同张数牌力最小」的一条。多张牌型先走（顺子 /
@@ -8,19 +8,19 @@
 //! - **跟牌**：只压「同张数、非炸弹、牌力最小」的那条；没有同型候选时，只有遇到「对手压的
 //!   是大牌（J 以上）」「对手本身就出的是炸弹」「自己手牌已很少（≤8 张）」三种情形才动炸弹，
 //!   其余一律 `Pass` 把这手牌留给后面；
+//! - **配合队友**：上一手是搭档出的（`BotContext::partner`，§5.11 的 `partner.state`）→
+//!   `Pass` 把牌权留给搭档，除非自己剩 ≤4 张能接管收尾；
 //! - 炸弹与四王炸永远排在普通牌型之后被使用。
-//!
-//! 队友配合（`partner.state`）在 M1 先不落：视图白名单（§5.10）只有 `hand`、`seat.levels`、
-//! `discard`、`lastPlay`、`round.level`、`round.attackingTeam`，拿不到队友剩余牌数与座位状态；
-//! 要落需先扩视图白名单（属设计变更），此处不擅自引入隐藏信息。
 
 use std::cmp::Reverse;
 
 use gf_engine::contract::Action;
-use gf_table_runtime::BotPolicy;
+use gf_table_runtime::{BotContext, BotPolicy};
 
 use crate::l0::L0Bot;
-use crate::shape::{cards_key_of, count_of, is_bomb_shape, rank_of, top_rank_of};
+use crate::shape::{
+    bomb_count_in_hand, cards_key_of, count_of, is_bomb_shape, is_controller, rank_of, top_rank_of,
+};
 use crate::view_scan;
 
 /// AI-L1 评估型 bot（无状态、确定性）。
@@ -34,12 +34,30 @@ impl BotPolicy for L1Bot {
     }
 
     fn decide_with_legal(&self, view_bytes: &[u8], seat: u8, legal: &[Action]) -> Action {
-        choose(view_bytes, seat, legal)
+        choose(view_bytes, seat, legal, &BotContext::default(), false)
+    }
+
+    fn decide_with_ctx(
+        &self,
+        view_bytes: &[u8],
+        seat: u8,
+        legal: &[Action],
+        ctx: &BotContext,
+    ) -> Action {
+        choose(view_bytes, seat, legal, ctx, false)
     }
 }
 
-fn choose(view: &[u8], seat: u8, legal: &[Action]) -> Action {
-    let hand_len = view_scan::hand_cards(view).len();
+/// L1/L2 共用的取舍逻辑。`memory = true` 时启用 L2 的记牌与炸弹时机（见 [`crate::L2Bot`]）。
+pub(crate) fn choose(
+    view: &[u8],
+    seat: u8,
+    legal: &[Action],
+    ctx: &BotContext,
+    memory: bool,
+) -> Action {
+    let hand = view_scan::hand_cards(view);
+    let hand_len = hand.len();
     let plays: Vec<&Action> = legal.iter().filter(|a| count_of(a) > 0).collect();
     if plays.is_empty() {
         return Action::Pass;
@@ -55,47 +73,92 @@ fn choose(view: &[u8], seat: u8, legal: &[Action]) -> Action {
 
     let following = view_scan::is_following(view, seat);
     if !following {
-        return lead(&plays);
+        return lead(&plays, view, &hand, memory);
+    }
+
+    // ② 配合队友：上一手是搭档出的，牌权让给搭档，除非自己只剩几张能接管收尾。
+    if let Some(partner) = ctx.partner {
+        if view_scan::last_play_seat(view) == Some(partner) && hand_len > 4 {
+            return Action::Pass;
+        }
     }
 
     let last_cards = view_scan::last_play_cards(view);
     let last_is_bomb = view_scan::last_play_pattern_id(view)
         .map(|id| id.starts_with("bomb") || id == "joker-bomb")
         .unwrap_or(false);
-    follow(&plays, &last_cards, last_is_bomb, hand_len)
+    follow(&plays, view, &hand, &last_cards, last_is_bomb, memory)
 }
 
 /// 领出：优先多张牌型清手，同张数取牌力最小；炸弹留到最后。
-fn lead(plays: &[&Action]) -> Action {
-    let normal: Vec<&&Action> = plays.iter().filter(|a| !is_bomb_shape(a)).collect();
-    let pool: Vec<&&Action> = if normal.is_empty() {
-        plays.iter().collect()
+///
+/// 记牌档位（`memory`）额外把「出手即无人能压」的控制牌留到后面：先出能被压的，
+/// 控制牌留作收尾牌权。
+fn lead(plays: &[&Action], view: &[u8], hand: &[u16], memory: bool) -> Action {
+    let normal: Vec<&Action> = plays
+        .iter()
+        .copied()
+        .filter(|a| !is_bomb_shape(a))
+        .collect();
+    let pool: Vec<&Action> = if normal.is_empty() {
+        plays.to_vec()
     } else {
         normal
     };
+    if memory {
+        let discarded = view_scan::discard_cards(view);
+        if let Some(best) = pool
+            .iter()
+            .copied()
+            .filter(|a| !is_controller(&discarded, hand, a))
+            .min_by_key(|a| (Reverse(count_of(a)), top_rank_of(a), cards_key_of(a)))
+        {
+            return best.clone();
+        }
+    }
     pool.into_iter()
         .min_by_key(|a| (Reverse(count_of(a)), top_rank_of(a), cards_key_of(a)))
-        .map(|a| (*a).clone())
+        .cloned()
         .unwrap_or(Action::Pass)
 }
 
 /// 跟牌：同张数最小代价先压；必要时才动炸弹。
-fn follow(plays: &[&Action], last_cards: &[u16], last_is_bomb: bool, hand_len: usize) -> Action {
+fn follow(
+    plays: &[&Action],
+    view: &[u8],
+    hand: &[u16],
+    last_cards: &[u16],
+    last_is_bomb: bool,
+    memory: bool,
+) -> Action {
     let need = last_cards.len();
+    let same_shape = |a: &&Action| count_of(a) == need && !is_bomb_shape(a);
+
     if !last_is_bomb {
         // 普通牌型：同张数、非炸弹、牌力最小的一条。
         if let Some(best) = plays
             .iter()
-            .filter(|a| count_of(a) == need && !is_bomb_shape(a))
+            .filter(|a| same_shape(a))
             .min_by_key(|a| (top_rank_of(a), cards_key_of(a)))
         {
+            // 记牌档位：自己手牌不多时，若某条同型候选是「无人能压」的控制牌，先用它锁牌权。
+            if memory && hand.len() <= 10 {
+                let discarded = view_scan::discard_cards(view);
+                if let Some(ctrl) = plays
+                    .iter()
+                    .filter(|a| same_shape(a) && is_controller(&discarded, hand, a))
+                    .min_by_key(|a| (top_rank_of(a), cards_key_of(a)))
+                {
+                    return (*ctrl).clone();
+                }
+            }
             return (*best).clone();
         }
     } else {
         // 对手是炸弹：同张数的非炸弹只能是同花顺（5 张炸之上），先试它。
         if let Some(best) = plays
             .iter()
-            .filter(|a| count_of(a) == need && !is_bomb_shape(a))
+            .filter(|a| same_shape(a))
             .min_by_key(|a| (top_rank_of(a), cards_key_of(a)))
         {
             return (*best).clone();
@@ -104,7 +167,17 @@ fn follow(plays: &[&Action], last_cards: &[u16], last_is_bomb: bool, hand_len: u
 
     let last_top = last_cards.iter().copied().map(rank_of).max().unwrap_or(0);
     // J(9) 以上视为「大牌」；对手已压大牌、或自己手牌 ≤8 张（该搏一手）才动炸弹。
-    let worth_bomb = last_is_bomb || last_top >= 9 || hand_len <= 8;
+    let mut worth_bomb = last_is_bomb || last_top >= 9 || hand.len() <= 8;
+    if memory {
+        // 记牌档位：按自己手上的炸弹数决定是否值得开炸。
+        // 两个以上炸弹 → 更愿意（对手压 8 以上就开）；只剩一个且手牌还厚 → 留住。
+        let bombs = bomb_count_in_hand(hand);
+        if bombs >= 2 {
+            worth_bomb = last_is_bomb || last_top >= 7 || hand.len() <= 8;
+        } else if bombs == 1 && hand.len() > 14 && last_top < 11 {
+            worth_bomb = false;
+        }
+    }
     if worth_bomb {
         if let Some(bomb) = plays
             .iter()
