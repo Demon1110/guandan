@@ -2598,6 +2598,67 @@ mod tests {
         }
     }
 
+    /// 合成牌力序的两条边界（§5.13 第 911/932 行、`levelInsert: above-A`）：
+    /// **打 2 时 2 顶到 A 之上；不打 2 时 2 就是自然序最低位**（不是「2 恒为次高档」）。
+    #[test]
+    fn rank_key_two_is_top_only_when_level_is_two() {
+        let engine = classic_engine();
+        let r = &engine.ruleset;
+        let deck_idx = |name: &str| {
+            r.deck
+                .ranks
+                .iter()
+                .position(|k| k.0 == name)
+                .unwrap_or_else(|| panic!("deck 缺点数 {name}"))
+        };
+        let (two, three, a) = (deck_idx("2"), deck_idx("3"), deck_idx("A"));
+
+        // ① 首局打 2（夹具 `levelTable.initial = "2"`）：2 从序首抽出插到 A 之后。
+        let state = engine.deal(M0_SEED).expect("发牌失败");
+        let ctx = engine.rank_context(&state);
+        assert!(
+            ctx.rank_key(r, two) > ctx.rank_key(r, a),
+            "打 2 时 2 必须大于 A"
+        );
+        assert_eq!(ctx.rank_key(r, three), 1, "打 2 时 3 是合成序最低位");
+        assert_eq!(
+            ctx.rank_key(r, two),
+            ctx.rank_key(r, a) + 1,
+            "2 紧贴在 A 之上、小王之下"
+        );
+
+        // ② 改成打 5：2 回到自然序最低位，5 顶到 A 之上。
+        let mut state5 = engine.deal(M0_SEED).expect("发牌失败");
+        let level_table = r.level_table.as_ref().expect("classic 有 levelTable");
+        let five_level = level_table
+            .ranks
+            .iter()
+            .position(|k| k.0 == "5")
+            .expect("levelTable 缺 5");
+        for lv in state5.levels.iter_mut() {
+            *lv = five_level as u8;
+        }
+        let ctx5 = engine.rank_context(&state5);
+        let five = deck_idx("5");
+        assert_eq!(ctx5.rank_key(r, two), 1, "不打 2 时 2 必须是最小");
+        assert!(
+            ctx5.rank_key(r, two) < ctx5.rank_key(r, three),
+            "不打 2 时 2 小于 3"
+        );
+        assert!(
+            ctx5.rank_key(r, five) > ctx5.rank_key(r, a),
+            "打 5 时 5 必须大于 A"
+        );
+
+        // ③ 组牌型只认自然序：级牌不提升，故 A 恒为自然序最高非王点数。
+        assert_eq!(
+            ctx5.natural_rank_key(r, a),
+            r.deck.ranks.len() as u32,
+            "自然序里 A 仍在 13 档"
+        );
+        assert_eq!(ctx5.natural_rank_key(r, two), 1, "自然序里 2 恒为最低");
+    }
+
     struct DiffRng(u64);
 
     impl DiffRng {
