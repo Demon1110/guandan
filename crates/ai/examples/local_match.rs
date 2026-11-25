@@ -82,4 +82,11 @@ fn main() {
             "不一致"
         }
     );
+    // 双产物（native / wasm）比对用：打全长 64 位十六进制，供 CI 的脚本抓取。
+    println!("fullHash={}", hex_full(&authoritative));
+    println!("records={}", room.log().len());
+}
+
+fn hex_full(bytes: &[u8; 32]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

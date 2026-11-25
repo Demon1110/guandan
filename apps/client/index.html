@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>掼蛋 M1 · 本地房间</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <h1>掼蛋 M1 · 本地房间</h1>
+    <div class="sub">
+      <span id="match-id"></span>
+      <span class="dot">·</span>
+      <span id="meta"></span>
+      <span class="dot">·</span>
+      <span>stateHash <code id="hash"></code></span>
+    </div>
+  </header>
+
+  <main>
+    <section class="table">
+      <div id="seats" class="seats"></div>
+      <div class="center">
+        <div id="last-play" class="last-play"></div>
+        <div id="turn" class="turn">…</div>
+        <div id="hand" class="hand"></div>
+        <div class="controls">
+          <button id="play" disabled>出牌</button>
+          <button id="pass" disabled>过牌</button>
+        </div>
+      </div>
+    </section>
+
+    <aside class="side">
+      <h2>动作日志</h2>
+      <ul id="log"></ul>
+      <h2>存档</h2>
+      <p class="hint">动作逐条写入 IndexedDB；刷新或杀进程重开后按日志回放，哈希对齐才继续。</p>
+      <div class="controls">
+        <button id="reload">模拟重开（刷新页面）</button>
+        <button id="reset" class="danger">清空存档重开</button>
+      </div>
+    </aside>
+  </main>
+</body>
+<script src="app.js"></script>
+</html>

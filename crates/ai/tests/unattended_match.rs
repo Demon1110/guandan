@@ -9,10 +9,7 @@ fn l0_leads_lowest_single_and_passes_when_following() {
     let bot = L0Bot;
     // 领出态：出牌 id 最小的一张单张。
     let lead_view = br#"{"hand":{"cards":[4,9,15]},"seat.levels":[0,0],"round.level":0}"#;
-    assert_eq!(
-        bot.decide(lead_view, 0),
-        Action::Play { cards: vec![4] }
-    );
+    assert_eq!(bot.decide(lead_view, 0), Action::Play { cards: vec![4] });
     // 他座 lastPlay → 跟牌态：一律过（L0 不做牌力比较）。
     let follow_view = br#"{"hand":{"cards":[4,9,15]},"seat.levels":[0,0],"lastPlay":{"seat":1,"patternId":"single","cards":[30]},"round.level":0}"#;
     assert_eq!(bot.decide(follow_view, 0), Action::Pass);

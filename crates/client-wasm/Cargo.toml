@@ -1,0 +1,14 @@
+[package]
+name = "gf-client-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "掼蛋 Web 端 wasm 绑定层（浏览器裸加载，零 import）"
+
+[lib]
+# 只出 cdylib：浏览器直接 WebAssembly.instantiate，不需要 wasm-bindgen。
+crate-type = ["cdylib"]
+
+[dependencies]
+gf-ai = { path = "../ai" }
+gf-engine = { path = "../engine" }
+gf-table-runtime = { path = "../table-runtime" }

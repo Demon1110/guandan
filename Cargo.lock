@@ -187,6 +187,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gf-client-wasm"
+version = "0.1.0"
+dependencies = [
+ "gf-ai",
+ "gf-engine",
+ "gf-table-runtime",
+]
+
+[[package]]
 name = "gf-engine"
 version = "0.1.0"
 dependencies = [

@@ -46,10 +46,7 @@ pub fn has_last_play(view: &[u8]) -> bool {
 /// `lastPlay.seat`：上一手出牌座位（视图里有 `lastPlay` 时才返回 `Some`）。
 pub fn last_play_seat(view: &[u8]) -> Option<u8> {
     let needle = b"\"lastPlay\":{\"seat\":";
-    let start = view
-        .windows(needle.len())
-        .position(|w| w == needle)?
-        + needle.len();
+    let start = view.windows(needle.len()).position(|w| w == needle)? + needle.len();
     let mut end = start;
     while end < view.len() && view[end].is_ascii_digit() {
         end += 1;
