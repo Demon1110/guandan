@@ -304,11 +304,24 @@ impl Rng {
     }
 }
 
+/// L3 的实际跑局账目（供 `#[ignore]` 全量用例与报告打印）。
+#[derive(Clone, Debug, Default)]
+pub struct L3Stats {
+    /// 真正跑完的局数（失败局不计）。
+    pub rounds_run: usize,
+    /// 累计动作数。
+    pub steps_total: usize,
+    /// 单次 `legal_actions` 候选数的实测峰值。
+    pub peak_candidates: usize,
+}
+
 /// L3：随机合法动作跑 `opts.l3_rounds` 局，要求全部终局且候选数不爆。
-pub fn validate_l3(ruleset: &RuleSetBody, opts: &ValidateOptions, out: &mut Validation) {
+pub fn validate_l3(ruleset: &RuleSetBody, opts: &ValidateOptions, out: &mut Validation) -> L3Stats {
     let engine = M0Engine::new(ruleset.clone());
     let mut peak_candidates = 0usize;
     let mut failures: Vec<String> = Vec::new();
+    let mut rounds_run = 0usize;
+    let mut steps_total = 0usize;
 
     for round in 0..opts.l3_rounds {
         let round_seed = opts
@@ -374,8 +387,17 @@ pub fn validate_l3(ruleset: &RuleSetBody, opts: &ValidateOptions, out: &mut Vali
             // §5.4 要求失败可复现：记录 seed 与最小动作序列（截断到 40 步，避免报告爆掉）。
             let tail: Vec<String> = trail.iter().rev().take(40).rev().cloned().collect();
             failures.push(format!("{msg}\n  末段动作序列：{}", tail.join(" | ")));
+        } else {
+            rounds_run += 1;
+            steps_total += steps;
         }
     }
+
+    let stats = L3Stats {
+        rounds_run,
+        steps_total,
+        peak_candidates,
+    };
 
     if !failures.is_empty() {
         let (code, note) = if failures.iter().any(|f| f.contains("超过")) {
@@ -395,10 +417,10 @@ pub fn validate_l3(ruleset: &RuleSetBody, opts: &ValidateOptions, out: &mut Vali
                 failures.join("\n")
             ),
         });
-        return; // 有失败就不记 ran_levels（没跑完的级别不算通过）。
+        return stats; // 有失败就不记 ran_levels（没跑完的级别不算通过）。
     }
     out.ran_levels.insert(Level::L3);
-    let _ = peak_candidates;
+    stats
 }
 
 /// L4：黄金用例逐条重放，`stateHash` 必须一致。

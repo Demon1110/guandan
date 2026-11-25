@@ -185,7 +185,8 @@ pub fn validate_with(
         .all(|f| f.level != Level::L1 && f.level != Level::L2);
     if pre_deep_ok {
         if levels.contains(&Level::L3) {
-            validate_l3(ruleset, opts, &mut result);
+            // 跑局账目（局数/步数/候选峰值）只在 `#[ignore]` 全量用例里取用，此处忽略。
+            let _ = validate_l3(ruleset, opts, &mut result);
         }
         if levels.contains(&Level::L4) {
             validate_l4(ruleset, golden, &mut result);

@@ -157,3 +157,39 @@ fn full_pipeline_records_all_four_levels() {
         assert!(out.ran_levels.contains(&level), "{level:?} 未记为跑完");
     }
 }
+
+/// L3 全量 200 局（§5.4 判据的默认局数），默认不进 `cargo test`：
+/// 手动跑 `cargo test -p gf-engine --test ruleset_l2_l4 -- --ignored --nocapture`。
+///
+/// 它同时把跑局账目（局数 / 步数 / 候选峰值 / 耗时）打到 stdout，供实测记录回填；
+/// 其余用例仍用小批量，日常回归不背这份耗时。
+#[test]
+#[ignore = "L3 全量 200 局，debug 实测约 12s；用 --ignored 显式触发"]
+fn l3_full_200_rounds() {
+    let body = classic();
+    let opts = ValidateOptions::default();
+    let mut out = Default::default();
+    let started = std::time::Instant::now();
+    let stats = validate_l3(&body, &opts, &mut out);
+    println!(
+        "L3 全量：{}/{} 局 / {} 步 / 峰值候选 {} / {:.2}s",
+        stats.rounds_run,
+        opts.l3_rounds,
+        stats.steps_total,
+        stats.peak_candidates,
+        started.elapsed().as_secs_f64()
+    );
+    assert!(
+        out.findings.is_empty(),
+        "L3 全量应全终局：{:?}",
+        out.findings
+    );
+    assert_eq!(stats.rounds_run, opts.l3_rounds, "并非全部局跑完");
+    assert!(
+        stats.peak_candidates <= opts.l3_candidate_cap,
+        "峰值候选 {} 越限 {}",
+        stats.peak_candidates,
+        opts.l3_candidate_cap
+    );
+    assert!(out.ran_levels.contains(&Level::L3));
+}
