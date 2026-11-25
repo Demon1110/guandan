@@ -6,7 +6,7 @@
 //! - 搜索为确定性束搜索，`beamWidth = 64` 写死在引擎、不进 RuleSet。
 
 use crate::patterns::{enumerate, RankContext, Recognized};
-use crate::ruleset::model::{AiConfig, RecommendWeights};
+use crate::ruleset::model::{AiConfig, RecommendMode, RecommendWeights};
 use crate::ruleset::shape_plan::{BombRole, ShapePlan};
 use crate::ruleset::RuleSetBody;
 use std::collections::{BTreeMap, HashSet};
@@ -55,12 +55,12 @@ enum GroupKind {
     Unknown,
 }
 
-/// 解析 `ai.recommend` 配置：返回 `(enabled, weights)`；段省略 / `weights` 省略 =
-/// 默认权重全上（§5.11 第 865 行）。
-pub fn resolve_config(ai: Option<&AiConfig>) -> (bool, RecommendWeights) {
+/// 解析 `ai.recommend` 配置：返回 `(enabled, weights, mode)`；段省略 / `weights` 省略 =
+/// 默认权重全上；`mode` 省略 = `weighted`（§5.11 第 865、901 行）。
+pub fn resolve_config(ai: Option<&AiConfig>) -> (bool, RecommendWeights, RecommendMode) {
     match ai.and_then(|a| a.recommend.as_ref()) {
-        None => (true, RecommendWeights::default()),
-        Some(rec) => (rec.enabled, rec.weights.unwrap_or_default()),
+        None => (true, RecommendWeights::default(), RecommendMode::Weighted),
+        Some(rec) => (rec.enabled, rec.weights.unwrap_or_default(), rec.mode),
     }
 }
 
@@ -289,7 +289,7 @@ pub(crate) fn recommend_layout(
     ctx: &RankContext,
     hand: &[u16],
 ) -> Layout {
-    let (enabled, weights) = resolve_config(ruleset.ai.as_ref());
+    let (enabled, weights, _mode) = resolve_config(ruleset.ai.as_ref());
     if !enabled {
         return Layout {
             groups: Vec::new(),
@@ -533,8 +533,9 @@ mod tests {
 
     #[test]
     fn resolve_config_defaults_when_omitted() {
-        let (enabled, w) = resolve_config(None);
+        let (enabled, w, mode) = resolve_config(None);
         assert!(enabled);
         assert_eq!(w, RecommendWeights::default());
+        assert_eq!(mode, RecommendMode::Weighted);
     }
 }

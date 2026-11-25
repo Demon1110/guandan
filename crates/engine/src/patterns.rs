@@ -143,7 +143,7 @@ impl RankContext {
     /// 真实点数的 `rankKey`：合成序下标 +1；`0` 是保留值（轮子特例），真实点数与
     /// 大小王不得映射到 `0`（§5.13 第 931 行）。散牌型（单张 / 对 / 三张 / 三带二主牌）
     /// 与炸弹走这套合成序。
-    fn rank_key(&self, _r: &RuleSetBody, rank_idx: usize) -> u32 {
+    pub(crate) fn rank_key(&self, _r: &RuleSetBody, rank_idx: usize) -> u32 {
         let k = self.synth_pos[rank_idx] as u32 + 1;
         debug_assert!(k >= 1, "真实点数 rankKey 不得取保留值 0");
         k
@@ -153,7 +153,7 @@ impl RankContext {
     /// 不经过 `levelInsert` 提升（第二十五次变更）；级牌 = 2 时 2 就是自然序最小位，
     /// 不存在「级牌当 A」的第二解，也不额外加权。两套序各在本 `patternId` 内可比，
     /// 跨型只按 `compare.ladder`，不做数值比较，两套键不得在同一比较里混用。
-    fn natural_rank_key(&self, r: &RuleSetBody, rank_idx: usize) -> u32 {
+    pub(crate) fn natural_rank_key(&self, r: &RuleSetBody, rank_idx: usize) -> u32 {
         let key = &r.deck.ranks[rank_idx];
         let pos = r
             .natural_order
@@ -166,7 +166,7 @@ impl RankContext {
     }
 
     /// 大小王 `rankKey`：序尾两位，同样 +1 偏移（小王 < 大王）。
-    fn joker_key(&self, r: &RuleSetBody, big: bool) -> u32 {
+    pub(crate) fn joker_key(&self, r: &RuleSetBody, big: bool) -> u32 {
         let tail = r.natural_order.len();
         (tail - 2 + if big { 1 } else { 0 }) as u32 + 1
     }

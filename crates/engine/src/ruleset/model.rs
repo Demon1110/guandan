@@ -823,15 +823,28 @@ impl Default for RecommendWeights {
     }
 }
 
-/// `ai.recommend`：组牌推荐开关与权重（§5.11「组牌推荐」段、第二十/二十八次变更）。
+/// `ai.recommend.mode`（§5.11 第三十七次变更）：`least-hands` 先比手数、
+/// `weighted` 先比分数；省略 = `weighted`。未知取值在反序列化期拒绝。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Default)]
+pub enum RecommendMode {
+    #[serde(rename = "least-hands")]
+    LeastHands,
+    #[serde(rename = "weighted")]
+    #[default]
+    Weighted,
+}
+
+/// `ai.recommend`：组牌推荐开关、模式与权重（§5.11「组牌推荐」段）。
 ///
-/// `enabled` 默认 `true`；`enabled=false` 时 `weights` 可整段省略。`weights` 省略 =
-/// 默认权重全上。
+/// `enabled` 默认 `true`；`enabled=false` 时 `weights`/`mode` 可整段省略。`weights`
+/// 省略 = 默认权重全上；`mode` 省略 = `weighted`。
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecommendConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default)]
+    pub mode: RecommendMode,
     pub weights: Option<RecommendWeights>,
 }
 

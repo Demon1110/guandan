@@ -908,3 +908,25 @@ fn recommend_omitted_takes_default_weights() {
     let o = Opts::four_seat();
     assert_clean(&base(&o));
 }
+
+#[test]
+fn recommend_unknown_mode_rejected_at_construction() {
+    let mut o = Opts::four_seat();
+    o.ai = "recommend: { enabled: true, mode: bogus }";
+    let err = from_yaml(&base(&o)).expect_err("mode 未知取值必须拒绝");
+    assert_eq!(err.code, ErrorCode::RsSchemaInvalid);
+}
+
+#[test]
+fn recommend_least_hands_mode_accepted() {
+    let mut o = Opts::four_seat();
+    o.ai = "recommend: { enabled: true, mode: \"least-hands\" }";
+    assert_clean(&base(&o));
+}
+
+#[test]
+fn recommend_weighted_mode_default_when_omitted() {
+    let mut o = Opts::four_seat();
+    o.ai = "recommend: { enabled: true, mode: \"weighted\" }";
+    assert_clean(&base(&o));
+}
