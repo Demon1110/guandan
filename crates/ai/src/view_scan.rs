@@ -57,6 +57,71 @@ pub fn last_play_seat(view: &[u8]) -> Option<u8> {
     std::str::from_utf8(&view[start..end]).ok()?.parse().ok()
 }
 
+/// `lastPlay.patternId`：上一手牌型 id（`bomb-4` / `joker-bomb` / `straight-5` …）。
+pub fn last_play_pattern_id(view: &[u8]) -> Option<String> {
+    let anchor = b"\"lastPlay\":";
+    let pos = view.windows(anchor.len()).position(|w| w == anchor)?;
+    let rest = &view[pos..];
+    let needle = b"\"patternId\":\"";
+    let start = rest
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|p| p + needle.len())?;
+    let mut end = start;
+    while end < rest.len() && rest[end] != b'"' {
+        end += 1;
+    }
+    std::str::from_utf8(&rest[start..end])
+        .ok()
+        .map(str::to_owned)
+}
+
+/// `lastPlay.cards`：上一手的牌 id 列表（无 `lastPlay` 时为空）。
+///
+/// 只从 `lastPlay` 起点之后找 `"cards":[`，不会误取 `hand` 或 `discard` 的同名数组。
+pub fn last_play_cards(view: &[u8]) -> Vec<u16> {
+    let anchor = b"\"lastPlay\":";
+    let Some(pos) = view.windows(anchor.len()).position(|w| w == anchor) else {
+        return Vec::new();
+    };
+    let rest = &view[pos..];
+    let needle = b"\"cards\":[";
+    let Some(start) = rest
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|p| p + needle.len())
+    else {
+        return Vec::new();
+    };
+    parse_u16_list(&rest[start..])
+}
+
+/// 从 `[` 之后的字节里读到 `]` 为止，取所有十进制整数。
+fn parse_u16_list(bytes: &[u8]) -> Vec<u16> {
+    let mut out = Vec::new();
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b']' => break,
+            b'0'..=b'9' => {
+                let begin = cursor;
+                while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
+                    cursor += 1;
+                }
+                if let Ok(card) = std::str::from_utf8(&bytes[begin..cursor])
+                    .unwrap_or("")
+                    .parse::<u16>()
+                {
+                    out.push(card);
+                }
+                continue;
+            }
+            _ => cursor += 1,
+        }
+    }
+    out
+}
+
 /// 本座位当前是否「跟牌」（要压过别人的牌）。
 ///
 /// 关键口径：**回合被全员过牌清空后，引擎把出牌权交回最后出牌人，`lastPlay` 仍保留**

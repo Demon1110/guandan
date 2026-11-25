@@ -4,7 +4,7 @@
 //!
 //! 输出每一步的座位与动作，最后打印两局结算摘要、`stateHash` 与回放自证。
 
-use gf_ai::L0Bot;
+use gf_ai::L1Bot;
 use gf_engine::contract::Action;
 use gf_engine::hash::present_8;
 use gf_table_runtime::{Room, RoomConfig, StepOutcome};
@@ -17,10 +17,10 @@ fn main() {
 
     let mut room = Room::new(RoomConfig::all_bots("match-local-demo", seed)).expect("建桌失败");
     for seat in 0..4u8 {
-        room.attach_bot(seat, Box::new(L0Bot)).expect("装 bot 失败");
+        room.attach_bot(seat, Box::new(L1Bot)).expect("装 bot 失败");
     }
     room.start(0).expect("发牌失败");
-    println!("建桌完成：4 座位全 bot（AI-L0），种子 {seed:#x}，规则集经典掼蛋");
+    println!("建桌完成：4 座位全 bot（AI-L1），种子 {seed:#x}，规则集经典掼蛋");
 
     let mut now_ms = 1000u64;
     for round in 1..=2u16 {

@@ -52,6 +52,16 @@ pub enum PlayerStatus {
 pub trait BotPolicy {
     /// 按本座位视图决策；返回的动作由房间做合法性复核。
     fn decide(&self, view_bytes: &[u8], seat: u8) -> Action;
+
+    /// 带合法集的决策入口（AI-L1 用，§5.11「评估 + 有限扫描」）。
+    ///
+    /// `legal` 由房间用引擎按**本座位手牌 + 桌面公共信息**推出，不含其他座位的手牌，
+    /// 因此不构成信息隔离泄漏（§3.3）。默认实现忽略合法集，回落到 [`BotPolicy::decide`]，
+    /// 保持 L0 与既有 bot 的行为不变。
+    fn decide_with_legal(&self, view_bytes: &[u8], seat: u8, legal: &[Action]) -> Action {
+        let _ = legal;
+        self.decide(view_bytes, seat)
+    }
 }
 
 /// 建桌参数。
@@ -344,6 +354,13 @@ impl Room {
         &self.log
     }
 
+    /// 当前行动座位的合法动作集（已归一化）。只由本座位手牌 + 桌面公共信息推出。
+    ///
+    /// 供 wasm 绑定层做 bot 决策自证与离线代打，不构成信息泄漏。
+    pub fn legal_now(&self) -> Result<Vec<Action>, RoomError> {
+        self.legal_normalized()
+    }
+
     /// 托管记录（诊断）。
     pub fn auto_actions(&self) -> &[AutoAction] {
         &self.auto
@@ -449,12 +466,14 @@ impl Room {
                 deadline_ms: grace_deadline,
             });
         }
-        // ② bot → 用 view(seat) 决策（不合法退化为合法首条）。
+        // ② bot → 用 view(seat) + 本座位合法集决策（不合法退化为合法首条）。
         if self.players[idx] == PlayerKind::Bot {
             let view = self.view_bytes(seat)?;
+            let legal = self.legal_normalized()?;
             let action = match &self.bots[idx] {
-                Some(bot) => bot.decide(&view, seat),
-                None => Action::Pass,
+                Some(bot) => bot.decide_with_legal(&view, seat, &legal),
+                // 没装实现也不能直接 `Pass`（领出态非法）：退到合法首条。
+                None => legal.first().cloned().unwrap_or(Action::Pass),
             };
             return self.bot_action(idx, action, now_ms);
         }
