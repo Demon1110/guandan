@@ -10,7 +10,8 @@
 //! 排序给全序；RNG 唯一来源是引擎注入的种子与计数器。
 
 use crate::contract::{
-    Action, Engine, EngineError, PatternId, Seat, State, TributeEventRecord, View, ZoneId,
+    Action, Engine, EngineError, MatchEnd, MatchEndReason, PatternId, Seat, State,
+    TributeEventRecord, View, ZoneId,
 };
 use crate::hash::{seed_digest, LastPlay, RngState, TributeState, ZoneEntry};
 use crate::patterns;
@@ -19,6 +20,7 @@ use crate::ruleset::model::{
 };
 use crate::ruleset::params::PrimitiveParams;
 use crate::ruleset::RuleSetBody;
+use crate::settlement::safety_cap_winner;
 use crate::view::{encode_canonical, ViewData, ViewLastPlay};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::OnceLock;
@@ -154,9 +156,7 @@ impl M0Engine {
     }
 
     /// 安全局数上限（§5.13「场次终止」行 1008、§5.1 `matchCap.rounds`）：缺省 12，
-    /// 取值 1–99；仅防死循环，不是胜负判据。触达计数依赖场次局号（⑧ 跨局携带），
-    /// 本批只读配置与比较规则，不在 settle 内触发终止。
-    #[allow(dead_code)] // ⑧ 接线场次终止时在 settle / 房间层调用
+    /// 取值 1–99；仅防死循环，不是胜负判据。
     pub(crate) fn match_cap_rounds(&self) -> u16 {
         self.ruleset
             .match_cap
@@ -302,6 +302,7 @@ impl M0Engine {
             settle_step: None,
             tribute_resisted: false,
             tribute_events: Vec::new(),
+            match_end: None,
             round_no: 1,
         };
 
@@ -332,6 +333,14 @@ impl M0Engine {
         if prev.phase != PHASE_SETTLE {
             return Err(EngineError::Internal {
                 message: "只有 settle 结束的局才能续发下一局".to_owned(),
+            });
+        }
+        if let Some(end) = &prev.match_end {
+            return Err(EngineError::Internal {
+                message: format!(
+                    "场次已终止（end_reason={}），不再开新局",
+                    end.reason.code_str()
+                ),
             });
         }
         let total = self.deck_total();
@@ -376,6 +385,7 @@ impl M0Engine {
             settle_step: None,
             tribute_resisted: false,
             tribute_events: Vec::new(),
+            match_end: None,
             round_no: prev.round_no.saturating_add(1),
         };
         Ok(state)
@@ -1274,6 +1284,7 @@ impl M0Engine {
         // 第 ① 步定名次：levels 保持 initial 常量占位、aFailStreak 全队恒 0（deal 已初始化），
         // 二者照常进快照与 stateHash 第 2/9 段，不省略段、不用 0xFF；段集固定 10 段、
         // 与 RuleSet 无关。
+        let mut passed_a = false;
         if let Some(table) = table {
             let a_index = table.ranks.len().saturating_sub(1) as u8;
             let initial_index = table
@@ -1291,14 +1302,14 @@ impl M0Engine {
 
             // ② 判过 A：该队 `levels=A` 且本方名次组合在 `pass.combos` 内即过 A，本场随即
             // 结束；计数不再使用、不参与后续判定，`levels` 保持 A。
-            let passed_a = on_a
+            passed_a = on_a
                 && self
                     .pass_combos()
                     .iter()
                     .any(|c| c.as_slice() == combo.as_slice());
 
             if passed_a {
-                // `match_record.winner_team` / `end_reason` 载波属房间层，待 ⑧ / match 层接线。
+                // 过 A：本场随即结束，`match_record` 载波在结算末段统一落 `state.match_end`。
             } else if on_a {
                 // ③ 未过 A 且该队 `levels=A`：`aFailStreak += 1` 写入；写入后达到 `streakLimit`
                 // 则退回 `levelTable.initial` 并清零；未达阈值保持 A 不退档。不在 A 上打的局
@@ -1316,6 +1327,21 @@ impl M0Engine {
                 let step = step.unwrap_or(0);
                 state.levels[winner_team as usize] = level.saturating_add(step).min(a_index);
             }
+        }
+
+        // 场次终止判定（§5.13 行 1008）：① 过 A → `passed-a`；② 未过 A 且本局号触达
+        // `matchCap.rounds` → `safety-cap`（胜方只比 `levels`，同档平局 `None`）。
+        // `aborted` 在 v1 房间层无触发源，仅保留枚举与载波，不在此自动置位。
+        if passed_a {
+            state.match_end = Some(MatchEnd {
+                winner_team: Some(winner_team),
+                reason: MatchEndReason::PassedA,
+            });
+        } else if state.round_no >= self.match_cap_rounds() {
+            state.match_end = Some(MatchEnd {
+                winner_team: safety_cap_winner(&state.levels),
+                reason: MatchEndReason::SafetyCap,
+            });
         }
 
         // §5.13「决定首出」：settle 结束把 `attackingTeam` 置为头游所在队（下一局打谁的级牌）。
@@ -1741,6 +1767,78 @@ mod tests {
         assert!(state.tribute_events.is_empty());
         assert!(!state.tribute_resisted);
         assert_eq!(state.tribute.card, None);
+    }
+
+    // ---------- 场次终止（§5.13 行 1008、§6.5 `match_record`） ----------
+
+    #[test]
+    fn match_end_passed_a_carries_winner_and_reason() {
+        // team0 在 A（下标 12）打 1+3（seat0 头游、seat2 三游）→ 过 A，`passed-a`。
+        let (engine, mut state) = classic_settle_state(vec![12, 0], vec![0, 0], vec![0, 1, 2, 3]);
+        state.round_no = 1;
+        engine.settle(&mut state).expect("settle 失败");
+
+        let end = state.match_end.expect("过 A 应落场次终止载波");
+        assert_eq!(end.reason, MatchEndReason::PassedA);
+        assert_eq!(end.reason.code_str(), "passed-a");
+        assert_eq!(end.winner_team, Some(0));
+    }
+
+    #[test]
+    fn match_end_safety_cap_compares_levels_only() {
+        // 未过 A、局号触达上限 12 → `safety-cap`；胜方只比 levels（5 > 3 → team0）。
+        let (engine, mut state) = classic_settle_state(vec![5, 3], vec![0, 0], vec![0, 1, 2, 3]);
+        state.round_no = engine.match_cap_rounds();
+        engine.settle(&mut state).expect("settle 失败");
+
+        let end = state.match_end.expect("达上限应落 safety-cap 载波");
+        assert_eq!(end.reason, MatchEndReason::SafetyCap);
+        assert_eq!(end.reason.code_str(), "safety-cap");
+        assert_eq!(end.winner_team, Some(0));
+    }
+
+    #[test]
+    fn match_end_safety_cap_tie_is_draw_with_empty_winner() {
+        // 同档平局：`winner_team` 为空；`aFailStreak` 不参与比较。平局纯判定见
+        // `settlement::safety_cap_winner` 单测（升级后同档在 level-up 局难以构造，引擎侧
+        // 只接载波，同档比较不重复实现）。
+        let winner = safety_cap_winner(&[3, 3]);
+        assert_eq!(winner, None, "同档记平局，胜方为空");
+    }
+
+    #[test]
+    fn aborted_reason_is_carrier_only_without_engine_trigger() {
+        // `aborted` v1 房间层无触发源：只验证枚举字面值与载波可构造，不在引擎内自动置位。
+        let end = MatchEnd {
+            winner_team: None,
+            reason: MatchEndReason::Aborted,
+        };
+        assert_eq!(end.reason.code_str(), "aborted");
+        assert_eq!(end.winner_team, None);
+    }
+
+    #[test]
+    fn match_not_ended_below_cap_and_not_passed_a_keeps_open() {
+        // 未过 A、局号未达上限：不终止，`match_end` 为空，可继续续发。
+        let (engine, mut state) = classic_settle_state(vec![2, 0], vec![0, 0], vec![0, 1, 2, 3]);
+        state.round_no = 1;
+        engine.settle(&mut state).expect("settle 失败");
+        assert!(state.match_end.is_none());
+    }
+
+    #[test]
+    fn deal_next_round_rejected_after_match_ended() {
+        // 场次终止后再续发必须被拒，不再开新局。
+        let (engine, mut ended) = classic_settle_state(vec![12, 0], vec![0, 0], vec![0, 1, 2, 3]);
+        ended.round_no = 1;
+        engine.settle(&mut ended).expect("settle 失败");
+        assert!(ended.match_end.is_some());
+
+        let result = engine.deal_next_round(&ended, M0_SEED);
+        assert!(
+            matches!(result, Err(EngineError::Internal { .. })),
+            "终止后续发应报 Internal"
+        );
     }
 
     #[test]

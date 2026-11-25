@@ -250,6 +250,8 @@ pub struct State {
     pub tribute_resisted: bool,
     /// 诊断字段，**不进 stateHash**：本局进贡 / 还贡逐条转移记录（§5.9 `TributeEvent`）。
     pub tribute_events: Vec<TributeEventRecord>,
+    /// 诊断字段，**不进 stateHash**：场次终止载波（过 A / 达安全上限 / 中止）；未终止为 `None`。
+    pub match_end: Option<MatchEnd>,
 }
 
 /// 进贡 / 还贡逐条转移记录（§5.9 `TributeEvent{from,to,card}` 回传口径）。
@@ -266,6 +268,41 @@ pub struct TributeEventRecord {
     pub card: u16,
     /// `true` = 还贡（受贡方→贡方）；`false` = 进贡（贡方→受贡方）。
     pub is_return: bool,
+}
+
+/// 场次终止原因（§5.13 行 1008、§6.5 `match_record.end_reason`）。取值以设计既有定义为准，
+/// 不另造枚举字面值。
+///
+/// - `PassedA`：某队过 A；
+/// - `SafetyCap`：未过 A 触达 `matchCap.rounds` 安全上限；
+/// - `Aborted`：整场流局 / 全员离线超时中止——v1 房间层尚无触发源，仅保留枚举与载波。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatchEndReason {
+    PassedA,
+    SafetyCap,
+    Aborted,
+}
+
+impl MatchEndReason {
+    /// `match_record.end_reason` 字面值（§6.5 行 721）。
+    pub fn code_str(self) -> &'static str {
+        match self {
+            MatchEndReason::PassedA => "passed-a",
+            MatchEndReason::SafetyCap => "safety-cap",
+            MatchEndReason::Aborted => "aborted",
+        }
+    }
+}
+
+/// 场次终止载波（`match_record.winner_team` + `end_reason`，§5.13 行 1008）。
+///
+/// `winner_team` 为胜方队序号；平局（safety-cap 同档）或 `aborted` 时可为空。诊断字段，
+/// **不进 `stateHash`**；其余 `match_record` 字段（`match_id/game_id/match_type/
+/// seats_count/started_at/ended_at`）由房间层落库时填充。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MatchEnd {
+    pub winner_team: Option<u8>,
+    pub reason: MatchEndReason,
 }
 
 /// 玩家提交的动作（§5.9 第 721–726 行 `SubmitAction.payload` 按 kind 分型）。
