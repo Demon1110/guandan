@@ -1755,6 +1755,129 @@ mod tests {
         assert_eq!(state.tribute.card, Some(tcard(&engine, 11)));
     }
 
+    /// 手牌快照（排序后比较，避免被实现细节里的牌序整理影响）。
+    fn sorted_hand(engine: &M0Engine, state: &State, seat: u8) -> Vec<u16> {
+        let mut cards = engine.hand_cards(state, seat).cloned().unwrap_or_default();
+        cards.sort_unstable();
+        cards
+    }
+
+    /// 全场手牌总张数（守恒校验用）。
+    fn total_hand_len(engine: &M0Engine, state: &State) -> usize {
+        (0..4u8)
+            .map(|s| engine.hand_cards(state, s).map(|h| h.len()).unwrap_or(0))
+            .sum()
+    }
+
+    #[test]
+    fn tribute_single_loss_refreshes_both_hands_in_place() {
+        // 进贡后「手牌刷新」：张数不变、贡牌离开贡方、还贡牌回到贡方，受贡方反之。
+        let engine = classic_engine();
+        let prev = settled_prev(&engine, vec![0, 1, 2, 3]);
+        let mut state = engine.build_round_state(&prev, M0_SEED).expect("续发骨架");
+        let payer = vec![tcard(&engine, 1), tcard(&engine, 5), tcard(&engine, 11)]; // 3、7、K
+        let receiver = vec![tcard(&engine, 0), tcard(&engine, 9)]; // 2、J
+        set_hand(&engine, &mut state, 3, payer.clone());
+        set_hand(&engine, &mut state, 0, receiver.clone());
+        let total_before = total_hand_len(&engine, &state);
+
+        engine
+            .resolve_tribute(&mut state, &prev)
+            .expect("进贡 / 还贡");
+
+        assert_eq!(
+            total_before,
+            total_hand_len(&engine, &state),
+            "进贡不改变全场张数"
+        );
+        assert_eq!(
+            sorted_hand(&engine, &state, 3),
+            {
+                let mut v = vec![tcard(&engine, 0), tcard(&engine, 1), tcard(&engine, 5)];
+                v.sort_unstable();
+                v
+            },
+            "贡方 3、7、K → 交出 K、收到还贡 2"
+        );
+        assert_eq!(
+            sorted_hand(&engine, &state, 0),
+            {
+                let mut v = vec![tcard(&engine, 9), tcard(&engine, 11)];
+                v.sort_unstable();
+                v
+            },
+            "受贡方 2、J → 交出 2、收到贡牌 K"
+        );
+        // 事件里记的牌必须真的换了位置，而不是只写事件。
+        assert!(engine
+            .hand_cards(&state, 0)
+            .expect("seat 0 手牌区")
+            .contains(&state.tribute_events[0].card));
+        assert!(!engine
+            .hand_cards(&state, 3)
+            .expect("seat 3 手牌区")
+            .contains(&state.tribute_events[0].card));
+    }
+
+    #[test]
+    fn tribute_resist_leaves_all_hands_untouched() {
+        // 抗贡：整个进贡段跳过，各座位手牌与发牌结果逐张一致（视图刷新后不会少牌）。
+        let engine = classic_engine();
+        let prev = settled_prev(&engine, vec![0, 1, 2, 3]);
+        let mut state = engine.build_round_state(&prev, M0_SEED).expect("续发骨架");
+        let big0 = patterns::joker_id(&engine.ruleset, true, 0);
+        let big1 = patterns::joker_id(&engine.ruleset, true, 1);
+        set_hand(&engine, &mut state, 3, vec![big0, big1]);
+        let before: Vec<Vec<u16>> = (0..4u8).map(|s| sorted_hand(&engine, &state, s)).collect();
+
+        engine.resolve_tribute(&mut state, &prev).expect("抗贡判定");
+
+        for seat in 0..4u8 {
+            assert_eq!(
+                sorted_hand(&engine, &state, seat),
+                before[seat as usize],
+                "抗贡后座位 {seat} 手牌应与发牌一致"
+            );
+        }
+        assert!(state.tribute.card.is_none());
+    }
+
+    #[test]
+    fn partner_lead_clears_finisher_hand_and_keeps_other_hands() {
+        // 接风前的「手牌刷新」：出完者手牌清空，其余三家一张不动（含接风领出那一刻）。
+        let engine = engine();
+        let mut state = partner_lead_scenario(&engine);
+        let before: Vec<Vec<u16>> = (0..4u8).map(|s| sorted_hand(&engine, &state, s)).collect();
+        let card = before[0][0];
+        state = engine
+            .apply(state, Action::Play { cards: vec![card] })
+            .expect("seat 0 出完");
+        assert!(
+            sorted_hand(&engine, &state, 0).is_empty(),
+            "出完者手牌应清空"
+        );
+        for seat in 1..4u8 {
+            assert_eq!(
+                sorted_hand(&engine, &state, seat),
+                before[seat as usize],
+                "座位 {seat} 手牌不应因他人出完而变化"
+            );
+        }
+        assert_eq!(state.turn_seat, 1, "出牌后仍按常规轮转");
+
+        state = engine.apply(state, Action::Pass).expect("seat 1 过牌");
+        state = engine.apply(state, Action::Pass).expect("seat 2 过牌");
+        assert_eq!(state.turn_seat, 2, "全过后搭档接风领出");
+        assert!(state.last_play.is_none());
+        for seat in 1..4u8 {
+            assert_eq!(
+                sorted_hand(&engine, &state, seat),
+                before[seat as usize],
+                "接风解析不应改动任何在局座位的手牌"
+            );
+        }
+    }
+
     #[test]
     fn tribute_disabled_skips_entire_segment() {
         // m0-minimal：`tribute.enabled=false`，deal → play 直转，无事件、无抗贡标记。
