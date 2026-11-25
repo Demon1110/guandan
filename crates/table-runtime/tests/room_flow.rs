@@ -4,9 +4,7 @@
 //! 时间全部用虚拟时钟（调用方推进），不读系统时间（§3.3 约束 2）。
 
 use gf_engine::contract::{Action, Engine};
-use gf_table_runtime::recovery::{
-    recover_client, ClientLocal, ReconnectDecision, RecoveryOutcome,
-};
+use gf_table_runtime::recovery::{recover_client, ClientLocal, ReconnectDecision, RecoveryOutcome};
 use gf_table_runtime::{BotPolicy, PlayerKind, Room, RoomConfig, StepOutcome};
 
 /// 测试用最小 bot：领出打手中第一张单张（view 里的 `hand` 首元素），跟牌一律过。
@@ -27,9 +25,7 @@ impl BotPolicy for LeadFirstSingle {
 /// 从 canonical view 里取 `"hand":{"cards":[<first>,...` 的首个牌 id。
 fn first_hand_card(view: &[u8]) -> Option<u16> {
     let needle = b"\"hand\":{\"cards\":[";
-    let start = view
-        .windows(needle.len())
-        .position(|w| w == needle)? + needle.len();
+    let start = view.windows(needle.len()).position(|w| w == needle)? + needle.len();
     let mut end = start;
     while end < view.len() && view[end].is_ascii_digit() {
         end += 1;
@@ -177,8 +173,15 @@ fn reconnect_delta_replays_to_same_hash() {
         .find(|r| r.seat == seat && r.seat_seq == seat_seq)
         .expect("缓冲 / 日志里必须查得到该座位的动作")
         .room_seq;
-    let prefix: Vec<_> = log.iter().filter(|r| r.room_seq <= watermark).cloned().collect();
-    let mut client_state = room.engine().deal(room.round_seed(1)).expect("首局重发失败");
+    let prefix: Vec<_> = log
+        .iter()
+        .filter(|r| r.room_seq <= watermark)
+        .cloned()
+        .collect();
+    let mut client_state = room
+        .engine()
+        .deal(room.round_seed(1))
+        .expect("首局重发失败");
     for record in &prefix {
         client_state = room
             .engine()
@@ -193,19 +196,28 @@ fn reconnect_delta_replays_to_same_hash() {
         now_ms += 1000;
     }
 
-    let plan = room.reconnect(seat, client.last_seat_seq).expect("重连失败");
+    let plan = room
+        .reconnect(seat, client.last_seat_seq)
+        .expect("重连失败");
     assert!(
         matches!(plan.decision, ReconnectDecision::Delta { .. }),
         "水位仍在缓冲内应为增量路径"
     );
-    assert!(!plan.wire.snapshot_reset, "增量路径 snapshotReset 必须为 false");
+    assert!(
+        !plan.wire.snapshot_reset,
+        "增量路径 snapshotReset 必须为 false"
+    );
     assert!(plan.wire.verify(), "服务端下发前 viewHash 自证必须通过");
 
     let mut local = client;
     let outcome = recover_client(room.engine(), &mut local, &plan.decision, &plan.snapshot)
         .expect("恢复失败");
     let state = match outcome {
-        RecoveryOutcome::Delta { state, events_applied, .. } => {
+        RecoveryOutcome::Delta {
+            state,
+            events_applied,
+            ..
+        } => {
             assert!(events_applied > 0, "增量路径必须带出事件");
             state
         }
@@ -275,11 +287,14 @@ fn reconnect_falls_back_to_snapshot_reset_when_evicted() {
         matches!(plan.decision, ReconnectDecision::SnapshotReset),
         "记录已被淘汰必须落快照重置"
     );
-    assert!(plan.wire.snapshot_reset, "快照重置路径 snapshotReset 必须为 true");
+    assert!(
+        plan.wire.snapshot_reset,
+        "快照重置路径 snapshotReset 必须为 true"
+    );
     assert!(plan.wire.verify());
     // wire 帧可编解码且 roundNo 走头字段（此时已在第 2 局）。
-    let decoded = gf_table_runtime::RoomSnapshotWire::decode(&plan.wire.encode())
-        .expect("wire 解码失败");
+    let decoded =
+        gf_table_runtime::RoomSnapshotWire::decode(&plan.wire.encode()).expect("wire 解码失败");
     assert_eq!(decoded.round_no, 2);
     assert!(decoded.snapshot_reset);
 
@@ -287,7 +302,11 @@ fn reconnect_falls_back_to_snapshot_reset_when_evicted() {
     let outcome = recover_client(room.engine(), &mut local, &plan.decision, &plan.snapshot)
         .expect("恢复失败");
     match outcome {
-        RecoveryOutcome::SnapshotReset { state, snapshot_reset, .. } => {
+        RecoveryOutcome::SnapshotReset {
+            state,
+            snapshot_reset,
+            ..
+        } => {
             assert!(snapshot_reset);
             assert_eq!(
                 gf_table_runtime::state_hash_of(&state),
@@ -315,10 +334,7 @@ fn human_submit_validates_turn_and_legality() {
     let err = room
         .submit(other, Action::Pass, 1000)
         .expect_err("非行动座位必须拒绝");
-    assert!(matches!(
-        err,
-        gf_table_runtime::RoomError::WrongTurn { .. }
-    ));
+    assert!(matches!(err, gf_table_runtime::RoomError::WrongTurn { .. }));
 
     // 领出态必须出牌，`Pass` 非法 → Engine 拒绝。
     let err = room
@@ -329,7 +345,8 @@ fn human_submit_validates_turn_and_legality() {
     // 合法单张 → Applied。
     let legal = room
         .engine()
-        .legal_actions(room.state().expect("有状态")).expect("合法枚举失败");
+        .legal_actions(room.state().expect("有状态"))
+        .expect("合法枚举失败");
     let play = legal
         .into_iter()
         .find(|a| matches!(a, Action::Play { cards } if cards.len() == 1))

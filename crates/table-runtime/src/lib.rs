@@ -20,7 +20,7 @@ pub use recovery::{
 };
 pub use room::{
     normalize_action, replay, AutoAction, AutoReason, BotPolicy, PlayerKind, PlayerStatus,
-    ReconnectPlan, Room, RoomConfig, RoomError, SettleSummary, StepOutcome,
-    DEFAULT_OFFLINE_ALL_MS, DEFAULT_GRACE_MS, DEFAULT_RULESET_VERSION, DEFAULT_TURN_MS,
+    ReconnectPlan, Room, RoomConfig, RoomError, SettleSummary, StepOutcome, DEFAULT_GRACE_MS,
+    DEFAULT_OFFLINE_ALL_MS, DEFAULT_RULESET_VERSION, DEFAULT_TURN_MS,
 };
 pub use snapshot::{CodecError, RoomSnapshotWire};

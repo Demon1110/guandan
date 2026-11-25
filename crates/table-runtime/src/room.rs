@@ -371,7 +371,12 @@ impl Room {
     }
 
     /// 人类提交动作。校验轮次 → 校验合法性 → `apply` → 记账 → 刷新窗口。
-    pub fn submit(&mut self, seat: u8, action: Action, now_ms: u64) -> Result<StepOutcome, RoomError> {
+    pub fn submit(
+        &mut self,
+        seat: u8,
+        action: Action,
+        now_ms: u64,
+    ) -> Result<StepOutcome, RoomError> {
         let idx = self.seat_index(seat)?;
         if !self.is_human(seat) {
             return Err(RoomError::NotHuman(seat));
@@ -387,6 +392,25 @@ impl Room {
             });
         }
         self.apply_action(idx, action, now_ms, None)
+    }
+
+    /// 回放重演单条录制动作（续局重建用）。
+    ///
+    /// 与 [`Room::submit`] 的区别：不复核「人类 + 在线」（bot 座位与离线座位录下的动作同样要重演），
+    /// 不推进时钟（窗口在重建完成后由调用方重开）。轮次与合法性仍由引擎校验。
+    pub fn replay_apply(&mut self, seat: u8, action: Action) -> Result<StepOutcome, RoomError> {
+        let idx = self.seat_index(seat)?;
+        let state = self.state.as_ref().ok_or(RoomError::NotStarted)?;
+        if state.phase != PHASE_PLAY {
+            return Err(RoomError::NotInPlay);
+        }
+        if state.turn_seat != seat {
+            return Err(RoomError::WrongTurn {
+                expected: state.turn_seat,
+                actual: seat,
+            });
+        }
+        self.apply_action(idx, action, 0, None)
     }
 
     /// 驱动一步：bot 行动、断线托管、窗口超时托管都从这里出。
@@ -446,11 +470,8 @@ impl Room {
 
     /// 全员离线超时检查；`now` 由调用方推进。
     pub fn tick(&mut self, now_ms: u64) -> Result<(), RoomError> {
-        let all_offline = !self.status.is_empty()
-            && self
-                .status
-                .iter()
-                .all(|s| *s == PlayerStatus::Offline);
+        let all_offline =
+            !self.status.is_empty() && self.status.iter().all(|s| *s == PlayerStatus::Offline);
         if all_offline {
             let since = *self.all_offline_since.get_or_insert(now_ms);
             if now_ms.saturating_sub(since) >= self.offline_all_ms {
@@ -508,8 +529,21 @@ impl Room {
         })
     }
 
+    /// 重开当前行动窗口（客户端重载后调用：动作已回放，但窗口 deadline 需要按新时钟重算）。
+    pub fn resume_window(&mut self, now_ms: u64) -> Result<(), RoomError> {
+        if self.state.is_none() {
+            return Err(RoomError::NotStarted);
+        }
+        self.open_window(now_ms);
+        Ok(())
+    }
+
     /// 按座位取 wire 快照帧（服务端下发前自证 `viewHash`）。
-    pub fn snapshot_wire(&self, seat: u8, snapshot_reset: bool) -> Result<RoomSnapshotWire, RoomError> {
+    pub fn snapshot_wire(
+        &self,
+        seat: u8,
+        snapshot_reset: bool,
+    ) -> Result<RoomSnapshotWire, RoomError> {
         let idx = self.seat_index(seat)?;
         let state = self.state.as_ref().ok_or(RoomError::NotStarted)?;
         let view = self.engine.view(state, Seat(seat));
@@ -537,7 +571,9 @@ impl Room {
             if record.round_no != replay.round_no {
                 // 跨局边界：按记录里的局号续发，再重放。
                 while replay.round_no < record.round_no {
-                    replay = self.engine.deal_next_round(&replay, self.round_seed(replay.round_no + 1))?;
+                    replay = self
+                        .engine
+                        .deal_next_round(&replay, self.round_seed(replay.round_no + 1))?;
                 }
             }
             replay = self.engine.apply(replay, record.action.clone())?;
@@ -610,10 +646,7 @@ impl Room {
             return self.apply_action(idx, candidate, now_ms, None);
         }
         // bot 决策不合法：退化为合法首条并记托管（`BotIllegal`）。
-        let fallback = legal
-            .into_iter()
-            .next()
-            .unwrap_or(Action::Pass);
+        let fallback = legal.into_iter().next().unwrap_or(Action::Pass);
         self.apply_action(idx, fallback, now_ms, Some(AutoReason::BotIllegal))
     }
 
@@ -704,6 +737,10 @@ pub fn normalize_action(action: Action) -> Action {
 }
 
 /// 增量重放（对外暴露，客户端本地副本恢复用）。
-pub fn replay(engine: &M0Engine, state: State, events: &[ActionRecord]) -> Result<State, RoomError> {
+pub fn replay(
+    engine: &M0Engine,
+    state: State,
+    events: &[ActionRecord],
+) -> Result<State, RoomError> {
     Ok(replay_delta(engine, state, events)?)
 }
