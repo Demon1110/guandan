@@ -2,7 +2,7 @@
 
 一套**规则驱动**的掼蛋引擎与多端框架：玩法写进 YAML（RuleSet DSL），引擎只解释规则，不做硬编码分支；同一份 Rust 代码同时编出 **native**（服务端 / 测试）与 **wasm**（客户端）两个产物，两端对同一动作序列必须算出**逐字节相同**的 `stateHash`。
 
-> 当前阶段：**M1 进行中**。M0 五条硬 gate 已全部收口；M1 的牌型全表、枚举路径重构、结算第一批、进贡/还贡、跨局携带、房间快照 wire、组牌推荐（第三十七次变更）、房间主干（建桌→发牌→行动窗口→出牌→结算→再来一局）、AI-L0/L1（跟牌与留牌）、Web 端 + IndexedDB 续局、校验器 L2–L4 均已落地。
+> 当前阶段：**M1 进行中**。M0 五条硬 gate 已全部收口；M1 的牌型全表、枚举路径重构、结算第一批、进贡/还贡、跨局携带、房间快照 wire、组牌推荐（第三十七次变更）、房间主干（建桌→发牌→行动窗口→出牌→结算→再来一局）、AI-L0/L1/L2（跟牌、留牌、记牌、队友配合）、Web 端 + IndexedDB 续局、校验器 L2–L4 均已落地。
 > 设计口径的唯一权威是 `docs/designs/2026-11-23-guandan-multiplatform/design_draft.md`（已签署冻结）；本文只做导览，不承载任何设计结论。
 
 ---
@@ -294,7 +294,7 @@ guandan/
 │  ├─ protocol/               # proto + prost 生成代码（入库）
 │  ├─ runtime-spike/          # M0 断线恢复原型（recovery 已迁入 table-runtime，只剩 harness 夹具）
 │  ├─ table-runtime/          # 房间主干（建桌/发牌/行动窗口/托管/断线恢复/续局重演）+ 快照 wire
-│  ├─ ai/                     # AI-L0/L1（只读 view(seat) + 本座位合法集：L0 出最小牌，L1 跟牌/留牌/先走多张）
+│  ├─ ai/                     # AI-L0/L1/L2（view(seat) + 合法集 + partner.state：L0 最小牌 / L1 跟牌留牌 / L2 记牌与炸弹时机）
 │  └─ client-wasm/            # 浏览器 wasm 绑定层（零 import，裸加载）
 ├─ apps/client/               # Web 端（静态站点 + IndexedDB 动作存档 + 杀进程续局）
 ├─ scripts/                   # verify_dual_hash.ps1：native/wasm 双产物同解 gate
@@ -317,7 +317,7 @@ guandan/
 | 阶段 | 状态 | 内容 |
 | --- | --- | --- |
 | M0 | ✅ 已收口 | 契约锁定、双端 `stateHash` 一致、断线恢复原型、非法 RuleSet 反证、空转与包体实测 |
-| M1 | 🚧 进行中 | 牌型全表、枚举路径重构、结算两批、进贡/还贡/抗贡、跨局携带、快照 wire、组牌推荐、房间主干（含计时/托管/断线恢复/再来一局）、AI-L0/L1（跟牌/留牌）、Web 端 + IndexedDB 续局、校验器 L2–L4、CI 双产物 gate、性能与容量 gate（353.3µs / 3,952–7,904 房间）；剩余主项是 **Web 表现层（牌桌/大厅/结算/设置）与接风、进贡后手牌刷新专项** |
+| M1 | 🚧 进行中 | 牌型全表、枚举路径重构、结算两批、进贡/还贡/抗贡、跨局携带、快照 wire、组牌推荐、房间主干（含计时/托管/断线恢复/再来一局）、AI-L0/L1/L2（跟牌/留牌/记牌/队友配合）、Web 端 + IndexedDB 续局、校验器 L2–L4、CI 双产物 gate、性能与容量 gate（353.3µs / 3,952–7,904 房间）；覆盖率已实测基线（行 86.01% / 分支 72.07%），剩余主项是 **Web 表现层（牌桌/大厅/结算/设置）与接风、进贡后手牌刷新专项**，以及 **分支覆盖从 72% 补到 90%** |
 | M2 | 未开始 | 账号、联机内测、Tauri 桌面壳、回放只读观战 |
 | M3 / M4 | 未开始 | 见 `docs/开发计划.md` |
 
@@ -326,7 +326,8 @@ guandan/
 - 单动作延迟：`guandan-classic` 领出态 `legal_actions` P99 **353.3µs（native）/ 359.7µs（wasm）< 1ms**，已过线；`apply` P99 4.2/4.9µs。
 - 容量：单核标度 native ≈494 / wasm ≈484 房间；整机折算（i7-13700KF，8P/16 物理核）≈ **3,952–7,904 房间**，已到 1500 整机线（口径见 `docs/assets/m1-bench-profile.md` §10；单核数只作标度，不得单独判过或判不过）。
 - `recommend`：1000 手随机 27 张冷调用 avg **315.4µs** / P99 **928µs**，未越 2ms 目标线。
-- 无人值守全流程：四 bot（AI-L1）两局 **187 动作**，终局 `stateHash` `6805c31f…d8cd`，native 与 wasm 逐字节同解；Web 端每手动作落 IndexedDB，刷新/杀进程后按日志回放，哈希一致（浏览器实测 359 条对齐）。
+- 无人值守全流程：四 bot（AI-L2）两局 **196 动作**，终局 `stateHash` `342eca19…a593`，native 与 wasm 逐字节同解；Web 端每手动作落 IndexedDB，刷新/杀进程后按日志回放，哈希一致（无头 gate 190 条 / `2d07a63d…5220`）。
+- 覆盖率：`scripts/coverage.ps1`（`cargo-llvm-cov` + nightly，排除 wasm 导出层与生成代码）实测 **行 86.01% / 分支 72.07%**，缺口清单见 `docs/assets/m1-coverage-baseline.md`。
 
 细节与实测账目见 `docs/assets/m1-bench-profile.md`。
 
