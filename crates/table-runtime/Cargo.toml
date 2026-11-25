@@ -1,0 +1,8 @@
+[package]
+name = "gf-table-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "房间快照 wire 编解码与服务端 viewHash 自证（§5.9 RoomSnapshot、§5.12 视图编码）"
+
+[dependencies]
+gf-engine = { path = "../engine" }

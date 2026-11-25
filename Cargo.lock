@@ -204,6 +204,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "gf-table-runtime"
+version = "0.1.0"
+dependencies = [
+ "gf-engine",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

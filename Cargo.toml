@@ -1,3 +1,3 @@
 [workspace]
-members = ["crates/engine", "crates/protocol", "crates/runtime-spike"]
+members = ["crates/engine", "crates/protocol", "crates/runtime-spike", "crates/table-runtime"]
 resolver = "2"
