@@ -447,6 +447,78 @@ pub extern "C" fn gf_room_seats() -> *mut u8 {
     out(s)
 }
 
+/// 当前行动座位的合法动作集（`[{"pass":…,"cards":[…]}]`）；出牌按钮与「提示」共用。
+#[no_mangle]
+pub extern "C" fn gf_room_legal() -> *mut u8 {
+    let Some(r) = room() else {
+        return err("no room");
+    };
+    match r.legal_now() {
+        Ok(legal) => {
+            let items: Vec<String> = legal.iter().map(action_json).collect();
+            out(format!("[{}]", items.join(",")))
+        }
+        Err(e) => err(e),
+    }
+}
+
+/// 桌面公开信息（不进座位视图、不影响 `stateHash`）：相位、行动座位、连续过牌数、
+/// 双方级牌、打级队，以及各家手牌数与已锁定名次（1=头游 … 4=末游，0=未出完）。
+#[no_mangle]
+pub extern "C" fn gf_room_info() -> *mut u8 {
+    let Some(r) = room() else {
+        return err("no room");
+    };
+    let Ok(state) = r.state() else {
+        return out("{\"phase\":\"idle\"}".to_owned());
+    };
+    let hand_idx = r
+        .engine()
+        .ruleset
+        .zones
+        .iter()
+        .position(|z| z.id.0 == "hand")
+        .unwrap_or(0) as u16;
+    let mut seats = String::new();
+    for seat in 0..4u8 {
+        if seat > 0 {
+            seats.push(',');
+        }
+        let hand: usize = state
+            .zones
+            .iter()
+            .filter(|z| z.seat == seat && z.zone_id == hand_idx)
+            .map(|z| z.cards.len())
+            .sum();
+        let rank = state
+            .finish_order
+            .iter()
+            .position(|&x| x == seat)
+            .map(|p| p + 1)
+            .unwrap_or(0);
+        seats.push_str(&format!(
+            "{{\"seat\":{seat},\"human\":{},\"hand\":{hand},\"rank\":{rank}}}",
+            r.is_human(seat)
+        ));
+    }
+    let levels: Vec<String> = state.levels.iter().map(u8::to_string).collect();
+    let phase = match state.phase {
+        0 => "deal",
+        1 => "tribute",
+        2 => "play",
+        _ => "settle",
+    };
+    out(format!(
+        "{{\"phase\":\"{phase}\",\"roundNo\":{},\"turnSeat\":{},\"passesSince\":{},\"levels\":[{}],\"attackingTeam\":{},\"seats\":[{}]}}",
+        state.round_no,
+        state.turn_seat,
+        state.passes_since_last_play,
+        levels.join(","),
+        state.attacking_team,
+        seats
+    ))
+}
+
 /// bot 决策入口自证：对指定座位当前视图 + 合法集 + 搭档状态走 AI-L2 决策，返回动作 JSON
 /// （诊断 / 离线代打用）。
 #[no_mangle]
