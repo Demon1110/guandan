@@ -159,3 +159,34 @@ fn room_delta_roundtrip_two_event_branches() {
         _ => panic!("第二个事件 decode 后未落到 Passed"),
     }
 }
+
+#[test]
+fn settle_result_roundtrip_with_reason() {
+    let msg = SettleResult {
+        round_no: 3,
+        room_seq: 77,
+        result: br#"{"winner_team":1,"ranks":[0,2,1,3],"points":3}"#.to_vec(),
+        levels_after: vec![3, 0],
+        next_deal_in_ms: 5000,
+        reason: Some("RS_PHASE_UNIMPLEMENTED".into()),
+    };
+    let back = roundtrip(&msg);
+    assert_eq!(msg, back);
+    assert_eq!(back.reason.as_deref(), Some("RS_PHASE_UNIMPLEMENTED"));
+    assert_eq!(back.levels_after, vec![3, 0]);
+}
+
+#[test]
+fn settle_result_roundtrip_without_reason_defaults_none() {
+    let msg = SettleResult {
+        round_no: 1,
+        room_seq: 12,
+        result: br#"{"winner_team":0,"ranks":[0,1,2,3],"points":0}"#.to_vec(),
+        levels_after: vec![2, 0],
+        next_deal_in_ms: 0,
+        reason: None,
+    };
+    let back = roundtrip(&msg);
+    assert_eq!(msg, back);
+    assert_eq!(back.reason, None);
+}

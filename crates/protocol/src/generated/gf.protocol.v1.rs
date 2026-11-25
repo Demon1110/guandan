@@ -265,6 +265,10 @@ pub struct SettleResult {
     pub levels_after: ::prost::alloc::vec::Vec<u32>,
     #[prost(uint64, tag = "5")]
     pub next_deal_in_ms: u64,
+    /// 结算异常原因：ASCII 字符串，取值来自 §5.7 错误码全表（第二十四次变更 ②）；
+    /// 正常结算时字段不出现（缺省 None）。
+    #[prost(string, optional, tag = "6")]
+    pub reason: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// S→C 托管状态变化（§5.9 行 721）。
 #[derive(Clone, PartialEq, ::prost::Message)]

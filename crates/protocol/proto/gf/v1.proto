@@ -195,6 +195,9 @@ message SettleResult {
   bytes result = 3;
   repeated uint32 levels_after = 4; // 每队级牌下标，u8 域，按队伍序号升序（§5.13 行 884）。
   uint64 next_deal_in_ms = 5;
+  // 结算异常原因：ASCII 字符串，取值来自 §5.7 错误码全表（第二十四次变更 ②）；
+  // 正常结算时字段不出现（缺省 None）。
+  optional string reason = 6;
 }
 
 // S→C 托管状态变化（§5.9 行 721）。
