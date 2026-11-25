@@ -951,6 +951,64 @@ fn flush_beats_bomb5_and_loses_to_bomb6() {
 
 // ---------- 四王炸 ----------
 
+/// 王炸**只有四张王**（两张小王 + 两张大王）才成立；1 / 2 / 3 张王都不是炸，
+/// 也不是对子或三张（王只出现在单张牌型里）。
+#[test]
+fn joker_bomb_needs_all_four_jokers() {
+    let r = fixture_body();
+    let engine = engine();
+    let little = [joker_id(&r, false, 0), joker_id(&r, false, 1)];
+    let big = [joker_id(&r, true, 0), joker_id(&r, true, 1)];
+
+    // 2 张与 3 张的四种组合：一次性出必须判非法，且领出态里不得出现「整体作为一条动作」。
+    let partial: Vec<Vec<u16>> = vec![
+        vec![little[0], little[1]],
+        vec![big[0], big[1]],
+        vec![little[0], big[0]],
+        vec![little[0], little[1], big[0]],
+        vec![little[0], big[0], big[1]],
+    ];
+    for cards in partial {
+        assert_illegal(
+            apply_play(&engine, cards.clone(), cards.clone()),
+            &format!("{} 张王 {:?} 不应成炸", cards.len(), cards),
+        );
+        let state = state_with(&engine, cards.clone());
+        let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
+        assert!(
+            !legal.contains(&Action::Play {
+                cards: cards.clone()
+            }),
+            "不足四张的王不应整体成一条动作: {legal:?}"
+        );
+        // 领出态里没有任何多张动作（不成炸、不成对、不成三张）；王只作单张，
+        // 且同型同键只列规范一条，故不必逐副本断言。
+        assert!(
+            legal.iter().all(|a| match a {
+                Action::Play { cards } => cards.len() == 1,
+                _ => true,
+            }),
+            "{} 张王不应产出任何多张动作: {legal:?}",
+            cards.len()
+        );
+        assert!(
+            legal
+                .iter()
+                .any(|a| matches!(a, Action::Play { cards } if cards.len() == 1)),
+            "王自身应可作单张: {legal:?}"
+        );
+    }
+
+    // 对照：四张王成炸（同 `joker_bomb_four_jokers`，此处再确认一次「整组」合法）。
+    let four = vec![little[0], little[1], big[0], big[1]];
+    assert_played(
+        apply_play(&engine, four.clone(), four),
+        "joker-bomb",
+        (4, 15),
+        "四王炸",
+    );
+}
+
 #[test]
 fn joker_bomb_four_jokers() {
     let engine = engine();

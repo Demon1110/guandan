@@ -576,4 +576,51 @@ fn triple_pair_rejects_mixed_jokers() {
     assert_eq!(layout.groups[0].pattern_id, "triple");
     assert_eq!(layout.single_count, 4, "两张异色王只能各算散张");
     assert_eq!(layout.score, -40, "裸三张 0 + 4 张散张 (−10 × 4)");
+    assert!(
+        !layout
+            .groups
+            .iter()
+            .any(|g| g.pattern_id.starts_with("bomb")),
+        "两张王不得拼成炸弹，实际：{:?}",
+        layout.groups
+    );
+}
+
+/// 三张王（两小 + 一大 / 两小 + 两大之类）也**不成炸**：王炸只有四张王才成立。
+/// 此时两张小王仍可按用户裁定作三带二附件（对子不是炸），散落的大王算单张。
+#[test]
+fn recommend_never_bombs_partial_jokers() {
+    use gf_engine::patterns::{card_id, joker_id};
+    let engine = engine_with_mode(None);
+    let r = &engine.ruleset;
+    let mut hand: Vec<u16> = vec![
+        card_id(r, 4, 0, 0),
+        card_id(r, 4, 1, 0),
+        card_id(r, 4, 3, 0),
+        joker_id(r, false, 0),
+        joker_id(r, false, 1),
+        joker_id(r, true, 0),
+        card_id(r, 9, 2, 0),
+    ];
+    hand.sort_unstable();
+
+    let state = with_hand(&engine, hand.clone());
+    let layout = engine
+        .recommend(&state, Seat(0))
+        .expect("三王用例 recommend 不应报错");
+
+    assert_conservation(&layout, &hand);
+    assert!(
+        !layout
+            .groups
+            .iter()
+            .any(|g| g.pattern_id.starts_with("bomb")),
+        "三张王不得拼成任何炸弹，实际：{:?}",
+        layout.groups
+    );
+    assert_eq!(layout.groups.len(), 1, "实际：{:?}", layout.groups);
+    assert_eq!(layout.groups[0].pattern_id, "triple-pair");
+    assert_eq!(layout.single_count, 2, "大王 + 1 张散张各算一张");
+    // 35（三带二）+ 2 × (−10) = 15。
+    assert_eq!(layout.score, 15);
 }

@@ -263,6 +263,6 @@ OK: recommend native/wasm 同解（digest=10284298271306087631）
 
 ### 9.4 回归
 
-- `cargo test --workspace` **274 passed / 0 failed**（+1 条候选同输出差分、+2 条王对用例：`gf-engine` 库测试 64→65、`recommend_test` 10→12）；`cargo fmt --all -- --check` exit 0；`cargo clippy -p gf-engine --all-targets -- -D warnings` 0 告警。
+- `cargo test --workspace` **276 passed / 0 failed**（本轮共 +5：候选同输出差分 1 条、王对附件/异色王/三王推荐 3 条、四王炸边界 1 条；`patterns` 80→81、`recommend_test` 10→13、库测试 64→65）；`cargo fmt --all -- --check` exit 0；`cargo clippy -p gf-engine --all-targets -- -D warnings` 0 告警。
   （`clippy --workspace --all-targets` 在本机因缺 `protoc` 会在 `gf-protocol` 构建脚本处失败，非本次改动引入。）
 - `stateHash` 锚点未漂移：锚点用例在全量测试内通过（`recommend` 不进 `stateHash`）。
