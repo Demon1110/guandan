@@ -1,4 +1,4 @@
-//! 浏览器 wasm 绑定层：把 `gf-table-runtime` 的房间 + `gf-ai` 的 L0 bot 暴露成
+//! 浏览器 wasm 绑定层：把 `gf-table-runtime` 的房间 + `gf-ai` 的 L0/L1/L2 bot 暴露成
 //! 一组 `extern "C"` 函数，浏览器用 `WebAssembly.instantiate` 裸加载（零 import，无需
 //! wasm-bindgen / npm 工具链）。
 //!
@@ -226,9 +226,20 @@ pub extern "C" fn gf_str_free(ptr: *mut u8) {
 
 // ---------------- 房间 ----------------
 
-/// 建桌：`human_mask` 为 1 的座位是人类，其余挂 L0 bot（AI-L0，只看 view(seat)）。
+/// 建桌：`human_mask` 为 1 的座位是人类，其余挂 AI-L2（默认最智能档）。
 #[no_mangle]
 pub extern "C" fn gf_room_new(seed_hi: u32, seed_lo: u32, human_mask: u32) -> u8 {
+    gf_room_new_level(seed_hi, seed_lo, human_mask, 2)
+}
+
+/// 按档位建桌：`bot_level` 0/1/2 = AI-L0/L1/L2（其他人用值按 L2 处理）。
+#[no_mangle]
+pub extern "C" fn gf_room_new_level(
+    seed_hi: u32,
+    seed_lo: u32,
+    human_mask: u32,
+    bot_level: u8,
+) -> u8 {
     let seed = join_seed(seed_hi, seed_lo);
     let players: Vec<PlayerKind> = (0..4u8)
         .map(|s| {
@@ -250,12 +261,21 @@ pub extern "C" fn gf_room_new(seed_hi: u32, seed_lo: u32, human_mask: u32) -> u8
         Err(_) => return 0,
     };
     for seat in 0..4u8 {
-        if human_mask & (1 << seat) == 0 && r.attach_bot(seat, Box::new(gf_ai::L2Bot)).is_err() {
+        if human_mask & (1 << seat) == 0 && r.attach_bot(seat, make_bot(bot_level)).is_err() {
             return 0;
         }
     }
     *room() = Some(r);
     1
+}
+
+/// 档位 → bot 实现（设计 §5.11 的 easy/normal/hard 三档）。
+fn make_bot(level: u8) -> Box<dyn gf_table_runtime::BotPolicy> {
+    match level {
+        0 => Box::new(gf_ai::L0Bot),
+        1 => Box::new(gf_ai::L1Bot),
+        _ => Box::new(gf_ai::L2Bot),
+    }
 }
 
 /// 发牌开局。

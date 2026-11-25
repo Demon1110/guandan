@@ -3,46 +3,142 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>掼蛋 M1 · 本地房间</title>
+  <title>掼蛋 · 本地房间</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <header>
-    <h1>掼蛋 M1 · 本地房间</h1>
-    <div class="sub">
-      <span id="match-id"></span>
-      <span class="dot">·</span>
-      <span id="meta"></span>
-      <span class="dot">·</span>
-      <span>stateHash <code id="hash"></code></span>
+  <!-- 大厅 -->
+  <section id="lobby" class="lobby hidden">
+    <h1>掼蛋 <span class="muted">M1 · 本地房间</span></h1>
+    <div class="lobby-fields">
+      <label>种子 <input id="lobby-seed" value="0x51EDA101" spellcheck="false" /></label>
+      <label>你的座位
+        <select id="lobby-seat">
+          <option value="0">座位 0</option>
+          <option value="1">座位 1</option>
+          <option value="2">座位 2</option>
+          <option value="3">座位 3</option>
+        </select>
+      </label>
+      <label>bot 档位
+        <select id="lobby-level">
+          <option value="2">AI-L2（记牌 + 炸弹时机）</option>
+          <option value="1">AI-L1（跟牌 + 留牌）</option>
+          <option value="0">AI-L0（只出最小牌）</option>
+        </select>
+      </label>
     </div>
-  </header>
+    <div class="lobby-actions">
+      <button id="lobby-start" class="primary">开始比赛</button>
+      <button id="lobby-resume" class="hidden">继续上次对局</button>
+    </div>
+    <p class="hint">同一份种子 + 同一座位会沿用 IndexedDB 里的存档；想开新局就换种子或「清空存档」。</p>
+    <p id="lobby-note" class="hint"></p>
+  </section>
 
-  <main>
-    <section class="table">
-      <div id="seats" class="seats"></div>
-      <div class="center">
-        <div id="last-play" class="last-play"></div>
-        <div id="turn" class="turn">…</div>
-        <div id="hand" class="hand"></div>
-        <div class="controls">
-          <button id="play" disabled>出牌</button>
-          <button id="pass" disabled>过牌</button>
+  <!-- 牌桌 -->
+  <div id="app" class="app hidden">
+    <header>
+      <div class="title">掼蛋 <span class="muted">M1</span></div>
+      <div class="meta">
+        <span id="match-id"></span>
+        <span class="dot">·</span>
+        <span id="meta"></span>
+        <span class="dot">·</span>
+        <span>stateHash <code id="hash"></code></span>
+      </div>
+      <div class="header-actions">
+        <button id="toggle-log">日志</button>
+        <button id="open-settings">设置</button>
+        <button id="back-lobby">大厅</button>
+      </div>
+    </header>
+
+    <main class="table-wrap">
+      <div class="board">
+        <div class="seat slot-top" id="seat-slot-2"></div>
+        <div class="seat slot-right" id="seat-slot-1"></div>
+        <div class="seat slot-left" id="seat-slot-3"></div>
+        <div class="seat slot-bottom" id="seat-slot-0"></div>
+
+        <div class="center">
+          <div class="last-play-wrap">
+            <div class="label">上一手</div>
+            <div id="last-play" class="last-play">本回合无人出牌</div>
+          </div>
+          <div id="turn" class="turn">…</div>
+          <div id="table-extra" class="table-extra"></div>
+        </div>
+
+        <div class="hand-area">
+          <div class="hand-head">
+            <span id="hand-count" class="muted">手牌 0</span>
+            <span id="selection" class="muted">未选牌</span>
+          </div>
+          <div id="hand" class="hand"></div>
+          <div class="actions">
+            <button id="play" class="primary" disabled>出牌</button>
+            <button id="pass" disabled>过牌</button>
+            <button id="clear-select" disabled>取消选牌</button>
+          </div>
         </div>
       </div>
-    </section>
 
-    <aside class="side">
-      <h2>动作日志</h2>
-      <ul id="log"></ul>
-      <h2>存档</h2>
-      <p class="hint">动作逐条写入 IndexedDB；刷新或杀进程重开后按日志回放，哈希对齐才继续。</p>
-      <div class="controls">
-        <button id="reload">模拟重开（刷新页面）</button>
-        <button id="reset" class="danger">清空存档重开</button>
+      <aside id="side" class="side hidden">
+        <h2>动作日志</h2>
+        <ul id="log"></ul>
+        <div class="controls">
+          <button id="reload">刷新页面（验证续局）</button>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <!-- 结算 -->
+  <div id="settle" class="modal hidden">
+    <div class="modal-box">
+      <h2 id="settle-title">本局结算</h2>
+      <table class="settle-table">
+        <thead><tr><th>名次</th><th>座位</th><th>队</th></tr></thead>
+        <tbody id="settle-rows"></tbody>
+      </table>
+      <div id="settle-extra" class="settle-extra"></div>
+      <div class="modal-actions">
+        <button id="settle-next" class="primary">再来一局</button>
+        <button id="settle-lobby">回大厅</button>
       </div>
-    </aside>
-  </main>
+    </div>
+  </div>
+
+  <!-- 设置 -->
+  <div id="settings" class="modal hidden">
+    <div class="modal-box">
+      <h2>设置</h2>
+      <div class="setting-row">
+        <span>出牌速度</span>
+        <select id="set-speed">
+          <option value="fast">快（每手 120ms）</option>
+          <option value="normal" selected>正常（每手 240ms）</option>
+          <option value="slow">慢（每手 600ms）</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <span>显示牌 id（调试）</span>
+        <label class="switch"><input type="checkbox" id="set-ids" /> <span>开</span></label>
+      </div>
+      <div class="setting-row">
+        <span>动作日志</span>
+        <label class="switch"><input type="checkbox" id="set-log" checked /> <span>显示</span></label>
+      </div>
+      <p class="hint">bot 档位在大厅选，开局后锁定（bot 在发牌时绑定）。</p>
+      <div class="modal-actions">
+        <button id="set-clear" class="danger">清空当前存档</button>
+        <button id="set-reload">刷新页面</button>
+        <button id="set-close" class="primary">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
 </body>
-<script src="app.js"></script>
 </html>
