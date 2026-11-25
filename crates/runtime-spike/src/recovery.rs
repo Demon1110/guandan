@@ -27,8 +27,8 @@ pub const RECONNECT_BUFFER_CAPACITY: usize = 200;
 ///
 /// M0 边界：`kind` / `payload` 直接镜像在引擎 [`Action`] 上（`Play{cards}` / `Pass`）；
 /// `ts_ms` 用房间序号占位，in-process 原型不接时钟。
-/// `round_no`（第二十三次变更）与 `SettleResult.roundNo` 同口径；⑧ 跨局携带未落地，
-/// 当前恒 0，跨局递增待接线。
+/// `round_no`（第二十三次变更）与 `SettleResult.roundNo` 同口径：取动作发生时的当前局号；
+/// 同一 `matchId` 内跨局连续，`settle → deal` 之间的记录仍属本局。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActionRecord {
     /// 每座位单调递增（§6.2 第 979 行），从 0 起算；跨局不归零。
@@ -64,8 +64,12 @@ pub enum ReconnectDecision {
 
 /// §5.9 第 716 行 `RoomSnapshot` 的 in-process 镜像。
 ///
-/// M0 边界：直接挂 [`State`] 克隆，不做 canonical bytes 编解码；`viewHash` /
-/// `rulesetId` / `viewSchemaVersion` 等协议字段本轮不投影（wire 层属 M1）。
+/// §6.5 字段序固定：`matchId, seat, roundNo, rulesetId, rulesetVersion, roomSeq,
+/// lastSeatSeq, viewHash, viewSchemaVersion, view, snapshotReset`。本批投影其中与
+/// 跨局携带相关的头字段：`roundNo` 是快照头字段，**不进 `stateHash`、不进 `view` 白名单**、
+/// 不触发 `viewSchemaVersion` 升版。`viewHash` / `viewSchemaVersion` 按 §6.5 表接线补齐；
+/// `matchId` / `seat` / `rulesetId` / `rulesetVersion` / `lastSeatSeq` / `view` 明文
+/// 编解码仍属 M1 wire 层，in-process 暂以 `State` 克隆承载。
 #[derive(Clone, Debug)]
 pub struct RoomSnapshot {
     /// 全量状态克隆（服务端权威状态）。
@@ -74,6 +78,12 @@ pub struct RoomSnapshot {
     pub snapshot_reset: bool,
     /// 快照覆盖到的最大 `roomSeq`（与 §6.5 第 1034 行 `snapSeq` 同一 u64 序列）。
     pub room_seq: u64,
+    /// 快照头 `roundNo`（§6.2 裁定 B）：快照时刻正在打的局号；不在 `view` 键集内。
+    pub round_no: u16,
+    /// §6.5 `viewHash`：`BLAKE3(seat ‖ roomSeq ‖ viewBytes)` 前 8 字节。
+    pub view_hash: [u8; 8],
+    /// §6.5 `viewSchemaVersion`：取自规则集 `view.schemaVersion`；本批仍为 1（m0）/ 2（classic）。
+    pub view_schema_version: u16,
 }
 
 /// 环形事件缓冲：按 `roomSeq` 索引，只保留最近 [`RECONNECT_BUFFER_CAPACITY`] 条。
@@ -288,6 +298,8 @@ pub fn hex_full(hash: &[u8; 32]) -> String {
 mod tests {
     use super::*;
     use gf_engine::cases::{build_engine, M0_SEED};
+    use gf_engine::contract::Seat;
+    use gf_engine::view::view_hash;
 
     fn record(room_seq: u64, seat: u8, seat_seq: u64) -> ActionRecord {
         ActionRecord {
@@ -298,6 +310,23 @@ mod tests {
             request_id: room_seq,
             action: Action::Pass,
             ts_ms: room_seq,
+        }
+    }
+
+    fn make_snapshot(
+        engine: &M0Engine,
+        state: State,
+        snapshot_reset: bool,
+        room_seq: u64,
+    ) -> RoomSnapshot {
+        let view = engine.view(&state, Seat(0));
+        RoomSnapshot {
+            round_no: state.round_no,
+            view_hash: view_hash(0, room_seq, &view.bytes),
+            view_schema_version: engine.ruleset.view.schema_version,
+            state,
+            snapshot_reset,
+            room_seq,
         }
     }
 
@@ -372,11 +401,7 @@ mod tests {
             from_room_seq: 0,
             events: Vec::new(),
         };
-        let snapshot = RoomSnapshot {
-            state: engine.deal(M0_SEED).expect("发牌失败"),
-            snapshot_reset: false,
-            room_seq: 0,
-        };
+        let snapshot = make_snapshot(&engine, engine.deal(M0_SEED).expect("发牌失败"), false, 0);
         let mut local = ClientLocal::new(None, 0, 0);
         let err = recover_client(&engine, &mut local, &decision, &snapshot)
             .expect_err("Delta 分支本地状态为 None 必须返回错误，不许凭空造状态");
@@ -389,11 +414,7 @@ mod tests {
         let engine = build_engine().expect("构造引擎失败");
         let local_state = engine.deal(M0_SEED).expect("发牌失败");
         let snap_state = engine.deal(M0_SEED).expect("发牌失败");
-        let snapshot = RoomSnapshot {
-            state: snap_state.clone(),
-            snapshot_reset: true,
-            room_seq: 5,
-        };
+        let snapshot = make_snapshot(&engine, snap_state.clone(), true, 5);
         let mut local = ClientLocal::new(Some(local_state), 0, 7);
 
         let outcome = recover_client(

@@ -9,8 +9,9 @@
 #![allow(dead_code)]
 
 use gf_engine::cases::{build_engine, M0_SEED};
-use gf_engine::contract::{Action, Engine, EngineError, State};
+use gf_engine::contract::{Action, Engine, EngineError, Seat, State};
 use gf_engine::engine::{M0Engine, PHASE_SETTLE};
+use gf_engine::view::view_hash;
 
 use crate::recovery::{ActionRecord, ReconnectBuffer, RoomSnapshot};
 
@@ -35,9 +36,9 @@ pub fn first_action(engine: &M0Engine, state: &State) -> Action {
 /// 序号口径（§6.2 第 979 行）：`roomSeq` 房间内全局递增；`seatSeq` 每座位各自递增；
 /// 两者均从 0 起算，不混用。
 ///
-/// TODO(M0-GAP-SEQ-CROSS-ROUND)：设计稿未写清跨局（settle 后重新 `deal`）时
-/// `seatSeq` 是否归零、`roomSeq` 是否连续。本原型按保守读法：**跨局都不归零**，
-/// `roomSeq` 连续递增、`seatSeq` 按座位各自继续递增；待 §6.2 / §5.9 裁决后同步。
+/// §6.2 裁定（⑧）：同一 `matchId` 内跨局 `roomSeq` / `seatSeq` / `snapSeq` 连续递增，
+/// 只有新一场才从 0 起；换局不清座位水位（`STALE_SEQ` 仍只按座位水位判）。房间层
+/// `seat_seq` 数组与引擎内 `seq_watermark` 都不在换局时复位。
 pub struct ServerRoom {
     pub engine: M0Engine,
     pub state: State,
@@ -64,6 +65,11 @@ impl ServerRoom {
     /// 该座位当前 `seatSeq` 水位（下一条动作将用的序号）。
     pub fn seat_seq(&self, seat: u8) -> u64 {
         self.seat_seq[seat as usize]
+    }
+
+    /// 各座位当前 `seatSeq` 水位副本（跨局连续性核对用）。
+    pub fn seat_seqs(&self) -> [u64; 4] {
+        self.seat_seq
     }
 
     /// 该座位**最后一次已落子**的 `seatSeq`（`Reconnect.lastSeatSeq` 口径，§5.9 第 713 行）；
@@ -132,21 +138,30 @@ impl ServerRoom {
         Ok(done)
     }
 
-    /// 同一房间开第二局：`settle` 后重新 `deal`。
+    /// 同一房间开下一局：`settle` 结束后由引擎 `deal_next_round` 做真实相位转移。
     ///
-    /// 序号**不重置**（见 [`ServerRoom`] 上的 `M0-GAP-SEQ-CROSS-ROUND` 注释）。
+    /// 序号**不重置**（§6.2 裁定）：`roomSeq` 连续递增、`seatSeq` 按座位各自继续；
+    /// `levels` / `aFailStreak` / `attackingTeam` / `seq_watermark` 由引擎跨局携带。
     pub fn deal_next_round(&mut self) -> Result<(), EngineError> {
-        assert_eq!(self.state.phase, PHASE_SETTLE, "只有 settle 局才能开下一局");
-        self.state = self.engine.deal(M0_SEED)?;
+        self.state = self.engine.deal_next_round(&self.state, M0_SEED)?;
         Ok(())
     }
 
     /// 构造服务端全量快照（in-process 克隆，不做 wire 编解码）。
+    ///
+    /// 快照头字段按 §6.5 顺序投影：`roomSeq` / `roundNo` / `viewHash` / `viewSchemaVersion`；
+    /// `roundNo` 不进 `stateHash`、不在 `view` 键集内。
     pub fn snapshot(&self, snapshot_reset: bool) -> RoomSnapshot {
+        let room_seq = self.latest_room_seq().unwrap_or(0);
+        let view = self.engine.view(&self.state, Seat(0));
+        let view_hash = view_hash(0, room_seq, &view.bytes);
         RoomSnapshot {
             state: self.state.clone(),
             snapshot_reset,
-            room_seq: self.latest_room_seq().unwrap_or(0),
+            room_seq,
+            round_no: self.state.round_no,
+            view_hash,
+            view_schema_version: self.engine.ruleset.view.schema_version,
         }
     }
 }
