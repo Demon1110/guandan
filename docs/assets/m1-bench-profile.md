@@ -201,12 +201,24 @@ rooms       = 1_000_000 / (20 × avg_action)
 | wasm | 197.973 µs | 1.669 µs | 99.821 µs | **≈ 501** | ≈ 135 |
 
 - 假设不变：10Hz × 2 动作/秒/房间；只计领出 legal + apply，未计跟牌 legal、idle tick、网络 IO、view 编码、快照恢复。
-- **容量仍未过 1500 房间线**（native 527 / wasm 501）；未改口径凑线。距门槛反推：lead legal 必须 ≤ 59.15 µs、avg_action ≤ 33.33 µs（§5.2），当前仍差约 3.2 倍。
+
+**按第三十六次变更口径报数（1500 房间是整机/集群目标，单核数只作标度）**
+
+| 端 | 单核房间数 | 承压核数 | 折算整机数 | 机型 |
+| --- | ---: | --- | ---: | --- |
+| native | **≈ 527** | 8（仅 P 核，保守）/ 16（全部物理核） | **≈ 4,216 / 8,432** | i7-13700KF（8P+8E = 16 物理核 / 24 逻辑） |
+| wasm | ≈ 501 | —（客户端本地运行，不参与服务端容量折算） | — | 同上 |
+
+- 整机口径下 native **4,216–8,432 房间**，已达 1500 房间线（保守取 8 个 P 核、无超线程加成）。
+- **旧结论「容量未过 1500 房间线」是按单核读法，已作废**：单核 527 只是标度，不得单独判过或判不过。
+- 距门槛反推（单核标度）：lead legal 须 ≤ 59.15 µs / avg_action ≤ 33.33 µs 才能单核 1500；整机口径下不再需要单核达标，但活跃房间数上量后仍受跟牌 legal、idle tick、网络 IO 等未计项拖累，后续压测要补这些项。
+- 最终签核仍按 `docs/开发计划.md` §2 由项目方勾选；本表只提供四项数。
 
 ### 8.5 锚点与回归
 
 - `stateHash = 9b2ff28b384e8d125f925005fdef659fb8abddd45cbf270e58e2d984d0907ab0`、`steps=148`、`phase=3`、`finishOrder=[1,3,0,2]`、`completedTeam=1`、`winnerTeam=1`、`discardCount=104`、`handsTotal=4`：native ↔ wasm 双端逐字段一致，**本批收口时锚点未漂移**。此后 ⑥ 第一批按 N17 `lastPlay` 空值占位与 §5.13 `attackingTeam` 交接漂至 `f65cfb2f9c598fe0…1037d`，成因见 `docs/开发计划.md` §0 gate 1。
 - 测试：`cargo test --workspace` **197 passed / 0 failed**（基线 195 + 本批 2 条差分用例）；`fmt --check` exit 0；`clippy --workspace --all-targets` 0 告警；测试只增不减。
+- **锚点现行值**（2026-11-25 复核）：`stateHash = 8040b7e6d3a780ce3dd38e3d0933a25e20941367b4385e785d9408f862d1ed5f`，`steps=148`、`phase=3`、`finishOrder=[1,3,0,2]`，与 `crates/engine/tests/golden_test.rs` 的 `EXPECTED_STATE_HASH` 和 `crates/engine/tests/wasm/verify_m0_golden.ps1` 的 `$Expected` 一致。本节上面提到的 `9b2ff28b…` 与 `f65cfb2f…1037d` 都是历史批次值，已滞后（成因见 `docs/开发计划.md` §0 gate 1）。
 
 ---
 

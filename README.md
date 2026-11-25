@@ -319,7 +319,7 @@ guandan/
 **M1 目前的硬账**
 
 - 单动作延迟：`guandan-classic` 领出态 `legal_actions` P99 **251.3µs < 1ms**，已过线。
-- 容量：单核标度 native ≈527 / wasm ≈501 房间，**未到 1500 整机线**（整机口径 = 单核 × 参与承压的物理核数，见 `docs/assets/m1-bench-profile.md` §8.4）。
+- 容量：单核标度 native ≈527 / wasm ≈501 房间；整机折算（i7-13700KF，8P/16 物理核）≈ **4,216–8,432 房间**，已到 1500 整机线（口径见 `docs/assets/m1-bench-profile.md` §8.4；单核数只作标度，不得单独判过或判不过）。
 - `recommend`：1000 手随机 27 张冷调用 avg **315.4µs** / P99 **928µs**，未越 2ms 目标线。
 
 细节与实测账目见 `docs/assets/m1-bench-profile.md`。
