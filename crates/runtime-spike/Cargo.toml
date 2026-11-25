@@ -2,7 +2,8 @@
 name = "gf-runtime-spike"
 version = "0.1.0"
 edition = "2021"
-description = "M0 断线恢复原型（§2.4 第 194 行）；重连逻辑与一次性夹具在模块层分开"
+description = "M0 断线恢复原型（§2.4 第 194 行）；重连逻辑已迁入 gf-table-runtime，本 crate 只留一次性夹具"
 
 [dependencies]
 gf-engine = { path = "../engine" }
+gf-table-runtime = { path = "../table-runtime" }

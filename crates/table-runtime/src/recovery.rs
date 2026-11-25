@@ -1,14 +1,13 @@
 //! 重连缓冲与恢复判定（`design_draft.md` §6.2 第 974–979 行、§6.5 第 1032–1034 行）。
 //!
-//! **待迁入 `crates/table-runtime`**（§2.4 第 186 行转正判据）：本模块的代码与测试
-//! 会进入 §10.1 契约层双产物比对，M1 时整体迁移，不留副本。所有 public item 均带
-//! 同一标注。
+//! 由 `crates/runtime-spike/src/recovery.rs` 整体迁入（§2.4 第 186 行转正判据：
+//! 进入 §10.1 契约层双产物比对的代码与测试必须保留并迁入 `crates/table-runtime`），
+//! 迁移后不复留副本。相对 spike 版的唯一改动：
+//! - 快照载体从 `State` 克隆的 in-process 结构改为 [`RoomSnapshotState`]，`viewHash` 等
+//!   wire 头字段由 [`crate::snapshot::RoomSnapshotWire`] 承载（服务端下发前自证）；
+//! - `decide` / `replay_delta` / `recover_client` 的签名与判定规则不变。
 //!
-//! 本轮边界（M0 in-process 原型，范围写死）：
-//! - 快照直接传 [`State`] 克隆，**不做 wire 编解码**——那是 M1 `table-runtime` +
-//!   `gf-protocol` 的事；本 crate 不依赖 `gf-protocol`（协议 crate 正由另一路并行修改）。
-//! - 事件 / 记录用引擎侧 [`Action`] 承载；`tsMs` 用单调序号占位，不接系统时钟（§3.3 约束 2）。
-//! - 不铺运行期框架，不建 `crates/table-runtime`。
+//! 边界（保持不变）：`tsMs` 用房间序号占位，不接系统时钟（§3.3 约束 2）。
 
 use std::collections::VecDeque;
 
@@ -25,8 +24,8 @@ pub const RECONNECT_BUFFER_CAPACITY: usize = 200;
 /// §6.5 第 1100 行动作记录：`{seatSeq, roomSeq, roundNo, seat, requestId, kind, payload, tsMs}`，
 /// **只此一份记录类型**；重放水位一律用 `roomSeq`，座位序号只用于 `Reconnect` 水位与换算。
 ///
-/// M0 边界：`kind` / `payload` 直接镜像在引擎 [`Action`] 上（`Play{cards}` / `Pass`）；
-/// `ts_ms` 用房间序号占位，in-process 原型不接时钟。
+/// `kind` / `payload` 直接镜像在引擎 [`Action`] 上（`Play{cards}` / `Pass`）；
+/// `ts_ms` 用房间序号占位（虚拟时钟毫秒另由 [`crate::room::Room`] 的窗口字段承载）。
 /// `round_no`（第二十三次变更）与 `SettleResult.roundNo` 同口径：取动作发生时的当前局号；
 /// 同一 `matchId` 内跨局连续，`settle → deal` 之间的记录仍属本局。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,11 +38,11 @@ pub struct ActionRecord {
     pub round_no: u16,
     /// 动作发起座位。
     pub seat: u8,
-    /// 幂等键（§6.4）；M0 占位序号。
+    /// 幂等键（§6.4）；本层用 `roomSeq` 占位（同一房间内唯一且单调）。
     pub request_id: u64,
     /// 动作本体（kind/payload 的引擎侧镜像）。
     pub action: Action,
-    /// 时间戳占位（§6.5 `tsMs`）；原型不接时钟。
+    /// 时间戳占位（§6.5 `tsMs`）；本层取虚拟时钟毫秒。
     pub ts_ms: u64,
 }
 
@@ -62,16 +61,12 @@ pub enum ReconnectDecision {
     SnapshotReset,
 }
 
-/// §5.9 第 716 行 `RoomSnapshot` 的 in-process 镜像。
+/// 服务端恢复用的全量快照（in-process 形态：权威 `State` + wire 头字段）。
 ///
-/// §6.5 字段序固定：`matchId, seat, roundNo, rulesetId, rulesetVersion, roomSeq,
-/// lastSeatSeq, viewHash, viewSchemaVersion, view, snapshotReset`。本批投影其中与
-/// 跨局携带相关的头字段：`roundNo` 是快照头字段，**不进 `stateHash`、不进 `view` 白名单**、
-/// 不触发 `viewSchemaVersion` 升版。`viewHash` / `viewSchemaVersion` 按 §6.5 表接线补齐；
-/// `matchId` / `seat` / `rulesetId` / `rulesetVersion` / `lastSeatSeq` / `view` 明文
-/// 编解码仍属 M1 wire 层，in-process 暂以 `State` 克隆承载。
+/// 线上下发走 [`crate::snapshot::RoomSnapshotWire`]（只带 `view` 字节，不带 `State`）；
+/// 本结构只用于「服务端自身也要按快照状态重建」的恢复判定与测试。
 #[derive(Clone, Debug)]
-pub struct RoomSnapshot {
+pub struct RoomSnapshotState {
     /// 全量状态克隆（服务端权威状态）。
     pub state: State,
     /// §6.2 第 978 行：`true` 表示客户端必须丢弃本地状态并接受本快照。
@@ -82,7 +77,7 @@ pub struct RoomSnapshot {
     pub round_no: u16,
     /// §6.5 `viewHash`：`BLAKE3(seat ‖ roomSeq ‖ viewBytes)` 前 8 字节。
     pub view_hash: [u8; 8],
-    /// §6.5 `viewSchemaVersion`：取自规则集 `view.schemaVersion`；本批仍为 1（m0）/ 2（classic）。
+    /// §6.5 `viewSchemaVersion`：取自规则集 `view.schemaVersion`。
     pub view_schema_version: u16,
 }
 
@@ -96,12 +91,12 @@ pub struct ReconnectBuffer {
 }
 
 impl ReconnectBuffer {
-    /// 待迁入：缓冲容量（§6.2 第 978 行，固定 200）。
+    /// 缓冲容量（§6.2 第 978 行，固定 200）。
     pub fn capacity() -> usize {
         RECONNECT_BUFFER_CAPACITY
     }
 
-    /// 待迁入：追加一条房间事件；超过容量时淘汰最旧的一条。
+    /// 追加一条房间事件；超过容量时淘汰最旧的一条。
     pub fn push(&mut self, record: ActionRecord) {
         self.records.push_back(record);
         while self.records.len() > RECONNECT_BUFFER_CAPACITY {
@@ -109,27 +104,27 @@ impl ReconnectBuffer {
         }
     }
 
-    /// 待迁入：缓冲内现存记录条数。
+    /// 缓冲内现存记录条数。
     pub fn len(&self) -> usize {
         self.records.len()
     }
 
-    /// 待迁入：缓冲是否为空。
+    /// 缓冲是否为空。
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
     }
 
-    /// 待迁入：缓冲起点 = 缓冲内最小 `roomSeq`（队首）。
+    /// 缓冲起点 = 缓冲内最小 `roomSeq`（队首）。
     pub fn min_room_seq(&self) -> Option<u64> {
         self.records.front().map(|r| r.room_seq)
     }
 
-    /// 待迁入：缓冲内最大 `roomSeq`（队尾）。
+    /// 缓冲内最大 `roomSeq`（队尾）。
     pub fn latest_room_seq(&self) -> Option<u64> {
         self.records.back().map(|r| r.room_seq)
     }
 
-    /// 待迁入：按动作记录双序号列做 `seatSeq → roomSeq` 换算（§6.2 第 978 行、
+    /// 按动作记录双序号列做 `seatSeq → roomSeq` 换算（§6.2 第 978 行、
     /// §6.5 第 1032 行）；记录已被淘汰时返回 `None`。
     pub fn room_seq_for_seat(&self, seat: u8, seat_seq: u64) -> Option<u64> {
         self.records
@@ -138,7 +133,7 @@ impl ReconnectBuffer {
             .map(|r| r.room_seq)
     }
 
-    /// 待迁入：取 `room_seq > from_room_seq` 的增量事件，按 `roomSeq` 升序返回。
+    /// 取 `room_seq > from_room_seq` 的增量事件，按 `roomSeq` 升序返回。
     pub fn delta_after(&self, from_room_seq: u64) -> Vec<ActionRecord> {
         self.records
             .iter()
@@ -147,13 +142,13 @@ impl ReconnectBuffer {
             .collect()
     }
 
-    /// 待迁入：缓冲内记录快照（测试 / 诊断用，按 `roomSeq` 升序）。
+    /// 缓冲内记录快照（测试 / 诊断用，按 `roomSeq` 升序）。
     pub fn records(&self) -> &VecDeque<ActionRecord> {
         &self.records
     }
 }
 
-/// 待迁入：§6.2 第 978 行重连判定。
+/// §6.2 第 978 行重连判定。
 ///
 /// 先按双序号列把 `(seat, last_seat_seq)` 换算成 `roomSeq`；该 `roomSeq` 不早于缓冲
 /// 起点 → [`ReconnectDecision::Delta`]；早于缓冲起点（或记录已被淘汰）→
@@ -172,7 +167,7 @@ pub fn decide(buffer: &ReconnectBuffer, seat: u8, last_seat_seq: u64) -> Reconne
     }
 }
 
-/// 待迁入：增量重放。从客户端本地副本出发，按 `roomSeq` 升序逐条 `apply`；
+/// 增量重放。从客户端本地副本出发，按 `roomSeq` 升序逐条 `apply`；
 /// 任一步失败即返回 [`EngineError`]，不修补状态（§6.6：日志与快照对不上不允许修补）。
 pub fn replay_delta(
     engine: &M0Engine,
@@ -185,7 +180,7 @@ pub fn replay_delta(
     Ok(state)
 }
 
-/// 待迁入：客户端本地副本（M0 in-process 镜像；线上为客户端私有状态，不进服务端权威源）。
+/// 客户端本地副本（线上为客户端私有状态，不进服务端权威源）。
 #[derive(Clone, Debug)]
 pub struct ClientLocal {
     /// 本地状态副本；`SnapshotReset` 丢弃后为 `None`，接受快照后再填回。
@@ -199,7 +194,7 @@ pub struct ClientLocal {
 }
 
 impl ClientLocal {
-    /// 待迁入：用本地副本与断线座位水位构造；`discarded` 初始为 false。
+    /// 用本地副本与断线座位水位构造；`discarded` 初始为 false。
     pub fn new(state: Option<State>, seat: u8, last_seat_seq: u64) -> Self {
         Self {
             state,
@@ -210,7 +205,7 @@ impl ClientLocal {
     }
 }
 
-/// 待迁入：[`recover_client`] 的恢复结果；用 enum 表达分支，不只返回裸状态。
+/// [`recover_client`] 的恢复结果；用 enum 表达分支，不只返回裸状态。
 #[derive(Clone, Debug)]
 pub enum RecoveryOutcome {
     /// 增量路径：本地原状态为 `Some`，逐条重放增量后得到新状态。
@@ -229,7 +224,7 @@ pub enum RecoveryOutcome {
     },
 }
 
-/// 待迁入：客户端恢复统一入口（两条路径共用一套，不由测试各自拼装）。
+/// 客户端恢复统一入口（两条路径共用一套，不由测试各自拼装）。
 ///
 /// - `Delta`：本地 `state` 必须为 `Some`（`None` 直接返回错误，不许凭空造状态），
 ///   从 `from_room_seq + 1` 逐条重放，并把该座位 `last_seat_seq` 推进到增量末条对应值。
@@ -239,7 +234,7 @@ pub fn recover_client(
     engine: &M0Engine,
     local: &mut ClientLocal,
     decision: &ReconnectDecision,
-    snapshot: &RoomSnapshot,
+    snapshot: &RoomSnapshotState,
 ) -> Result<RecoveryOutcome, EngineError> {
     match decision {
         ReconnectDecision::Delta { events, .. } => {
@@ -282,12 +277,12 @@ pub fn recover_client(
     }
 }
 
-/// 待迁入：恢复后哈希自证。`CanonicalState` 单向投影 → BLAKE3-256 32 字节全量。
+/// 恢复后哈希自证。`CanonicalState` 单向投影 → BLAKE3-256 32 字节全量。
 pub fn state_hash_of(state: &State) -> [u8; 32] {
     state_hash(&CanonicalState::from(state))
 }
 
-/// 待迁入：32 字节全量十六进制（测试打印 / 比对用）。
+/// 32 字节全量十六进制（测试打印 / 比对用）。
 ///
 /// 注意：`gf_engine::hash::present_8` 只取前 8 字节对外呈现，**不能替代 32 字节全等比对**。
 pub fn hex_full(hash: &[u8; 32]) -> String {
@@ -297,7 +292,7 @@ pub fn hex_full(hash: &[u8; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gf_engine::cases::{build_engine, M0_SEED};
+    use gf_engine::cases::classic_engine;
     use gf_engine::contract::Seat;
     use gf_engine::view::view_hash;
 
@@ -305,7 +300,7 @@ mod tests {
         ActionRecord {
             seat_seq,
             room_seq,
-            round_no: 0,
+            round_no: 1,
             seat,
             request_id: room_seq,
             action: Action::Pass,
@@ -318,9 +313,9 @@ mod tests {
         state: State,
         snapshot_reset: bool,
         room_seq: u64,
-    ) -> RoomSnapshot {
+    ) -> RoomSnapshotState {
         let view = engine.view(&state, Seat(0));
-        RoomSnapshot {
+        RoomSnapshotState {
             round_no: state.round_no,
             view_hash: view_hash(0, room_seq, &view.bytes),
             view_schema_version: engine.ruleset.view.schema_version,
@@ -396,12 +391,17 @@ mod tests {
 
     #[test]
     fn delta_rejects_missing_local_state() {
-        let engine = build_engine().expect("构造引擎失败");
+        let engine = classic_engine().expect("构造引擎失败");
         let decision = ReconnectDecision::Delta {
             from_room_seq: 0,
             events: Vec::new(),
         };
-        let snapshot = make_snapshot(&engine, engine.deal(M0_SEED).expect("发牌失败"), false, 0);
+        let snapshot = make_snapshot(
+            &engine,
+            engine.deal(gf_engine::cases::M0_SEED).expect("发牌失败"),
+            false,
+            0,
+        );
         let mut local = ClientLocal::new(None, 0, 0);
         let err = recover_client(&engine, &mut local, &decision, &snapshot)
             .expect_err("Delta 分支本地状态为 None 必须返回错误，不许凭空造状态");
@@ -411,9 +411,9 @@ mod tests {
 
     #[test]
     fn reset_discards_local_state_before_accepting_snapshot() {
-        let engine = build_engine().expect("构造引擎失败");
-        let local_state = engine.deal(M0_SEED).expect("发牌失败");
-        let snap_state = engine.deal(M0_SEED).expect("发牌失败");
+        let engine = classic_engine().expect("构造引擎失败");
+        let local_state = engine.deal(gf_engine::cases::M0_SEED).expect("发牌失败");
+        let snap_state = engine.deal(gf_engine::cases::M0_SEED).expect("发牌失败");
         let snapshot = make_snapshot(&engine, snap_state.clone(), true, 5);
         let mut local = ClientLocal::new(Some(local_state), 0, 7);
 

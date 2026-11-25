@@ -201,6 +201,7 @@ name = "gf-runtime-spike"
 version = "0.1.0"
 dependencies = [
  "gf-engine",
+ "gf-table-runtime",
 ]
 
 [[package]]

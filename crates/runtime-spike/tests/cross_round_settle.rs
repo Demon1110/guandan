@@ -15,7 +15,7 @@ use gf_engine::contract::{Engine, Seat};
 use gf_engine::engine::PHASE_SETTLE;
 use gf_engine::view::view_hash;
 use gf_runtime_spike::harness::ServerRoom;
-use gf_runtime_spike::recovery::ReconnectBuffer;
+use gf_table_runtime::recovery::ReconnectBuffer;
 
 /// 一局跑完后的快照载体（只记录本用例需要跨局比对的字段）。
 struct RoundOutcome {

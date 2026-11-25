@@ -3,7 +3,7 @@
 //! **不迁入 `crates/table-runtime`**（§2.4 第 186 行）：M1 直接丢弃。
 //!
 //! 分层红线：服务端权威状态推进、客户端本地副本、断线模拟都归本模块；
-//! 环形缓冲 / 判定 / 增量重放 / 哈希自证归 [`crate::recovery`]，两段逻辑不许揉在
+//! 环形缓冲 / 判定 / 增量重放 / 哈希自证归 `gf_table_runtime::recovery`，两段逻辑不许揉在
 //! 同一个函数里——本模块只负责"推进服务端并产出 [`ActionRecord`]"，不做重连判定。
 
 #![allow(dead_code)]
@@ -13,7 +13,7 @@ use gf_engine::contract::{Action, Engine, EngineError, Seat, State};
 use gf_engine::engine::{M0Engine, PHASE_SETTLE};
 use gf_engine::view::view_hash;
 
-use crate::recovery::{ActionRecord, ReconnectBuffer, RoomSnapshot};
+use gf_table_runtime::recovery::{ActionRecord, ReconnectBuffer, RoomSnapshotState};
 
 /// 构造 m0-minimal 引擎（夹具口径见 `gf_engine::cases`）。
 pub fn engine() -> M0Engine {
@@ -151,11 +151,11 @@ impl ServerRoom {
     ///
     /// 快照头字段按 §6.5 顺序投影：`roomSeq` / `roundNo` / `viewHash` / `viewSchemaVersion`；
     /// `roundNo` 不进 `stateHash`、不在 `view` 键集内。
-    pub fn snapshot(&self, snapshot_reset: bool) -> RoomSnapshot {
+    pub fn snapshot(&self, snapshot_reset: bool) -> RoomSnapshotState {
         let room_seq = self.latest_room_seq().unwrap_or(0);
         let view = self.engine.view(&self.state, Seat(0));
         let view_hash = view_hash(0, room_seq, &view.bytes);
-        RoomSnapshot {
+        RoomSnapshotState {
             state: self.state.clone(),
             snapshot_reset,
             room_seq,
