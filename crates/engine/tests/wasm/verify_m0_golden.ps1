@@ -4,8 +4,8 @@
 # 任一不一致 exit 1。只比哈希会漏掉「两边同样走错」，因此终局名次、张数一并比对。
 $ErrorActionPreference = 'Stop'
 
-$engineDir = Resolve-Path (Join-Path $PSScriptRoot '..\..')
-$rootDir = Resolve-Path (Join-Path $engineDir '..\..')
+$engineDir = Resolve-Path (Join-Path $PSScriptRoot '..' '..')
+$rootDir = Resolve-Path (Join-Path $engineDir '..' '..')
 
 # B11 后现行锚点（native/wasm 双端一致；m0-minimal 夹具，run_m0_golden）。
 # 轨迹若再漂移，以 run_m0_golden 实测回填，不许改旧期望凑绿。

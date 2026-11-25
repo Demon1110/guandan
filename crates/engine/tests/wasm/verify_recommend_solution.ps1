@@ -4,8 +4,8 @@
 # wasm 侧 lo/hi 两个 u32 导出还原，避免 JS Number 超 2^53 失精。
 $ErrorActionPreference = 'Stop'
 
-$engineDir = Resolve-Path (Join-Path $PSScriptRoot '..\..')
-$rootDir = Resolve-Path (Join-Path $engineDir '..\..')
+$engineDir = Resolve-Path (Join-Path $PSScriptRoot '..' '..')
+$rootDir = Resolve-Path (Join-Path $engineDir '..' '..')
 
 function Get-NativeField($lines, $prefix) {
     $line = $lines | Where-Object { $_ -match "^$prefix`: " } | Select-Object -First 1
