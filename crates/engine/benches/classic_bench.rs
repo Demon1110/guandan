@@ -10,7 +10,7 @@
 //! 容量主结论按 `@lead` + apply 均值折算；门禁：单动作 P99 < 1ms、单核 ≥1500 房间。
 
 use gf_engine::cases::{classic_engine, classic_lead_state, classic_mid_state};
-use gf_engine::contract::{Engine, State};
+use gf_engine::contract::{Engine, Seat, State};
 use gf_engine::engine::{M0Engine, PHASE_SETTLE};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
@@ -43,6 +43,28 @@ fn bench_legal(engine: &M0Engine, state: &State) -> (Vec<f64>, u64) {
             .expect("classic 枚举合法动作失败");
         let dt = t0.elapsed().as_nanos() as f64 / 1000.0;
         checksum = checksum.wrapping_add(legal.len() as u64);
+        samples.push(dt);
+    }
+    black_box((state, checksum));
+    (samples, checksum)
+}
+
+/// 组牌推荐 `recommend`：classic 领出态满手 27 张，逐次计时。样本量单独取
+/// `REC_ITERATIONS`（推荐束搜索成本高于 legal 枚举，不与 10 万次 legal 同批次）。
+/// §5.11 预算：单次 ≤2ms（P99）；超预算记 `recommend_cpu_overrun_total`（P2），
+/// 不判错、不回滚。本仓当前无 metrics 承载位，只做计时断言，不埋全局单例计数。
+const REC_ITERATIONS: u32 = 10_000;
+
+fn bench_recommend(engine: &M0Engine, state: &State) -> (Vec<f64>, u64) {
+    let mut samples = Vec::with_capacity(REC_ITERATIONS as usize);
+    let mut checksum: u64 = 0;
+    for _ in 0..REC_ITERATIONS {
+        let t0 = Instant::now();
+        let layout = engine
+            .recommend(state, Seat(0))
+            .expect("classic recommend 不应报错");
+        let dt = t0.elapsed().as_nanos() as f64 / 1000.0;
+        checksum = checksum.wrapping_add(layout.score as u64);
         samples.push(dt);
     }
     black_box((state, checksum));
@@ -197,6 +219,7 @@ fn main() {
     let (mut legal_mid, cs_mid) = bench_legal(&engine_mid, &state_mid);
     let (engine_lead, state_lead) = classic_lead_state();
     let (mut legal_lead, cs_lead) = bench_legal(&engine_lead, &state_lead);
+    let (mut recommend, cs_rec) = bench_recommend(&engine_lead, &state_lead);
     let (mut apply, _) = bench_apply();
 
     let iters = ITERATIONS as f64;
@@ -211,6 +234,11 @@ fn main() {
         Some(cs_lead as f64 / iters),
     );
     report("classic apply", &mut apply, None);
+    report(
+        "classic recommend@lead",
+        &mut recommend,
+        Some(cs_rec as f64 / REC_ITERATIONS as f64),
+    );
 
     // ---------- 容量推算（§10.5 第 1499 行同口径） ----------
     // 10Hz、每房间每秒 1 次 legal + 1 次 apply = 20 动作/秒；门槛 33.33 µs/动作。

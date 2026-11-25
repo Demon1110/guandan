@@ -3,7 +3,7 @@
 //! 引擎内不做文件 I/O（§3.3 约束 2）：夹具 YAML 由 `include_str!` 在编译期嵌入，
 //! 双端读到的是同一份字节串。
 
-use crate::contract::{Action, Engine, EngineError, State};
+use crate::contract::{Action, Engine, EngineError, Seat, State};
 use crate::engine::{M0Engine, PHASE_SETTLE};
 use crate::hash::{state_hash, CanonicalState};
 use crate::ruleset::from_yaml;
@@ -127,6 +127,15 @@ pub fn classic_mid_state() -> (M0Engine, State) {
         state = engine.apply(state, action).expect("classic 落子失败");
     }
     (engine, state)
+}
+
+/// classic 领出态 seat 0 的推荐向量摘要（native/wasm 同解 CI 固定输入，§5.11）。
+pub fn recommend_digest() -> u64 {
+    let (engine, state) = classic_lead_state();
+    let layout = engine
+        .recommend(&state, Seat(0))
+        .expect("classic recommend 不应报错");
+    crate::recommend::layout_digest(&layout)
 }
 
 /// 固定策略：每步取 `legal_actions` 排序后的第一个（最小合法单张）；
@@ -486,4 +495,20 @@ pub extern "C" fn gf_bench_classic_apply_commit_once() -> u64 {
     let seat = next.turn_seat as u64;
     *guard = Some((engine, next, None));
     seat
+}
+
+/// 组牌推荐同解摘要：与 native `recommend_golden` example 编译同一份
+/// `recommend_digest`；独立导出，不改既有 64 字节 golden ABI。
+///
+/// 摘要为 u64，拆成 lo/hi 两个 u32 导出，避免 JS `Number` 超过 2^53 失精。
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn gf_recommend_digest_lo() -> u32 {
+    recommend_digest() as u32
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn gf_recommend_digest_hi() -> u32 {
+    (recommend_digest() >> 32) as u32
 }
