@@ -205,5 +205,5 @@ rooms       = 1_000_000 / (20 × avg_action)
 
 ### 8.5 锚点与回归
 
-- `stateHash = 9b2ff28b384e8d125f925005fdef659fb8abddd45cbf270e58e2d984d0907ab0`、`steps=148`、`phase=3`、`finishOrder=[1,3,0,2]`、`completedTeam=1`、`winnerTeam=1`、`discardCount=104`、`handsTotal=4`：native ↔ wasm 双端逐字段一致，**锚点未漂移**。
+- `stateHash = 9b2ff28b384e8d125f925005fdef659fb8abddd45cbf270e58e2d984d0907ab0`、`steps=148`、`phase=3`、`finishOrder=[1,3,0,2]`、`completedTeam=1`、`winnerTeam=1`、`discardCount=104`、`handsTotal=4`：native ↔ wasm 双端逐字段一致，**本批收口时锚点未漂移**。此后 ⑥ 第一批按 N17 `lastPlay` 空值占位与 §5.13 `attackingTeam` 交接漂至 `f65cfb2f9c598fe0…1037d`，成因见 `docs/开发计划.md` §0 gate 1。
 - 测试：`cargo test --workspace` **197 passed / 0 failed**（基线 195 + 本批 2 条差分用例）；`fmt --check` exit 0；`clippy --workspace --all-targets` 0 告警；测试只增不减。
