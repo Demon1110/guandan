@@ -1,7 +1,7 @@
 // 双产物（native / wasm）同解比对：同一 seed 跑「四 bot 两局」，wasm 侧输出终局 stateHash。
 //
 // native 侧由 `crates/ai/examples/local_match.rs` 打印 `fullHash=`；两侧相等即证明
-// 房间主干 + L0 bot + 结算在 wasm 目标上与 native 逐字节同解。
+// 房间主干 + AI-L1 bot + 结算在 wasm 目标上与 native 逐字节同解。
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

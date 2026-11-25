@@ -1,6 +1,6 @@
 // 无头续局用例：在 Node 里跑「存档 → 杀进程 → 重开回放」全链路。
 //
-// 形态与浏览器一致：房间跑在 wasm 里（1 人类座 + 3 个 L0 bot），每落一手就把
+// 形态与浏览器一致：房间跑在 wasm 里（1 人类座 + 3 个 L1 bot），每落一手就把
 // `{roundNo, seat, pass, cards}` 记进「存档」；跑满两局后**丢弃整个 Instance**（= 杀进程），
 // 再用同一个种子新建 Instance，按存档逐条重演，最终 `stateHash` 必须与存档哈希逐字节相等。
 // 相等即证明续局不依赖进程内存，只需要那份动作日志。
@@ -47,7 +47,7 @@ function withCards(ex, cards, fn) {
 
 const SEED_HI = 0x51ed;
 const SEED_LO = 0xa101;
-const HUMAN_MASK = 0b0001; // 座位 0 是人类，可随时接管；这里交给 L0 代打。
+const HUMAN_MASK = 0b0001; // 座位 0 是人类，可随时接管；这里交给 L1 代打。
 
 function newRoom(ex) {
   if (ex.gf_room_new(SEED_HI, SEED_LO, HUMAN_MASK) !== 1) throw new Error('建桌失败');
@@ -67,7 +67,7 @@ function replay(ex, seat, pass, cards) {
   );
 }
 
-/** 跑一局，返回 {records, summary}；人类座由 L0 代打（与浏览器「超时托管」同一条路径）。 */
+/** 跑一局，返回 {records, summary}；人类座由 L1 代打（与浏览器「超时托管」同一条路径）。 */
 function playRound(ex, now, records) {
   for (let guard = 0; guard < 2000; guard += 1) {
     const step = JSON.parse(cstr(ex, ex.gf_room_step(BigInt(now))));
@@ -82,7 +82,7 @@ function playRound(ex, now, records) {
         });
         break;
       case 'waiting': {
-        // 人类座位：用 L0 的决策代打（gf_l0_probe 只吃 view(seat)），再以人类身份提交。
+        // 人类座位：用 L1 的决策代打（gf_l0_probe 吃 view(seat) + 本座位合法集），再以人类身份提交。
         const action = JSON.parse(cstr(ex, ex.gf_l0_probe(step.seat)));
         const out = JSON.parse(submit(ex, step.seat, action, now));
         if (out.kind !== 'applied') throw new Error(`代打未生效：${JSON.stringify(out)}`);
