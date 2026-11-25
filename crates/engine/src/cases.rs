@@ -22,8 +22,8 @@ pub struct ActionLogEntry {
     pub seat: u8,
     pub kind: String,
     pub cards: Vec<u16>,
-    /// 局序号 `roundNo: u16`（§6.5 第 1100 行）；与 `SettleResult.roundNo` 同口径。
-    /// TODO(M0-GAP-SEQ-CROSS-ROUND)：跨局递增待 ⑧ 落地，当前恒 0。
+    /// 局序号 `roundNo: u16`（§6.5 第 1100 行）；取动作发生时的当前局号，与
+    /// `SettleResult.roundNo` 同口径（§6.2 裁定 B）。
     pub round_no: u16,
 }
 

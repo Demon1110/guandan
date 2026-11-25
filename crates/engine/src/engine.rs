@@ -215,10 +215,11 @@ impl M0Engine {
     /// §6.3 相位转移表：相位机只按本表转移，不存在表外跳转。
     ///
     /// 已接线：`deal → play`（`tribute.enabled=false` 整段跳过，首局 / 抗贡同路径）、
-    /// `play → settle`（某队全员出完）。
+    /// `play → settle`（某队全员出完）、`settle → deal`（`deal_next_round` 续发下一局，
+    /// 携带 `levels` / `aFailStreak` / `attackingTeam` / 水位，局号 +1）。
     /// 表内声明但执行路径待落地（不自造转移）：
     /// - `deal → tribute`、`tribute → play`：进贡 / 还贡 / 抗贡分支（进贡原语未实现）；
-    /// - `settle → deal`：下一局开局，依赖 ⑧ 跨局携带与场次计数。
+    /// - 场次终止（过 A / `matchCap.rounds` 触发）仍待房间层接线。
     fn allowed_transition(from: u16, to: u16) -> bool {
         matches!(
             (from, to),
@@ -246,10 +247,125 @@ impl M0Engine {
 
     // ---------- 发牌（Fisher–Yates 降序；按座位升序连续切分） ----------
 
-    /// 由固定种子开局：洗牌并发到各座位私有区，相位进入 `play`（夹具省略 tribute，G6）。
+    /// 由固定种子开局（场次首局）：洗牌并发到各座位私有区，相位进入 `play`（夹具省略 tribute，G6）。
+    ///
+    /// §6.2 裁定 B：`roundNo` 首局 = 1（不从 0 起）；`seq_watermark` 首局从 0 起；
+    /// `levels` / `aFailStreak` 取载入初始值；抽牌前置决定首出座位与打级队。
     pub fn deal(&self, seed: u64) -> Result<State, EngineError> {
         let seat_count = self.ruleset.seats.count as usize;
         let total = self.deck_total();
+        let per_seat = self.per_seat(total, seat_count)?;
+        let stream = self.rng_stream();
+
+        let mut rng = RngState {
+            counter: 0,
+            seed_digest: seed_digest(seed),
+        };
+        let mut deck: Vec<u16> = (0..total as u16).collect();
+
+        // §5.2 第 560 行 / §5.13 第 876 行：场次首局先 `bounded(总张数)` 取牌 id 下标 `i`；
+        // 抽出的牌不剔出牌堆、正常参与本局，随后才 Fisher–Yates 洗牌并按座位序连续切分；
+        // 切分完按牌 id 定位持牌座位 → 该座位先出、其队即 `attackingTeam`（§5.12 第 822 行）。
+        let drawn_card = Self::bounded(&mut rng, seed, stream, total as u64) as u16;
+        self.shuffle_deck(&mut deck, &mut rng, seed, stream);
+
+        // 按牌 id 反查持牌座位：洗牌后该牌落在第 `pos` 个槽位，座位 = `pos / perSeat`。
+        let lead_seat = deck
+            .iter()
+            .position(|&card| card == drawn_card)
+            .map(|pos| pos / per_seat)
+            .unwrap_or(0) as u8;
+        let attacking_team = self.team_of(lead_seat);
+
+        let mut state = State {
+            phase: PHASE_DEAL,
+            turn_seat: lead_seat,
+            attacking_team,
+            levels: self.initial_levels(),
+            seats: (0..seat_count as u8).collect(),
+            zones: self.deal_zones(&deck, per_seat),
+            last_play: None,
+            seq_watermark: (0..seat_count as u8).map(|s| (s, 0)).collect(),
+            tribute: Self::placeholder_tribute(),
+            rng,
+            a_fail_streak: vec![0; self.ruleset.seats.teams.len()],
+            finish_order: Vec::new(),
+            seed,
+            passes_since_last_play: 0,
+            winner_team: None,
+            completed_team: None,
+            ranks: Vec::new(),
+            settle_step: None,
+            round_no: 1,
+        };
+
+        // §6.3 转移表：`tribute.enabled=false`（或抗贡成立）时 `deal → play` 整段跳过
+        // 进贡；`enabled=true` 的 `deal → tribute` 路径待进贡原语落地后接入。
+        self.transition(&mut state, PHASE_PLAY)?;
+        Ok(state)
+    }
+
+    /// 跨局续发：上一局 `settle` 结束后开下一局（§6.2 裁定 B、§5.13「决定首出」）。
+    ///
+    /// - 只允许从 `PHASE_SETTLE` 续发；`roundNo = 上一局 +1`，`settle` 本身不改局号。
+    /// - 跨局携带：`levels` / `aFailStreak` / `attackingTeam` / `seq_watermark` 原样延续；
+    ///   座位水位不在换局时复位（否则第 2 局开头会被误判 `STALE_SEQ`）。
+    /// - 非首局不抽牌、不额外消耗随机字；首出座位 = 上一局头游（`finishOrder[0]`）。
+    /// - 牌区 / `lastPlay` / 名次 / 进贡占位 / 过牌计数按新局清空；RNG 按本局重新起算。
+    pub fn deal_next_round(&self, prev: &State, seed: u64) -> Result<State, EngineError> {
+        if prev.phase != PHASE_SETTLE {
+            return Err(EngineError::Internal {
+                message: "只有 settle 结束的局才能续发下一局".to_owned(),
+            });
+        }
+        let total = self.deck_total();
+        let seat_count = self.ruleset.seats.count as usize;
+        let per_seat = self.per_seat(total, seat_count)?;
+        let stream = self.rng_stream();
+
+        let mut rng = RngState {
+            counter: 0,
+            seed_digest: seed_digest(seed),
+        };
+        let mut deck: Vec<u16> = (0..total as u16).collect();
+        // 非首局：不抽前置牌、不消耗那条随机字；洗牌序列照常走本局 stream/counter。
+        self.shuffle_deck(&mut deck, &mut rng, seed, stream);
+
+        let head_seat = prev
+            .finish_order
+            .first()
+            .copied()
+            .ok_or(EngineError::Internal {
+                message: "settle 结束却没有名次序列".to_owned(),
+            })?;
+
+        let mut state = State {
+            phase: PHASE_DEAL,
+            turn_seat: head_seat,
+            attacking_team: prev.attacking_team,
+            levels: prev.levels.clone(),
+            seats: (0..seat_count as u8).collect(),
+            zones: self.deal_zones(&deck, per_seat),
+            last_play: None,
+            seq_watermark: prev.seq_watermark.clone(),
+            tribute: Self::placeholder_tribute(),
+            rng,
+            a_fail_streak: prev.a_fail_streak.clone(),
+            finish_order: Vec::new(),
+            seed,
+            passes_since_last_play: 0,
+            winner_team: None,
+            completed_team: None,
+            ranks: Vec::new(),
+            settle_step: None,
+            round_no: prev.round_no.saturating_add(1),
+        };
+        self.transition(&mut state, PHASE_PLAY)?;
+        Ok(state)
+    }
+
+    /// 每局每座发牌张数；不守恒直接按内部不变量报错。
+    fn per_seat(&self, total: usize, seat_count: usize) -> Result<usize, EngineError> {
         let per_seat = self
             .ruleset
             .flow
@@ -258,10 +374,6 @@ impl M0Engine {
             .and_then(|d| d.per_seat)
             .map(|p| p as usize)
             .unwrap_or(total / seat_count);
-
-        // §5.4 运行时牌数断言 / `RS_ZONE_CONSERVATION`（设计稿第 574、642 行）：
-        // 载入期就该拦下「perSeat × 座位数 ≠ 总张数」的配置；若整除兜底静默截断，
-        // 多出来的牌会被静默丢掉、zones 守恒当场破，引擎不做这种静默兜底。
         if per_seat * seat_count != total {
             return Err(EngineError::Internal {
                 message: format!(
@@ -269,74 +381,44 @@ impl M0Engine {
                 ),
             });
         }
+        Ok(per_seat)
+    }
 
-        // 牌 id 载入期一次性分配并冻结（§5.12 第 811 行）：suits 声明序 × ranks 自然序，
-        // 同一基础牌的副本占相邻 id；王排在序尾。
-        let mut deck: Vec<u16> = (0..total as u16).collect();
-
-        let stream = self.rng_stream();
-        let mut rng = RngState {
-            counter: 0,
-            seed_digest: seed_digest(seed),
-        };
-
-        // §5.2 第 560 行 / §5.13 第 876 行：场次首局先 `bounded(总张数)` 取牌 id 下标 `i`；
-        // 抽出的牌不剔出牌堆、正常参与本局，随后才 Fisher–Yates 洗牌并按座位序连续切分；
-        // 切分完按牌 id 定位持牌座位 → 该座位先出、其队即 `attackingTeam`（§5.12 第 822 行）。
-        //
-        // TODO(M0-GAP-SEQ-CROSS-ROUND)：State 目前没有场次/局数计数（跨局携带是未做的 ⑧），
-        // 本笔只能「每局按首局处理」；非首局不抽牌的判据待局数字段落地后再补，此处不造计数。
-        let drawn_card = Self::bounded(&mut rng, seed, stream, total as u64) as u16;
-
-        // Fisher–Yates 降序：`for i in (1..n).rev() { j = bounded(i+1); swap(a[i], a[j]) }`，
-        // j ∈ 0..=i（§5.2 第 558 行）。
+    /// Fisher–Yates 降序：`for i in (1..n).rev() { j = bounded(i+1); swap(a[i], a[j]) }`，
+    /// j ∈ 0..=i（§5.2 第 558 行）。
+    fn shuffle_deck(&self, deck: &mut [u16], rng: &mut RngState, seed: u64, stream: u32) {
         for i in (1..deck.len()).rev() {
-            let j = Self::bounded(&mut rng, seed, stream, i as u64 + 1) as usize;
+            let j = Self::bounded(rng, seed, stream, i as u64 + 1) as usize;
             deck.swap(i, j);
         }
+    }
 
-        // 按牌 id 反查持牌座位：洗牌后该牌落在第 `pos` 个槽位，座位 = `pos / perSeat`。
-        let lead_seat = deck
-            .iter()
-            .position(|&card| card == drawn_card)
-            .map(|pos| pos / per_seat)
-            .unwrap_or(0) as u8;
-        let attacking_team = self
-            .ruleset
-            .seats
-            .teams
-            .iter()
-            .position(|team| team.contains(&lead_seat))
-            .unwrap_or(0) as u8;
-
+    /// 按座位序连续切分牌堆到私有手牌区（弃牌区另置一条空 ZoneEntry）。
+    fn deal_zones(&self, deck: &[u16], per_seat: usize) -> Vec<ZoneEntry> {
         let hand_idx = self.hand_zone_index();
-        let discard_idx = self.discard_zone_index();
-
-        let mut zones = Vec::with_capacity(seat_count + 1);
-        // N9：洗牌后按座位号升序连续切分，座位 s 取 [s*perSeat, (s+1)*perSeat)。
-        for seat in 0..seat_count {
+        let mut zones = Vec::with_capacity(self.ruleset.seats.count as usize + 1);
+        for seat in 0..self.ruleset.seats.count as usize {
             let start = seat * per_seat;
-            let cards = deck[start..start + per_seat].to_vec();
             zones.push(ZoneEntry {
                 seat: seat as u8,
                 zone_id: hand_idx,
-                cards,
+                cards: deck[start..start + per_seat].to_vec(),
             });
         }
-        if let Some(discard_idx) = discard_idx {
+        if let Some(discard_idx) = self.discard_zone_index() {
             zones.push(ZoneEntry {
                 seat: 0,
                 zone_id: discard_idx,
                 cards: Vec::new(),
             });
         }
+        zones
+    }
 
-        // §5.13 行 996：两队级牌都从 `levelTable.initial` 起，`levels` 存
-        // `levelTable.ranks` 的下标。N18（第三十六次变更）：score-only 局无 `levelTable`
-        // 时 `levels` 每队取 initial 常量占位（无级牌表即起点 2 的下标 0），不省略段、
-        // 不用 0xFF，照常进 stateHash 第 2 段。
+    /// 载入初始级牌下标：`levelTable.initial` 在 `ranks` 中的位置；无级牌表取占位 0。
+    fn initial_levels(&self) -> Vec<u8> {
         let team_count = self.ruleset.seats.teams.len();
-        let levels = match &self.ruleset.level_table {
+        match &self.ruleset.level_table {
             Some(table) => {
                 let idx = table
                     .ranks
@@ -347,41 +429,24 @@ impl M0Engine {
                 vec![idx; team_count]
             }
             None => vec![0; team_count],
-        };
+        }
+    }
 
-        let mut state = State {
-            phase: PHASE_DEAL,
-            turn_seat: lead_seat,
-            attacking_team,
-            levels,
-            seats: (0..seat_count as u8).collect(),
-            zones,
-            last_play: None,
-            seq_watermark: (0..seat_count as u8).map(|s| (s, 0)).collect(),
-            tribute: TributeState {
-                from_seat: 0,
-                to_seat: 0,
-                card: None,
-            },
-            rng,
-            // N18（第三十六次变更）：score-only 局 `aFailStreak` 全队恒 0，按队位数保留
-            // 队位，照常进 stateHash 第 9 段，不省略、不用 0xFF。
-            a_fail_streak: vec![0; self.ruleset.seats.teams.len()],
-            finish_order: Vec::new(),
-            seed,
-            passes_since_last_play: 0,
-            winner_team: None,
-            completed_team: None,
-            ranks: Vec::new(),
-            settle_step: None,
-            // TODO(M0-GAP-SEQ-CROSS-ROUND)：跨局序号连续待 ⑧ 落地；首局占位 0，不进哈希。
-            round_no: 0,
-        };
+    fn team_of(&self, seat: u8) -> u8 {
+        self.ruleset
+            .seats
+            .teams
+            .iter()
+            .position(|team| team.contains(&seat))
+            .unwrap_or(0) as u8
+    }
 
-        // §6.3 转移表：`tribute.enabled=false`（或抗贡成立）时 `deal → play` 整段跳过
-        // 进贡；`enabled=true` 的 `deal → tribute` 路径待进贡原语落地后接入。
-        self.transition(&mut state, PHASE_PLAY)?;
-        Ok(state)
+    fn placeholder_tribute() -> TributeState {
+        TributeState {
+            from_seat: 0,
+            to_seat: 0,
+            card: None,
+        }
     }
 
     /// `flow.rng.stream`（0–3，默认 0）；同一局内 `deal.shuffle` 与 `rng.pick` 共用同一条
@@ -1282,7 +1347,8 @@ mod tests {
     #[test]
     fn fail_a_three_consecutive_rounds_returns_to_initial() {
         // 连续 3 局在 A 未过（1+4）：第 3 局写入后达到 streakLimit=3，levels 退回
-        // initial（下标 0）、streak 清零。每局用全新 State 复算（跨局携带待 ⑧）。
+        // initial（下标 0）、streak 清零。本用例逐局手工构造 State，只测结算纯函数；
+        // 跨局携带由 `deal_next_round` 承担，不在此复现连续局。
         let finish = vec![0, 1, 3, 2];
         // 第 1 局：streak 0 → 1，仍在 A。
         let (engine, mut s1) = classic_settle_state(vec![12, 0], vec![0, 0], finish.clone());
