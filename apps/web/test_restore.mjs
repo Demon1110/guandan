@@ -56,15 +56,29 @@ function newRoom(ex) {
 
 function submit(ex, seat, action, now) {
   const cards = action.pass ? [] : action.cards;
+  const code = action.tributeReturn ? 2 : action.pass ? 1 : 0;
   return withCards(ex, cards, (ptr, len) =>
-    cstr(ex, ex.gf_room_submit(seat, BigInt(now), action.pass ? 1 : 0, ptr, len)),
+    cstr(ex, ex.gf_room_submit(seat, BigInt(now), code, ptr, len)),
   );
 }
 
-function replay(ex, seat, pass, cards) {
+function replay(ex, seat, pass, cards, tributeReturn = false) {
+  const code = tributeReturn ? 2 : pass ? 1 : 0;
   return withCards(ex, cards, (ptr, len) =>
-    ex.gf_room_replay_action(seat, pass ? 1 : 0, ptr, len) === 1,
+    ex.gf_room_replay_action(seat, code, ptr, len) === 1,
   );
+}
+
+/** 人类座代打：tribute 相位从合法集里挑一张可还贡牌，其余交给 L2 probe。 */
+function humanAction(ex, seat) {
+  const info = JSON.parse(cstr(ex, ex.gf_room_info()));
+  if (info.phase === 'tribute') {
+    const legal = JSON.parse(cstr(ex, ex.gf_room_legal()));
+    const ret = legal.find((a) => a.tributeReturn);
+    if (!ret) throw new Error(`还贡相位没有合法还贡牌：${JSON.stringify(legal)}`);
+    return { pass: false, tributeReturn: true, cards: ret.cards };
+  }
+  return JSON.parse(cstr(ex, ex.gf_l0_probe(seat)));
 }
 
 /** 跑一局，返回 {records, summary}；人类座由 L2 代打（与浏览器「超时托管」同一条路径）。 */
@@ -78,18 +92,20 @@ function playRound(ex, now, records) {
           roundNo: step.roundNo,
           seat: step.seat,
           pass: step.action.pass,
+          tributeReturn: step.action.tributeReturn ?? false,
           cards: step.action.cards ?? [],
         });
         break;
       case 'waiting': {
-        // 人类座位：用 L2 的决策代打（gf_l0_probe 吃 view(seat) + 本座位合法集），再以人类身份提交。
-        const action = JSON.parse(cstr(ex, ex.gf_l0_probe(step.seat)));
+        // 人类座位：tribute 相位挑一张可还贡牌，其余交给 L2 probe，再以人类身份提交。
+        const action = humanAction(ex, step.seat);
         const out = JSON.parse(submit(ex, step.seat, action, now));
         if (out.kind !== 'applied') throw new Error(`代打未生效：${JSON.stringify(out)}`);
         records.push({
           roundNo: out.roundNo,
           seat: out.seat,
           pass: out.action.pass,
+          tributeReturn: out.action.tributeReturn ?? false,
           cards: out.action.cards ?? [],
         });
         break;
@@ -144,18 +160,20 @@ function main() {
         roundNo: step.roundNo,
         seat: step.seat,
         pass: step.action.pass,
+        tributeReturn: step.action.tributeReturn ?? false,
         cards: step.action.cards ?? [],
       });
       continue;
     }
     if (step.kind === 'waiting') {
-      const action = JSON.parse(cstr(exA, exA.gf_l0_probe(step.seat)));
+      const action = humanAction(exA, step.seat);
       const out = JSON.parse(submit(exA, step.seat, action, now));
       if (out.kind !== 'applied') throw new Error(`代打未生效：${JSON.stringify(out)}`);
       archive.push({
         roundNo: out.roundNo,
         seat: out.seat,
         pass: out.action.pass,
+        tributeReturn: out.action.tributeReturn ?? false,
         cards: out.action.cards ?? [],
       });
       continue;
@@ -168,6 +186,7 @@ function main() {
           roundNo: last.roundNo,
           seat: last.seat,
           pass: last.action.pass,
+          tributeReturn: last.action.tributeReturn ?? false,
           cards: last.action.cards ?? [],
         });
       }
@@ -190,7 +209,7 @@ function main() {
       if (out.kind !== 'dealt') throw new Error(`回放时续局失败：${JSON.stringify(out)}`);
       currentRound += 1;
     }
-    if (!replay(exB, rec.seat, rec.pass, rec.cards)) {
+    if (!replay(exB, rec.seat, rec.pass, rec.cards, rec.tributeReturn)) {
       throw new Error(`回放动作失败 @round=${rec.roundNo} seat=${rec.seat} cards=${rec.cards}`);
     }
   }

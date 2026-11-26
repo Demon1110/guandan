@@ -1,7 +1,7 @@
 # 掼蛋 M1 · Web 端（本地房间）
 
 浏览器里直接跑 `gf-table-runtime` 的房间主干：大厅开局 → 牌桌行动（含计时与托管）→
-本局结算 → 手动「再来一局」。人类座位可在大厅选（默认座位 0），其余座位挂 bot，
+本局结算 → 手动「再来一局」；每局续发后先走进贡 / 还贡，再进入出牌。人类座位可在大厅选（默认座位 0），其余座位挂 bot，
 档位可选 AI-L0 / L1 / L2（默认 L2，只读 `view(seat)` + 本座位合法集 + 搭档状态）。
 bot 出牌按 `recommend` 的最优整手拆分走：领出先出牌力最小的那一组（散张参与比较），
 跟牌避开「只取了某组一部分牌」的候选——不把对子拆成单张零着打。
@@ -42,6 +42,8 @@ http://127.0.0.1:8123/index.html?seed=0x51EDA101&seat=2&level=1
   左家在座位**右侧**；四个人本墩最近一手的牌会同时摆出来，谁过牌就在原位显示「过」，新墩开始时统一清空。
   最后一手把牌出完后，手牌同步为空、出牌区在结算时一起清空；牌已经打出去了，不会留在桌面继续显示。
   每块出牌区标注「你 / 右家 / 对家 / 左家 + 牌型中文名」。
+  续局发牌后先走进贡 / 还贡：贡牌自动交最大，受贡方要在自己手牌里点选一张不大于 10 的牌还回去；
+  还完后由贡牌最大的人先出（详见下节「进贡与还贡」）。
   按钮：出牌 / 提示 / 过牌 / 取消选牌压在「选牌与牌型」行**上方**，只在轮到自己时出现，其余时间整行收起。
   出牌按 `gf_room_can_play` 判合法（选牌不合法时置灰）、**提示**在 `gf_room_legal` 里循环选一手
   （要不起时置灰）、领出时过牌置灰；非法出牌在中央区红字提示并保留选牌。
@@ -61,6 +63,30 @@ http://127.0.0.1:8123/index.html?seed=0x51EDA101&seat=2&level=1
   设置存 `localStorage` 的 `guandan-m1-settings`，角标字号单独存 `guandan-corner-pct`。
 
 窄屏（<1200px）自动收起日志侧栏，日志改为右侧浮层。
+
+## 进贡与还贡
+
+每局续发结束后，引擎先按上一局名次生成进贡关系，再进入 `tribute` 相位：
+
+- **单下**：末游 → 头游，末游交一张手里最大的牌（红桃级牌除外）；**双下**：末游 → 头游、三游 → 二游，各交一张。
+  贡牌由贡方自动选，不需要点牌；两张大王在贡方手里时整段抗贡，直接进 `play`，由头游先出。
+- **还贡方自主选牌**：贡牌交完后，受贡方在自己手牌里挑**一张点数不大于 10 的牌**还回去。
+  界面会把可还的牌加高亮描边、大于 10 的牌压暗；点牌后「出牌」按钮变成「还贡」，只允许单选，
+  不合法时按钮保持置灰。没有不大于 10 的牌时退化为整手牌都可还，避免卡死。
+- **飞牌动效**：每笔进贡 / 还贡都会在桌面中央滑行 2 秒，起点 / 终点是双方座位卡，牌角带「贡」或「还」标签；
+  先进贡动画，受贡方点「还贡」后才走还贡动画，不会抢在点击之前自己飞完。动作日志同步写
+  「进贡：座位 A → 座位 B 大王」「还贡：座位 B → 座位 A 2♠」。
+- **座位旁常驻牌**：本局每笔进贡 / 还贡都会缩成小牌贴到相关座位卡下方——交出方标「贡 / 还」，
+  收下的一方标「收贡 / 收还」；整局一直保留，不用翻日志才知道是什么牌。
+- **首出**：最后一对还完才 `tribute → play`，`turn_seat` 指向**贡牌牌力最大的人**；双下两张贡牌同力时取先配对的那一对。
+  抗贡或没有进贡时仍由头游先出。
+- **bot / 托管 / 超时**：bot 用规则集的默认还贡牌自动还；人类等待倒计时，离线宽限到期或超时由房间自动还。
+- **恢复存档**：回放时只补日志、不重放历史飞牌动画；刷新后停在当前 `tribute` 相位继续等当前受贡方。
+  点「再来一局」后即使还没有任何动作，也会先写一个当前局检查点，所以刷新不会退回上一局结算。
+
+`gf_room_info` 的 `tribute` 段给出 `active / resisted / leader / pending[{receiver,payer,eligible}] /
+events[{from,to,card,return}]`，Web 用 `eligible` 做选牌校验、用 `events` 驱动飞牌队列。当前联机服 v1 协议还没有
+还贡动作，可交互路径是本地 Web wasm；联机要另加 `TributeReturn` 协议动作。
 
 ## 主题牌面（`.gfdeck` 运行时合成）
 
@@ -107,12 +133,12 @@ IndexedDB 库 `guandan-m1`：
 |---|---|
 | `gf_room_new(seed_hi, seed_lo, human_mask)` | 建桌，bot 固定 L2（兼容旧页面/脚本） |
 | `gf_room_new_level(seed_hi, seed_lo, human_mask, bot_level)` | 建桌，`bot_level` 0/1/2 → L0/L1/L2 |
-| `gf_room_start / step / submit / replay_action / next_round / resume_window` | 房间推进 |
+| `gf_room_start / step / submit / replay_action / next_round / resume_window` | 房间推进；`submit` 的 `is_pass`：`0` 出牌、`1` 过牌、`2` 还贡（`cards` 传一张） |
 | `gf_room_view / hash / meta / seats / last_record` | 视图与自证 |
-| `gf_room_legal` | 当前行动座位的合法动作集（`[{"pass":false,"patternId":"bomb-4","cards":[…]}]`，Pass 项只含 `pass:true`），`patternId` 走 `preview_play` 得出；「提示」与「组牌建议」按它选牌 |
+| `gf_room_legal` | 当前行动座位的合法动作集（`[{"pass":false,"patternId":"bomb-4","cards":[…]}]`，Pass 项只含 `pass:true`），`patternId` 走 `preview_play` 得出；`tribute` 相位返回 `{"pass":false,"tributeReturn":true,"cards":[card]}`；「提示」与「组牌建议」按它选牌 |
 | `gf_room_can_play` | 预检一手牌能否出（与 `submit` 同口径）：结构不成立、不在手牌、压不过上家都返回 `ok:false`，同时回传识别出的 `patternId`；「出牌」按钮读它、理牌按 `patternId` 认牌型 |
 | `gf_room_plan` | 当前行动座位的一手牌推荐拆分（`recommend`，纯只读、不进 `stateHash`）：`{"ok":true,"seat":…,"score":…,"singleCount":…,"groups":[{"patternId":…,"cards":[…]}]}`；bot 决策与「组牌建议」共用这一份，散张不在 `groups` 里、由房间按「手牌 − 各组」补齐 |
-| `gf_room_info` | 桌面公开信息（不进座位视图、不影响 `stateHash`）：相位、行动座位、连续过牌数、双方级牌、打级队、各家手牌张数与已锁定名次 |
+| `gf_room_info` | 桌面公开信息（不进座位视图、不影响 `stateHash`）：相位、行动座位、连续过牌数、双方级牌、打级队、各家手牌张数与已锁定名次；`tribute` 段给出 `active / resisted / leader / pending / events`（见「进贡与还贡」） |
 | `gf_theme_load(pack_ptr, pack_len, pub_ptr, pub_len)` | 载入并校验主题包，一次返回元信息 + 预览四张 |
 | `gf_theme_card(code_ptr, code_len, level_rank, corner_pct)` | 单张牌面，`level_rank` 是 `Rank` 编号（1=A…13=K，0 = 无级牌态），`corner_pct` 是角标字号百分比（`0` = 用主题 `cornerScale`，`100` = 素材原样） |
 | `gf_theme_preview / gf_theme_back / gf_theme_unload` | 预览四张 / 牌背 / 卸载（换主题前先卸） |

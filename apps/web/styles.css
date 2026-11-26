@@ -112,6 +112,23 @@ header .dot { opacity: .5; }
 .seat-cards { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; }
 .seat-cards .mini-card { min-width: 22px; height: 30px; padding: 0 2px; font-size: 10px; border-radius: 4px; }
 .seat-cards .mini-card.themed { width: 22px; height: 30px; }
+/* 进贡 / 还贡牌：贴在本局相关的两个座位旁，进贡、还贡、收下的牌都保留。 */
+.seat-tribute { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; padding-top: 7px; border-top: 1px solid rgba(255, 255, 255, .08); }
+.tribute-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 3px 2px 5px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, .04);
+  border: 1px solid rgba(255, 255, 255, .1);
+}
+.tribute-chip .mini-card { min-width: 20px; height: 27px; padding: 0 2px; font-size: 10px; border-radius: 4px; }
+.tribute-chip .mini-card.themed { width: 20px; height: 27px; }
+.tribute-chip b { font-size: 10px; font-weight: 700; letter-spacing: .5px; }
+.tribute-chip.pay b { color: var(--gold); }
+.tribute-chip.ret b { color: #7bd6a7; }
+.tribute-chip.take b { color: #9fc8ff; }
 .seat-empty { font-size: 10px; color: var(--muted); letter-spacing: 1px; }
 
 .slot-top { top: 16px; left: 50%; transform: translateX(-50%); }
@@ -155,6 +172,44 @@ header .dot { opacity: .5; }
 /* 出牌区：四个方位各一块，铺在各自座位靠近桌心的一侧。
    下方（自己）放在手牌区上方；右家放在其座位卡左侧；上方放在其座位卡下方；左家放在其座位卡右侧。 */
 .play-zones { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+/* 进贡 / 还贡飞牌：盖在牌区上，不接鼠标；牌用主题 mini-card 放大后飞 */
+.tribute-layer { position: absolute; inset: 0; z-index: 5; pointer-events: none; overflow: hidden; }
+.tribute-fly {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  filter: drop-shadow(0 10px 14px rgba(0, 0, 0, .45));
+}
+.tribute-fly .mini-card { min-width: 56px; height: 78px; font-size: 24px; padding: 0 7px; border-radius: 9px; }
+.tribute-fly .mini-card.themed { width: 56px; height: 78px; }
+.tribute-fly::after {
+  content: "";
+  position: absolute;
+  inset: -8px -10px;
+  border-radius: 12px;
+  border: 1px solid rgba(242, 193, 78, .45);
+  box-shadow: 0 0 24px rgba(242, 193, 78, .22);
+  pointer-events: none;
+}
+.fly-tag {
+  position: absolute;
+  top: -8px;
+  left: -8px;
+  z-index: 2;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--gold);
+  color: #14231a;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+.card.returnable {
+  outline: 1px solid rgba(242, 193, 78, .55);
+  outline-offset: -2px;
+  box-shadow: 0 0 0 1px rgba(242, 193, 78, .18), 0 0 14px rgba(242, 193, 78, .16);
+}
 .play-zone { position: absolute; text-align: center; pointer-events: auto; transition: top .2s ease, left .2s ease; }
 .play-zone[data-rel="0"] { left: 50%; bottom: 300px; transform: translateX(-50%); width: min(520px, 50%); }
 .play-zone[data-rel="1"] { right: 196px; top: 34%; width: min(240px, 24%); }

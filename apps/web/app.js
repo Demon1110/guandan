@@ -525,7 +525,7 @@ function renderSeats() {
     const last = state.lastBySeat[s.seat];
     box.className = `seat slot-${['bottom', 'right', 'top', 'left'][relSlot(s.seat)]}` + (active ? ' active' : '');
     let tag;
-    if (active) tag = '<span class="tag gold">行动中</span>';
+    if (active) tag = `<span class="tag gold">${state.phase === 'tribute' ? '还贡中' : '行动中'}</span>`;
     else if (rankName) tag = `<span class="tag rank">${rankName}</span>`;
     else tag = `<span class="tag">${mine ? '本家' : ally ? '我方' : '对方'}</span>`;
     const body = `${mine ? '本家' : ally ? '我方' : '对方'} · 手牌 ${si.hand} 张` + (!mine && last ? `<br/>最近：${last}` : '');
@@ -538,6 +538,8 @@ function renderSeats() {
         ? left.map((id) => miniCardHtml(id)).join('')
         : '<span class="seat-empty">已出完</span>'}</div>`;
     }
+    // 进贡 / 还贡结果贴在各自座位旁，整局都保留，不用等下一次日志刷新才看见。
+    const tributeHtml = seatTributeHtml(s.seat);
     box.innerHTML = `
       <div class="seat-head">
         <span>座位 ${s.seat} ${mine ? '· 你' : s.human ? '· 玩家' : '· AI'}</span>
@@ -545,8 +547,25 @@ function renderSeats() {
       </div>
       <div class="seat-body">${body}</div>
       ${handHtml}
+      ${tributeHtml}
     `;
   }
+}
+
+/** 本局进贡 / 还贡牌贴在座位旁：交出方显示「贡 / 还」，收下的一方显示「收贡 / 收还」。 */
+function seatTributeHtml(seat) {
+  const events = state.tribute?.events ?? [];
+  if (events.length === 0) return '';
+  const chips = [];
+  for (const ev of events) {
+    if (ev.from === seat) {
+      chips.push(`<span class="tribute-chip ${ev.return ? 'ret' : 'pay'}"><b>${ev.return ? '还' : '贡'}</b>${miniCardHtml(ev.card)}</span>`);
+    }
+    if (ev.to === seat) {
+      chips.push(`<span class="tribute-chip take"><b>${ev.return ? '收还' : '收贡'}</b>${miniCardHtml(ev.card)}</span>`);
+    }
+  }
+  return chips.length ? `<div class="seat-tribute">${chips.join('')}</div>` : '';
 }
 
 function renderScoreboard() {
@@ -610,10 +629,22 @@ function renderPlayZones() {
 
 function renderCenter() {
   const info = room.info();
-  const myTurn = state.waitingSeat === state.humanSeat;
+  const myTurn =
+    state.waitingSeat === state.humanSeat &&
+    (state.phase === 'play' || state.phase === 'tribute');
   if (state.phase === 'settle') el('turn').textContent = '本局结算中';
   else if (state.phase === 'ended') el('turn').textContent = '场次已结束';
-  else if (myTurn) {
+  else if (state.phase === 'tribute') {
+    const pending = tributePending();
+    const left = Math.max(0, Math.round(state.deadline - now()));
+    if (pending && pending.receiver === state.humanSeat) {
+      el('turn').textContent = `轮到你选还贡牌 · 剩 ${left} ms`;
+    } else if (pending) {
+      el('turn').textContent = `等座位 ${pending.receiver} 还贡`;
+    } else {
+      el('turn').textContent = '进贡结算中';
+    }
+  } else if (myTurn) {
     const left = Math.max(0, Math.round(state.deadline - now()));
     el('turn').textContent = `轮到你 · 剩 ${left} ms`;
   } else if (state.waitingSeat === null) {
@@ -626,6 +657,19 @@ function renderCenter() {
   if (state.notice) {
     extra.textContent = state.notice;
     extra.style.color = '#ffb0b0';
+  } else if (state.phase === 'tribute') {
+    const pending = tributePending();
+    const paid = (state.tribute?.events ?? []).filter((e) => !e.return);
+    const paidText = paid.length
+      ? `进贡：${paid.map((e) => `座位${e.from}→${e.to} ${cardLabel(e.card)}`).join('，')}`
+      : (state.tribute?.resisted ? '本局抗贡，手牌不变' : '');
+    extra.textContent = [
+      paidText,
+      pending
+        ? `座位 ${pending.receiver} 还一张不大于 10 的牌给座位 ${pending.payer}`
+        : '还贡完成，贡牌最大者先出',
+    ].filter(Boolean).join(' · ');
+    extra.style.color = '';
   } else {
     const team = (state.humanSeat + 2) % 4;
     extra.textContent = `你座位 ${state.humanSeat} · 队友座位 ${team} · 第 ${info.roundNo ?? '?'} 局`;
@@ -637,10 +681,23 @@ function renderCenter() {
 // 炸弹 / 同花顺这类「一眼要能认出来」的牌型理到最左，其余理到最右。
 const SPECIAL_PATTERN = (pid) => pid === 'joker-bomb' || pid.startsWith('bomb-') || pid.startsWith('straight-flush');
 
+function tributeEligibleSet() {
+  if (state.phase !== 'tribute' || state.waitingSeat !== state.humanSeat) return new Set();
+  const pending = state.tribute?.pending?.[0];
+  return new Set((pending?.eligible ?? []).map(Number));
+}
+
+function tributePending() {
+  return state.tribute?.pending?.[0] ?? null;
+}
+
 function cardButton(id, index, myTurn) {
   const f = cardFace(id);
+  const eligible = tributeEligibleSet();
+  const isTribute = state.phase === 'tribute';
+  const canPick = myTurn && (!isTribute || eligible.has(id));
   const b = document.createElement('button');
-  b.className = `card${f.red ? ' red' : ''}${f.joker ? ' joker' : ''}${state.selected.has(id) ? ' picked' : ''}${myTurn ? '' : ' dim'}`;
+  b.className = `card${f.red ? ' red' : ''}${f.joker ? ' joker' : ''}${state.selected.has(id) ? ' picked' : ''}${canPick ? '' : ' dim'}${isTribute && eligible.has(id) ? ' returnable' : ''}`;
   b.style.zIndex = String(index + 1);
   b.dataset.cid = String(id);
   const svg = state.themeSkin ? theme.svg(id, levelRankLabel()) : null;
@@ -678,7 +735,9 @@ function renderHand() {
   const levelRank = levelRankLabel();
   const box = el('hand');
   box.innerHTML = '';
-  const myTurn = state.waitingSeat === state.humanSeat;
+  const myTurn =
+    state.waitingSeat === state.humanSeat &&
+    (state.phase === 'play' || state.phase === 'tribute');
 
   // 出完 / 被换局后，理牌组里可能有已经不存在的牌：先剪掉。
   const handSet = new Set(cards);
@@ -925,8 +984,15 @@ function currentLegal() {
 function previewSelection() {
   if (state.selected.size === 0) return { ok: false, pattern: '' };
   const cards = [...state.selected].sort((a, b) => a - b);
-  const key = `${state.legalSeq}|${state.waitingSeat}|${cards.join(',')}`;
+  const key = `${state.legalSeq}|${state.waitingSeat}|${state.phase}|${cards.join(',')}`;
   if (state.previewCache && state.previewCache.key === key) return state.previewCache;
+  if (state.phase === 'tribute') {
+    const pending = tributePending();
+    const eligible = new Set((pending?.eligible ?? []).map(Number));
+    const out = { ok: cards.length === 1 && eligible.has(cards[0]), pattern: '还贡' };
+    state.previewCache = { key, ...out };
+    return state.previewCache;
+  }
   let out = null;
   try {
     const r = room.canPlay(cards);
@@ -946,30 +1012,42 @@ function selectedPlayIsLegal() {
 }
 
 function renderActions() {
-  const myTurn = state.waitingSeat === state.humanSeat;
+  const isTribute = state.phase === 'tribute';
+  const myTurn =
+    state.waitingSeat === state.humanSeat && (state.phase === 'play' || isTribute);
   const legal = myTurn ? currentLegal() : [];
-  const plays = legal.filter((a) => !a.pass);
-  const canPass = myTurn && legal.some((a) => a.pass);
+  const plays = isTribute
+    ? legal.filter((a) => a.tributeReturn)
+    : legal.filter((a) => !a.pass && !a.tributeReturn);
+  const canPass = !isTribute && myTurn && legal.some((a) => a.pass);
   const pickLegal = selectedPlayIsLegal();
-  const pickPattern = pickLegal ? previewSelection().pattern : '';
+  const pickPattern = pickLegal && !isTribute ? previewSelection().pattern : '';
   // 动作行只在轮到自己时露出来，压在牌型行上方。
   el('turn-actions').classList.toggle('hidden', !myTurn);
-  el('play').disabled = !myTurn || !pickLegal;
-  el('hint').disabled = !myTurn || plays.length === 0;
+  el('play').textContent = isTribute ? '还贡' : '出牌';
+  el('play').disabled = !myTurn || !pickLegal || state.tributeBusy;
+  el('hint').disabled = !myTurn || plays.length === 0 || state.tributeBusy;
+  el('pass').classList.toggle('hidden', isTribute);
   el('pass').disabled = !canPass;
   el('clear-select').disabled = state.selected.size === 0;
-  el('suggest').disabled = !myTurn || plays.length === 0;
-  el('arrange').disabled = !myTurn || state.selected.size === 0 || !pickLegal;
+  el('suggest').disabled = isTribute || !myTurn || plays.length === 0;
+  el('arrange').disabled = isTribute || !myTurn || state.selected.size === 0 || !pickLegal;
   el('restore').disabled = state.arranged.length === 0;
   const parts = [];
-  if (state.selected.size === 0) parts.push('未选牌');
-  else {
+  if (state.selected.size === 0) {
+    if (isTribute && !myTurn) parts.push(`等座位 ${tributePending()?.receiver ?? '?'} 还贡`);
+    else parts.push(isTribute ? '请选一张不大于 10 的牌还贡' : '未选牌');
+  } else {
     parts.push(`已选 ${state.selected.size} 张：${[...state.selected]
       .sort((a, b) => columnKey(b, levelRankLabel()) - columnKey(a, levelRankLabel()))
       .map(cardLabel).join(' ')}`);
-    parts.push(pickLegal ? `✔ 可出${pickPattern ? `（${pickPattern}）` : ''}` : '✘ 不合法');
+    parts.push(pickLegal ? (isTribute ? '✔ 可还贡' : `✔ 可出${pickPattern ? `（${pickPattern}）` : ''}`) : '✘ 不合法');
   }
-  if (myTurn) parts.push(plays.length === 0 ? (canPass ? '只剩过牌' : '要不起') : `可出 ${plays.length} 手`);
+  if (myTurn) {
+    parts.push(isTribute
+      ? (plays.length === 0 ? '没有可还的牌（只能从手牌里挑）' : `可还 ${plays.length} 张`)
+      : (plays.length === 0 ? (canPass ? '只剩过牌' : '要不起') : `可出 ${plays.length} 手`));
+  }
   el('selection').textContent = parts.join(' · ');
 }
 
@@ -1007,7 +1085,28 @@ async function record(rec) {
   // 动作与「最新权威哈希」同一事务落盘：杀进程时两者必然一致，恢复后才有比对基线。
   const t = state.db.transaction([STORE_ACTION, STORE_MATCH], 'readwrite');
   t.objectStore(STORE_ACTION).put({ matchId: state.matchId, ...rec });
-  t.objectStore(STORE_MATCH).put({
+  t.objectStore(STORE_MATCH).put(matchMeta(rec.seq, rec.roundNo));
+  await new Promise((resolve, reject) => {
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+  });
+}
+
+/** 跨局但没有动作落盘（刚点「再来一局」）时也要留一个检查点，否则刷新会退回上一局结算。 */
+async function checkpointRoom() {
+  if (!state.db) return;
+  const info = room.info();
+  const meta = room.meta();
+  const t = state.db.transaction([STORE_MATCH], 'readwrite');
+  t.objectStore(STORE_MATCH).put(matchMeta(meta.roomSeq, info.roundNo ?? meta.roundNo));
+  await new Promise((resolve, reject) => {
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+  });
+}
+
+function matchMeta(lastRoomSeq, lastRoundNo) {
+  return {
     matchId: state.matchId,
     seedHi: state.seedHi,
     seedLo: state.seedLo,
@@ -1015,14 +1114,10 @@ async function record(rec) {
     humanSeat: state.humanSeat,
     level: state.level,
     lastHash: room.hash(),
-    lastRoomSeq: rec.seq,
-    lastRoundNo: rec.roundNo,
+    lastRoomSeq,
+    lastRoundNo,
     updatedAt: Date.now(),
-  });
-  await new Promise((resolve, reject) => {
-    t.oncomplete = () => resolve();
-    t.onerror = () => reject(t.error);
-  });
+  };
 }
 
 function toRecord(s) {
@@ -1087,6 +1182,97 @@ function showSettle(summary, ended) {
   renderAll();
 }
 
+// ---------- 进贡 / 还贡动效 ----------
+
+/**
+ * 把 `gf_room_info.tribute` 同步到页面：新事件进日志、进飞牌队列。
+ * 恢复存档时传 `animate=false`，只记 `seen`，不把上一局的贡牌重放一遍。
+ */
+function syncTribute(info, animate = true) {
+  const t = info?.tribute;
+  if (!t) {
+    state.tribute = null;
+    renderSeats();
+    return;
+  }
+  state.tribute = t;
+  const roundNo = info.roundNo ?? 0;
+  (t.events ?? []).forEach((ev, i) => {
+    const key = `${roundNo}:${i}:${ev.from}:${ev.to}:${ev.card}:${ev.return ? 1 : 0}`;
+    if (state.tributeSeen.has(key)) return;
+    state.tributeSeen.add(key);
+    if (!animate) return;
+    log(`${ev.return ? '还贡' : '进贡'}：座位 ${ev.from} → 座位 ${ev.to} ${cardLabel(ev.card)}`);
+    state.tributeQueue.push(ev);
+  });
+  if (state.tributeQueue.length > 0) state.tributeBusy = true;
+  // 座位旁的「贡 / 还」牌在动画开始前就出现，动画飞完也不消失。
+  renderSeats();
+}
+
+/** 依次飞出队列里的贡牌；返回的 Promise 在全部动画结束后 resolve。 */
+function drainTribute() {
+  if (state.tributeDrain) return state.tributeDrain;
+  if (state.tributeQueue.length === 0) return Promise.resolve();
+  state.tributeBusy = true;
+  state.tributeDrain = (async () => {
+    while (state.tributeQueue.length > 0) {
+      const ev = state.tributeQueue.shift();
+      await flyTributeCard(ev);
+    }
+  })()
+    .catch(() => {})
+    .finally(() => {
+      state.tributeBusy = false;
+      state.tributeDrain = null;
+      renderAll();
+    });
+  return state.tributeDrain;
+}
+
+/** 一张牌从贡方座位飞到受贡方座位；坐标按牌桌容器算，不依赖固定像素布局。 */
+function flyTributeCard(ev) {
+  const layer = el('tribute-layer');
+  const srcSeat = el(`seat-slot-${relSlot(ev.from)}`);
+  const dstSeat = el(`seat-slot-${relSlot(ev.to)}`);
+  if (!layer || !srcSeat || !dstSeat) return sleep(150);
+  const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+  if (reduced) return sleep(120);
+
+  const lr = layer.getBoundingClientRect();
+  const sr = srcSeat.getBoundingClientRect();
+  const tr = dstSeat.getBoundingClientRect();
+  const w = 56;
+  const h = 78;
+  const sx = sr.left - lr.left + sr.width / 2;
+  const sy = sr.top - lr.top + sr.height / 2;
+  const tx = tr.left - lr.left + tr.width / 2;
+  const ty = tr.top - lr.top + tr.height / 2;
+
+  const node = document.createElement('div');
+  node.className = 'tribute-fly';
+  node.innerHTML = `<span class="fly-tag">${ev.return ? '还' : '贡'}</span>${miniCardHtml(ev.card)}`;
+  node.style.left = `${sx - w / 2}px`;
+  node.style.top = `${sy - h / 2}px`;
+  layer.appendChild(node);
+
+  const anim = node.animate(
+    [
+      { transform: 'translate(0, 0) scale(.72)', opacity: 0 },
+      { transform: 'translate(0, -10px) scale(1)', opacity: 1, offset: 0.12 },
+      { transform: `translate(${tx - sx}px, ${ty - sy - 12}px) scale(1.08)`, opacity: 1, offset: 0.82 },
+      { transform: `translate(${tx - sx}px, ${ty - sy}px) scale(.5)`, opacity: 0 },
+    ],
+    { duration: 2000, easing: 'cubic-bezier(.22,.75,.28,1)' },
+  );
+  return anim.finished
+    .catch(() => {})
+    .then(() => {
+      node.remove();
+      return sleep(90);
+    });
+}
+
 // ---------- 主循环 ----------
 
 async function flushTail() {
@@ -1105,13 +1291,28 @@ async function pump() {
   if (state.running || state.phase === 'settle' || state.phase === 'ended') return;
   state.running = true;
   try {
+    // 续局后可能直接停在 tribute 相位：先把已发生的进贡飞完，再开始下一步。
+    const info = room.info();
+    if (info.phase) state.phase = info.phase;
+    syncTribute(info);
+    // 先把手牌刷新到新一局，再放飞牌；否则动画期间桌面还停在上一局的空手牌。
+    renderAll();
+    await drainTribute();
     for (let i = 0; i < 400; i += 1) {
       const s = room.step(now());
+      if (s.phase) state.phase = s.phase;
       if (s.kind === 'applied') {
         const rec = toRecord(s);
         await record(rec);
         rememberTrickPlay(rec);
-        log(`座位 ${s.seat} ${describe(rec)}${s.auto ? `（托管 ${s.auto}）` : ''} · #${rec.seq}`);
+        // 还贡事件统一由 syncTribute 打「座位 X → 座位 Y」，这里不再重复一条。
+        if (!rec.tributeReturn) {
+          log(`座位 ${s.seat} ${describe(rec)}${s.auto ? `（托管 ${s.auto}）` : ''} · #${rec.seq}`);
+        }
+        // 还贡不改牌桌上一手，但仍要把飞牌动画走完再继续，免得下一手抢在动画前面。
+        syncTribute(room.info());
+        renderAll();
+        await drainTribute();
         if (s.seat !== state.humanSeat) await sleep(state.speed);
         continue;
       }
@@ -1135,7 +1336,10 @@ async function pump() {
         }
         state.waitingSeat = s.seat;
         state.deadline = s.deadlineMs;
-        state.phase = 'play';
+        state.phase = s.phase ?? 'play';
+        syncTribute(room.info());
+        renderAll();
+        await drainTribute();
         renderAll();
         // 人类回合：低频轮询只为检查超时托管；bot 回合快一点。
         setTimeout(pump, state.waitingSeat === state.humanSeat ? 400 : Math.max(120, state.speed));
@@ -1172,6 +1376,11 @@ async function startGame() {
   state.trickBySeat = {};
   state.waitingSeat = null;
   state.phase = 'play';
+  state.tribute = null;
+  state.tributeSeen = new Set();
+  state.tributeQueue = [];
+  state.tributeBusy = false;
+  state.tributeDrain = null;
   el('log').innerHTML = '';
   // 牌面主题：包损坏 / 签名不符时只回退字卡，不影响开局（日志清空后再载入，避免提示被清掉）
   if (state.themeSkin) {
@@ -1207,6 +1416,12 @@ async function startGame() {
       }
       rememberTrickPlay(rec);
     }
+    // 跨局检查点：新一局可能还没有任何动作（停在 tribute），也要补到存档当时的那一局。
+    const targetRound = Number(saved.lastRoundNo ?? currentRound);
+    while (currentRound < targetRound) {
+      if (!room.nextRound(0)) throw new Error(`回放时补齐第 ${currentRound + 1} 局失败`);
+      currentRound += 1;
+    }
     const h = room.hash();
     const same = h === saved.lastHash;
     log(`从 IndexedDB 恢复 ${acts.length} 条动作：${same ? '哈希一致 ✓' : `哈希不一致 ✗ 存档=${saved.lastHash} 恢复=${h}`}`);
@@ -1230,6 +1445,8 @@ async function startGame() {
   el('app').classList.remove('hidden');
   el('settle').classList.add('hidden');
   el('side').classList.toggle('hidden', !state.showLog);
+  // 恢复存档不重放已经发生过的贡牌动画；只把 pending 摊出来等玩家还贡。
+  syncTribute(room.info(), false);
   renderAll();
   pump();
 }
@@ -1238,25 +1455,43 @@ async function startGame() {
 
 function useHint() {
   if (state.waitingSeat !== state.humanSeat) return;
-  const plays = currentLegal().filter((a) => !a.pass);
+  const isTribute = state.phase === 'tribute';
+  const plays = currentLegal().filter((a) => (isTribute ? a.tributeReturn : !a.pass && !a.tributeReturn));
   if (plays.length === 0) return;
   const pick = plays[state.hintIdx % plays.length];
   state.hintIdx += 1;
-  state.selected.clear();
-  for (const c of pick.cards ?? []) state.selected.add(c);
+  // 还贡只挑一张，不再像出牌那样把整组牌选进去。
+  if (isTribute && pick.cards?.length) {
+    state.selected.clear();
+    state.selected.add(pick.cards[0]);
+  } else {
+    state.selected.clear();
+    for (const c of pick.cards ?? []) state.selected.add(c);
+  }
   renderHand();
   renderActions();
 }
 
 async function humanPlay(pass) {
-  if (state.waitingSeat !== state.humanSeat) return;
+  if (state.waitingSeat !== state.humanSeat || state.tributeBusy) return;
+  const isTribute = state.phase === 'tribute';
+  if (isTribute && pass) return;
   const cards = pass ? [] : [...state.selected].sort((a, b) => a - b);
   if (!pass && cards.length === 0) return;
-  const out = room.submit(state.humanSeat, now(), { pass, cards });
+  if (isTribute && cards.length !== 1) {
+    flash('还贡只选一张不大于 10 的牌');
+    return;
+  }
+  const action = isTribute
+    ? { tributeReturn: true, pass: false, cards }
+    : { pass, cards };
+  const out = room.submit(state.humanSeat, now(), action);
   if (out.kind !== 'applied') {
     // 被拒时给一次明显的视觉反馈，同时把原来的选牌留着方便改选。
-    state.notice = `${pass ? '过牌' : '出牌'}被拒：这套牌现在不合法（牌型不匹配或压不过上一手）`;
-    log(`${pass ? '过牌' : '出牌'}被拒：${out.error ?? out.kind}`);
+    state.notice = isTribute
+      ? '还贡被拒：这张牌不在可还范围内'
+      : `${pass ? '过牌' : '出牌'}被拒：这套牌现在不合法（牌型不匹配或压不过上一手）`;
+    log(`${isTribute ? '还贡' : pass ? '过牌' : '出牌'}被拒：${out.error ?? out.kind}`);
     renderCenter();
     clearTimeout(state.noticeTimer);
     state.noticeTimer = setTimeout(() => { state.notice = ''; renderCenter(); }, 3000);
@@ -1266,9 +1501,17 @@ async function humanPlay(pass) {
   state.waitingSeat = null;
   state.revealLast = false;
   state.hintIdx = 0;
-  rememberTrickPlay({ seat: state.humanSeat, pass, cards });
-  await record(toRecord(out));
-  log(`你 ${pass ? '过牌' : '出 ' + cards.map(cardLabel).join(' ')}`);
+  const rec = toRecord(out);
+  await record(rec);
+  if (isTribute) {
+    rememberTrickPlay(rec);
+    syncTribute(room.info());
+    renderAll();
+    await drainTribute();
+  } else {
+    rememberTrickPlay(rec);
+    log(`你 ${pass ? '过牌' : '出 ' + cards.map(cardLabel).join(' ')}`);
+  }
   pump();
 }
 
@@ -1338,7 +1581,7 @@ el('back-lobby').onclick = () => {
   showLobby();
 };
 
-el('settle-next').onclick = () => {
+el('settle-next').onclick = async () => {
   el('settle').classList.add('hidden');
   if (!room.nextRound(now())) {
     log('续局失败');
@@ -1348,6 +1591,10 @@ el('settle-next').onclick = () => {
   state.waitingSeat = null;
   state.lastBySeat = {};
   state.trickBySeat = {};
+  state.tribute = null;
+  state.tributeQueue = [];
+  state.tributeBusy = false;
+  await checkpointRoom();
   pump();
 };
 el('settle-lobby').onclick = () => {
@@ -1383,6 +1630,10 @@ el('lobby-resume').onclick = () => el('lobby-start').onclick();
 // 元素上，拖选会断。起点是「已选」时整段按取消处理，反之整段按选中处理。
 
 function setPicked(id, on) {
+  if (state.phase === 'tribute' && on && !tributeEligibleSet().has(id)) {
+    flash('还贡只能选不大于 10 的牌');
+    return;
+  }
   if (state.selected.has(id) === on) return;
   if (on) state.selected.add(id);
   else state.selected.delete(id);
@@ -1393,10 +1644,11 @@ function setPicked(id, on) {
 
 let dragPick = null;
 el('hand').addEventListener('pointerdown', (e) => {
-  if (state.waitingSeat !== state.humanSeat) return;
-  // 理牌列：整组一起选中 / 取消，方便再理或只恢复这一组。
+  if (state.waitingSeat !== state.humanSeat || state.tributeBusy) return;
+  const isTribute = state.phase === 'tribute';
+  // 理牌列：整组一起选中 / 取消，方便再理或只恢复这一组；还贡只选一张，不支持整组。
   const grouped = e.target.closest('.hand-col.grouped');
-  if (grouped) {
+  if (grouped && !isTribute) {
     const g = state.arranged[Number(grouped.dataset.group)];
     if (!g) return;
     const all = g.cards.every((id) => state.selected.has(id)) && state.selected.size === g.cards.length;
@@ -1460,7 +1712,7 @@ init().catch((e) => {
 
 // 调试钩子：URL 带 debug=1 时可从控制台看内部状态（不影响正常路径）。
 if (location.search.includes('debug')) {
-  window.__gd = { state, room, currentLegal, previewSelection, theme, get ex() { return ex; } };
+  window.__gd = { state, room, currentLegal, previewSelection, renderAll, syncTribute, drainTribute, theme, get ex() { return ex; } };
 }
 
 
