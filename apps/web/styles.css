@@ -147,23 +147,22 @@ header .dot { opacity: .5; }
   color: #ffe7ae;
 }
 
-/* 出牌区：停到当前行动家桌前，横向排牌 */
-.play-zone {
-  position: absolute;
-  z-index: 2;
-  width: min(430px, 48%);
-  text-align: center;
-  transition: top .2s ease, left .2s ease;
-}
-/* 牌桌底部现在叠了三层（动作行 / 牌型行 / 手牌 / 理牌条），自己那侧的出牌区要相应抬高 */
-.play-zone[data-rel="0"] { left: 50%; bottom: 292px; transform: translateX(-50%); }
-.play-zone[data-rel="1"] { right: 10px; top: calc(30% + 132px); width: min(210px, 32%); transform: none; }
-.play-zone[data-rel="2"] { left: 50%; top: 134px; transform: translateX(-50%); }
-.play-zone[data-rel="3"] { left: 10px; top: calc(22% + 92px); width: min(210px, 32%); transform: none; }
+/* 出牌区：四个方位各一块，铺在各自座位靠近桌心的一侧。
+   下方（自己）放在手牌区上方；右家放在其座位卡左侧；上方放在其座位卡下方；左家放在其座位卡右侧。 */
+.play-zones { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+.play-zone { position: absolute; text-align: center; pointer-events: auto; transition: top .2s ease, left .2s ease; }
+.play-zone[data-rel="0"] { left: 50%; bottom: 300px; transform: translateX(-50%); width: min(520px, 50%); }
+.play-zone[data-rel="1"] { right: 196px; top: 34%; width: min(240px, 24%); }
+.play-zone[data-rel="2"] { left: 50%; top: 106px; transform: translateX(-50%); width: min(520px, 50%); }
+.play-zone[data-rel="3"] { left: 196px; top: 22%; width: min(240px, 24%); }
 .play-who { font-size: 11px; letter-spacing: 1px; color: var(--muted); margin-bottom: 5px; }
 .last-play { min-height: 36px; display: flex; flex-wrap: wrap; gap: 5px; justify-content: center; align-items: center; }
-.last-play .fold-hint { font-size: 11px; color: var(--muted); cursor: pointer; }
-.last-play .fold-hint:hover { color: var(--text); }
+.pass-chip {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 34px; height: 26px; padding: 0 10px; border-radius: 999px;
+  background: rgba(8, 26, 20, .55); border: 1px solid var(--line);
+  color: var(--muted); font-size: 12px; letter-spacing: 2px;
+}
 
 .center {
   position: absolute;
@@ -275,26 +274,6 @@ header .dot { opacity: .5; }
   position: relative;
 }
 .card.themed svg { width: 100%; height: 100%; display: block; }
-/* 主题牌面里的王：素材是整幅图案没有角标，补一层文字角标，字号跟角标字号一起走 */
-.card.themed .joker-tag {
-  position: absolute;
-  left: 4px;
-  top: 5px;
-  padding: 2px 3px 3px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  line-height: 1.05;
-  font-weight: 700;
-  color: #16181a;
-  background: rgba(255, 255, 255, .94);
-  border-radius: 5px;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, .06);
-  pointer-events: none;
-}
-.card.themed.red .joker-tag { color: #c0392b; }
-.card.themed .joker-tag b { font-size: 1em; }
-.card.themed .joker-tag span { font-size: .9em; }
 .card.themed.picked {
   outline: none;
   box-shadow: 0 10px 22px rgba(0, 0, 0, .45);
@@ -378,11 +357,10 @@ header .dot { opacity: .5; }
   .slot-right { right: 8px; top: 30%; }
   .slot-bottom { left: 8px; bottom: 236px; }
   .center { top: 38%; width: min(340px, 54%); }
-  .play-zone { width: min(320px, 52%); }
-  .play-zone[data-rel="0"] { bottom: 306px; }
-  .play-zone[data-rel="1"] { right: 8px; top: calc(30% + 132px); width: min(170px, 38%); }
-  .play-zone[data-rel="2"] { top: 126px; }
-  .play-zone[data-rel="3"] { left: 8px; top: calc(30% + 132px); width: min(170px, 38%); }
+  .play-zone[data-rel="0"] { bottom: 306px; width: min(420px, 52%); }
+  .play-zone[data-rel="1"] { right: 152px; top: 30%; width: min(210px, 30%); }
+  .play-zone[data-rel="2"] { top: 126px; width: min(420px, 52%); }
+  .play-zone[data-rel="3"] { left: 152px; top: 30%; width: min(210px, 30%); }
   .hand-area { left: 8px; right: 8px; }
   .hand-col .card { width: 38px; height: 54px; }
   .hand-col .card + .card { margin-top: -32px; }
@@ -438,7 +416,10 @@ header .dot { opacity: .5; }
   .slot-left { left: 8px; top: 10%; }
   .slot-right { right: 8px; top: 10%; }
   .slot-bottom { left: 8px; top: calc(10% + 152px); bottom: auto; min-height: 0; }
-  .play-zone[data-rel="3"] { left: 8px; top: calc(10% + 84px); }
+  .play-zone[data-rel="0"] { bottom: 300px; width: min(360px, 56%); }
+  .play-zone[data-rel="1"] { right: 112px; top: calc(10% + 84px); width: min(170px, 34%); }
+  .play-zone[data-rel="2"] { top: 78px; width: min(360px, 56%); }
+  .play-zone[data-rel="3"] { left: 112px; top: calc(10% + 84px); width: min(170px, 34%); }
   .turn-actions { margin-bottom: 4px; }
   .arrange-bar { margin-top: 4px; }
 }

@@ -176,7 +176,8 @@ function withCards(cards, fn) {
 // `.gfdeck` 只装 theme.json + 23 个分层素材；这里解密后逐张要 SVG，与 CLI 输出逐字节一致。
 // 加载失败（包损坏 / 签名不符）一律回退到原来的字卡渲染，牌桌不阻塞。
 
-const THEME_PACK_URL = 'pkgs/defaults.gfdeck';
+// 默认加载 defaults；联调其它主题用 ?pkg=pkgs/squabby.gfdeck 指定（服务端 /pkgs/ 已映射到 crates/deckart/pkgs）
+const THEME_PACK_URL = new URLSearchParams(location.search).get('pkg') || 'pkgs/defaults.gfdeck';
 // 开发期签名公钥（私钥种子全 0x11）；正式分发换成后台下发的公钥。
 const THEME_PUBKEY = 'd04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737';
 const CODE_SUIT = ['S', 'H', 'D', 'C'];
@@ -343,6 +344,8 @@ const state = {
   showIds: false,
   showLog: true,
   lastBySeat: {},
+  // 本墩每个座位最近一手（出牌卡片或过牌），用于四方位同时铺牌；新墩开始清空
+  trickBySeat: {},
   notice: '',
   noticeTimer: 0,
   hintIdx: 0,
@@ -542,45 +545,41 @@ function renderScoreboard() {
   el('scoreboard').innerHTML = side(myTeam, '我方', mine) + side(1 - myTeam, '对方', theirs);
 }
 
-function renderPlayZone() {
+function renderPlayZones() {
   const v = room.view(state.humanSeat);
-  const info = room.info();
-  const zone = el('play-zone');
-  const box = el('last-play');
-  const who = el('play-who');
-  // 出牌区停在「出牌那人」桌前。座次在页面上是 0 上 / 1 左 / 2 下 / 3 右，
-  // 相对自己即 diff=0 下、1 右、2 上、3 左，正好对上 CSS 的 data-rel。
-  // 还没人出牌时退回当前行动家（领出前）。
-  const last = v.lastPlay;
-  const anchor = Number(last?.seat ?? info.turnSeat ?? state.humanSeat);
-  zone.dataset.rel = String((anchor - state.humanSeat + 4) % 4);
-  if (!last || !last.cards || last.cards.length === 0) {
-    who.textContent = '本回合无人出牌';
-    box.innerHTML = '';
-    box.onclick = null;
+  const wrap = el('play-zones');
+  // 本墩结束 / 还没人出牌：四个方位一起清空，等下一墩重新落牌。
+  if (!v.lastPlay) {
+    state.trickBySeat = {};
+    wrap.innerHTML = '';
     return;
   }
-  const mine = last.seat === state.humanSeat;
-  const passes = Number(info.passesSince ?? 0);
-  const folded = passes >= 2 && !state.revealLast;
-  const relSeat = (last.seat - state.humanSeat + 4) % 4;
-  // 用页面方位称呼（1 右 / 2 对 / 3 左），避免「上家/下家」因出牌方向理解歧义。
-  const whoName = mine ? '你' : (relSeat === 1 ? '右家' : relSeat === 3 ? '左家' : '对家');
-  who.textContent = `${whoName}(${last.seat}) 出 ${patternName(last.patternId)}${passes > 0 ? ` · 已过${passes}家` : ''}`;
-  if (folded) {
-    box.innerHTML = `<span class="fold-hint">已过两家，牌面收起（点此展开）</span>`;
-    box.onclick = () => { state.revealLast = true; renderPlayZone(); };
-    return;
+  // 兜底：页面刚恢复、日志里还没补到这一手时，至少把当前压场的一手放出来。
+  if (!state.trickBySeat[v.lastPlay.seat]) rememberTrickPlay(v.lastPlay);
+  const names = ['你', '右家', '对家', '左家'];
+  const parts = [];
+  for (let rel = 0; rel < 4; rel += 1) {
+    const seat = (state.humanSeat + rel) % 4;
+    const ent = state.trickBySeat[seat];
+    if (!ent) continue;
+    const who = names[rel];
+    const tag = ent.patternId ? ` · ${patternName(ent.patternId)}` : '';
+    let body;
+    if (ent.pass) {
+      body = '<span class="pass-chip">过</span>';
+    } else {
+      const cards = [...ent.cards].sort((a, b) => columnKey(b, levelRankLabel()) - columnKey(a, levelRankLabel())
+        || suitIndexOf(a) - suitIndexOf(b));
+      body = `<div class="last-play">${cards.map((id) => {
+        const svg = state.themeSkin ? theme.svg(id, levelRankLabel()) : null;
+        if (svg) return `<span class="mini-card themed">${svg}</span>`;
+        const f = cardFace(id);
+        return `<span class="mini-card${f.red ? ' red' : ''}">${f.rank}${f.suit}</span>`;
+      }).join('')}</div>`;
+    }
+    parts.push(`<div class="play-zone" data-rel="${rel}"><div class="play-who">${who}${tag}</div>${body}</div>`);
   }
-  box.onclick = null;
-  const cards = [...last.cards].sort((a, b) => columnKey(b, levelRankLabel()) - columnKey(a, levelRankLabel())
-    || suitIndexOf(a) - suitIndexOf(b));
-  box.innerHTML = cards.map((id) => {
-    const svg = state.themeSkin ? theme.svg(id, levelRankLabel()) : null;
-    if (svg) return `<span class="mini-card themed">${svg}</span>`;
-    const f = cardFace(id);
-    return `<span class="mini-card${f.red ? ' red' : ''}">${f.rank}${f.suit}</span>`;
-  }).join('');
+  wrap.innerHTML = parts.join('');
 }
 
 function renderCenter() {
@@ -620,14 +619,10 @@ function cardButton(id, index, myTurn) {
   b.dataset.cid = String(id);
   const svg = state.themeSkin ? theme.svg(id, levelRankLabel()) : null;
   if (svg) {
-    // 整张牌面交给主题：角标、花阵、级牌胶囊、逢人配都在 SVG 里
+    // 整张牌面交给主题：角标、花阵、级牌胶囊、逢人配都在 SVG 里。
+    // 王不再额外叠“大王/小王”文字：会压住小丑/国王插画，直接看素材本身区分。
     b.classList.add('themed');
-    // 王没有「角标」这一层：素材是整幅图案，横排叠放时只见左边一条，
-    // 大小王分不出来。补一个跟随角标字号的文字角标（小王 / 大王）。
-    const tag = f.joker
-      ? `<span class="corner joker-tag" style="font-size:${Math.round(9 * state.cornerPct / 100)}px"><b>${f.rank}</b><span>${f.suit}</span></span>`
-      : '';
-    b.innerHTML = `${svg}${tag}${state.showIds ? `<span class="cid">${id}</span>` : ''}`;
+    b.innerHTML = `${svg}${state.showIds ? `<span class="cid">${id}</span>` : ''}`;
   } else {
     b.innerHTML = `<span class="corner"><b>${f.rank}</b><span class="suit">${f.suit}</span></span>${state.showIds ? `<span class="cid">${id}</span>` : ''}`;
   }
@@ -958,7 +953,7 @@ function renderAll() {
   } catch { /* 未开局 */ }
   renderSeats();
   renderScoreboard();
-  renderPlayZone();
+  renderPlayZones();
   renderCenter();
   renderHand();
   renderActions();
@@ -1008,6 +1003,19 @@ function describe(rec) {
   return rec.pass ? '过牌' : '出 ' + (rec.cards ?? []).map(cardLabel).join(' ');
 }
 
+/** 记住某座位本墩最近一手：出牌存卡片 id，过牌只存状态。 */
+function rememberTrickPlay(rec) {
+  const seat = rec.seat;
+  if (seat === null || seat === undefined) return;
+  state.lastBySeat[seat] = describe(rec);
+  state.trickBySeat[seat] = rec.pass
+    ? { seat, pass: true, cards: [] }
+    : { seat, pass: false, cards: [...(rec.cards ?? [])], patternId: rec.patternId };
+  // 一手动作让引擎清空 lastPlay，说明这一墩已经结束；立刻清空各座位的牌，
+  // 否则接下来同一轮 pump 里新墩的领出会把它覆盖，另外三家会残留上一墩的牌。
+  if (!room.view(state.humanSeat).lastPlay) state.trickBySeat = {};
+}
+
 // ---------- 结算 ----------
 
 function showSettle(summary, ended) {
@@ -1043,7 +1051,7 @@ async function flushTail() {
     const last = room.lastRecord();
     if (last) {
       await record(last);
-      state.lastBySeat[last.seat] = describe(last);
+      rememberTrickPlay(last);
       log(`座位 ${last.seat} ${describe(last)}`);
     }
   }
@@ -1058,7 +1066,7 @@ async function pump() {
       if (s.kind === 'applied') {
         const rec = toRecord(s);
         await record(rec);
-        state.lastBySeat[s.seat] = describe(rec);
+        rememberTrickPlay(rec);
         log(`座位 ${s.seat} ${describe(rec)}${s.auto ? `（托管 ${s.auto}）` : ''} · #${rec.seq}`);
         if (s.seat !== state.humanSeat) await sleep(state.speed);
         continue;
@@ -1117,6 +1125,7 @@ async function startGame() {
   state.recorded = 0;
   state.selected.clear();
   state.lastBySeat = {};
+  state.trickBySeat = {};
   state.waitingSeat = null;
   state.phase = 'play';
   el('log').innerHTML = '';
@@ -1152,7 +1161,7 @@ async function startGame() {
           + ` 前四条=${JSON.stringify(acts.slice(Math.max(0, i - 3), i + 1))}`,
         );
       }
-      state.lastBySeat[rec.seat] = describe(rec);
+      rememberTrickPlay(rec);
     }
     const h = room.hash();
     const same = h === saved.lastHash;
@@ -1213,7 +1222,7 @@ async function humanPlay(pass) {
   state.waitingSeat = null;
   state.revealLast = false;
   state.hintIdx = 0;
-  state.lastBySeat[state.humanSeat] = pass ? '过牌' : '出 ' + cards.map(cardLabel).join(' ');
+  rememberTrickPlay({ seat: state.humanSeat, pass, cards });
   await record(toRecord(out));
   log(`你 ${pass ? '过牌' : '出 ' + cards.map(cardLabel).join(' ')}`);
   pump();
@@ -1270,7 +1279,7 @@ el('set-corner').oninput = (e) => {
   el('set-corner-val').textContent = `${state.cornerPct}%`;
   localStorage.setItem('guandan-corner-pct', String(state.cornerPct));
   if (state.themeSkin) theme.cache.clear();
-  renderPlayZone();
+  renderPlayZones();
   renderCenter();
   renderHand();
 };
@@ -1293,6 +1302,8 @@ el('settle-next').onclick = () => {
   }
   state.phase = 'play';
   state.waitingSeat = null;
+  state.lastBySeat = {};
+  state.trickBySeat = {};
   pump();
 };
 el('settle-lobby').onclick = () => {
