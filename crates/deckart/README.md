@@ -92,7 +92,7 @@ L1 底面模板（裁圆角） → L2 花色符号 → L3 点数/角标 → L4 �
 
 ### 花阵规范（`layout = classic`）
 
-`theme.json` 的 `classic` 块就是完整规范，代码里没有硬编码点位：
+`theme.json` 的 `classic` 块就是完整规范：点位可以自定义，没配的部分由内置标准花阵兜底（`render.rs::auto_pips`）。
 
 ```json
 "classic": {
@@ -111,12 +111,13 @@ L1 底面模板（裁圆角） → L2 花色符号 → L3 点数/角标 → L4 �
 }
 ```
 
-- `pipPositions` 是**归一化中心坐标**（0..1），数量必须等于点数（2→2 个、10→10 个），否则加载期报 `DK-THEME-INVALID`；
+- `pipPositions` 是**归一化中心坐标**（0..1），**整块可选**：写了哪个点数（`A` / `2`–`10` / `J` / `Q` / `K`，A 也可写 `1`）就用你配的点位，没写的点数按标准花阵自动摆；写了空数组 `[]` 表示这一面中间留白。点位数量不要求等于点数（可以只放 3 个花，最多 16 个），坐标必须落在 0..1；
+- 自动花阵与 `render.rs::auto_pips` 逐点一致（两列 0.3/0.7、纵向 0.26–0.74；奇数点数在中间补一个），所以主题里只配想改的那几张牌即可，不用再抄整张表；
 - 因为归一化，换画布尺寸（如以后 600×840）只改 `canvas`，点位表不用重写；
 - 点位表是「花阵长什么样」，**不是**「能画到哪」：渲染时会把每个点位按 `pipInset` 压进内边距，再按角标放大后的实际宽度继续往里让（左右对称），所以点位表写了 0.28 也未必落在 0.28——角标越大，花阵越往中间收（见 14.9）；
 - `pipScale` 是单个花符号的缩放（素材 100×100 → 画布单位），0.88 在 500 宽的牌面上约 88px；角标特别大时渲染层会自动等比缩小一点，避免两列点位粘在一起；
 - `pipInset` 是花阵安全区的归一化内边距（缺省 0.10，合法 0..=0.35），保证花阵四周留白、不贴牌边；
-- A 用 `aceScale` 单个大符号；J/Q/K 的 `courtStyle = "monogram"` 也是单个大符号，`"figure"` 是为将来人物素材留的 schema 位（当前不支持）；
+- A 没配点位时用 `aceScale` 单个大符号；J/Q/K 同理（`courtStyle = "monogram"` 单个大符号，`"figure"` 是为将来人物素材留的 schema 位，当前不支持）。配了 `pipPositions` 的 A/J/Q/K 就按你的点位摆（用 `pipScale`），大符号让位；
 - 四角标无条件绘制，花阵只影响中央。
 
 ### 可选文本层（`textLayer`）
@@ -205,7 +206,8 @@ crates/deckart/
   "name": "默认（深绿）",
   "license": "CC0-1.0",
   "canvas": { "width": 500, "height": 700, "cornerRadius": 36 },
-  "palette": { "red": "#C62828", "black": "#1B1B1B", "paper": "#FFFFFF", "level": "#E53935", "wild": "#D32F2F" },
+  "palette": { "red": "#C62828", "black": "#1B1B1B", "paper": "#FFFFFF", "level": "#E53935", "wild": "#D32F2F",
+               "suits": { "spade": "#111111", "heart": "#dd0808", "diamond": "#1565C0", "club": "#2E7D32" } },
   "layout": "compact",
   "cornerScale": 2.2,
   "corners": ["topLeft", "bottomRight"],
@@ -230,6 +232,7 @@ crates/deckart/
 }
 ```
 `textLayer`、`preview`、`cornerScale`、`corners`、`cornerSuitPlacement` 与 `classic` 都是可选块（缺省用默认值/关闭），完整字段含义见第 3 节的尺寸规范、花阵规范与文本层说明，`preview` 见第 14 节，`cornerScale` 见 14.6/14.7，`corners` 见 14.8，`cornerSuitPlacement` 见 14.10。
+`palette.suits` 也是可选块：`spade` / `heart` / `diamond` / `club` 各自声明墨色（`#RRGGBB`），没写的花色回落到 `red`（红桃、方块）或 `black`（黑桃、梅花）。要四色牌面就四个都写，老主题不加这一段，渲染结果与之前完全一致。
 `version` 是主题版本号，用来让客户端缓存失效：加了文本层与 classic 配置后 defaults 已从 1 升到 2。
 
 `ranks.kind = "atlas"` 时改为 `{ "kind": "atlas", "image": "ranks.png", "index": "ranks.json" }`，`index` 给每字形的 `{x,y,w,h,advance}`，兼容后续位图字库。

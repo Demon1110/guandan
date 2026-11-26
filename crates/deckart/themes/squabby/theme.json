@@ -13,7 +13,13 @@
     "black": "#000000",
     "paper": "#FFFFFF",
     "level": "#E53935",
-    "wild": "#D32F2F"
+    "wild": "#D32F2F",
+    "suits": {
+      "spade": "#111111",
+      "heart": "#dd0808",
+      "diamond": "#1565C0",
+      "club": "#2E7D32"
+    }
   },
   "layout": "compact",
   "cornerScale": 2.5,

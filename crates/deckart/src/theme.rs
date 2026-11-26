@@ -21,6 +21,32 @@ pub struct Canvas {
     pub corner_radius: f64,
 }
 
+/// 四花色的独立墨色（可选）。没写的花色回落到 `palette.red` / `palette.black`，
+/// 所以老主题不加这一段，输出与之前逐字节一致。
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuitColors {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spade: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heart: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diamond: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub club: Option<String>,
+}
+
+impl SuitColors {
+    pub fn get(&self, suit: Suit) -> Option<&str> {
+        match suit {
+            Suit::Spade => self.spade.as_deref(),
+            Suit::Heart => self.heart.as_deref(),
+            Suit::Diamond => self.diamond.as_deref(),
+            Suit::Club => self.club.as_deref(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Palette {
@@ -29,6 +55,9 @@ pub struct Palette {
     pub paper: String,
     pub level: String,
     pub wild: String,
+    /// 可选：黑桃 / 红桃 / 方块 / 梅花各自的墨色（四色牌面）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suits: Option<SuitColors>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -168,7 +197,8 @@ pub struct ClassicSpec {
     /// 缺省 0.10。
     #[serde(default = "default_pip_inset")]
     pub pip_inset: f64,
-    /// 2..10 的花阵点位（归一化中心坐标），key 为点数标签
+    /// 可选的点位覆盖表（归一化中心坐标），key 为 `A` / `2`..`10` / `J` / `Q` / `K`
+    /// （`A` 也接受 `1`）。没写的点数走标准花阵，空数组表示中间留白。
     #[serde(default)]
     pub pip_positions: std::collections::BTreeMap<String, Vec<[f64; 2]>>,
     /// J/Q/K 的中央处理：`monogram`（默认，一个大花色）| `figure`（预留人物素材）
@@ -345,6 +375,19 @@ impl ThemeMeta {
             .unwrap_or(CornerSuitPlacement::Below)
     }
 
+    /// 某个花色该用的墨色：`palette.suits` 里写了就用它，否则按红/黑二分。
+    /// 四色牌面（黑桃黑、红桃红、方块蓝、梅花绿）就靠这一段。
+    pub fn suit_ink(&self, suit: Suit) -> &str {
+        if let Some(c) = self.palette.suits.as_ref().and_then(|s| s.get(suit)) {
+            return c;
+        }
+        if suit.is_red() {
+            &self.palette.red
+        } else {
+            &self.palette.black
+        }
+    }
+
     /// 引用到的全部素材相对路径（去重、保持声明顺序）。
     pub fn asset_paths(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
@@ -504,6 +547,22 @@ fn validate(meta: &ThemeMeta, assets: &HashMap<String, String>) -> Result<(), De
     if !meta.palette.red.starts_with('#') || !meta.palette.black.starts_with('#') {
         return Err(DeckError::ThemeInvalid("palette 颜色需为 #RRGGBB".into()));
     }
+    if let Some(suits) = &meta.palette.suits {
+        for (name, color) in [
+            ("spade", suits.spade.as_deref()),
+            ("heart", suits.heart.as_deref()),
+            ("diamond", suits.diamond.as_deref()),
+            ("club", suits.club.as_deref()),
+        ] {
+            if let Some(c) = color {
+                if !is_hex_color(c) {
+                    return Err(DeckError::ThemeInvalid(format!(
+                        "palette.suits.{name} 需为 #RRGGBB"
+                    )));
+                }
+            }
+        }
+    }
     if let Some(scale) = meta.corner_scale {
         if !scale.is_finite() || !(THEME_CORNER_MIN..=THEME_CORNER_MAX).contains(&scale) {
             return Err(DeckError::ThemeInvalid(format!(
@@ -644,16 +703,20 @@ fn validate_classic(spec: &ClassicSpec) -> Result<(), DeckError> {
             ));
         }
     }
-    for value in 2u8..=10 {
-        let key = Rank::new(value)?.label().to_string();
-        let Some(points) = spec.pip_positions.get(&key) else {
+    // 点位表全部可选：没写哪个点数，就按标准花阵自动摆。
+    // 写了就用自己那张表（数量不限，空数组表示中间留白）。
+    for (key, points) in &spec.pip_positions {
+        if !matches!(
+            key.as_str(),
+            "A" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "J" | "Q" | "K"
+        ) {
             return Err(DeckError::ThemeInvalid(format!(
-                "classic.pipPositions 缺 {key} 的点位表"
+                "classic.pipPositions 的键只允许 A/2..10/J/Q/K，实际 {key}"
             )));
-        };
-        if points.len() != value as usize {
+        }
+        if points.len() > 16 {
             return Err(DeckError::ThemeInvalid(format!(
-                "classic.pipPositions[{key}] 必须是 {value} 个点位，实际 {}",
+                "classic.pipPositions[{key}] 最多 16 个点位，实际 {}",
                 points.len()
             )));
         }
@@ -666,6 +729,12 @@ fn validate_classic(spec: &ClassicSpec) -> Result<(), DeckError> {
         }
     }
     Ok(())
+}
+
+/// `#RRGGBB`（大小写不限）。
+fn is_hex_color(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    bytes.len() == 7 && bytes[0] == b'#' && bytes[1..].iter().all(|b| b.is_ascii_hexdigit())
 }
 
 /// 拒绝绝对路径、`..`、反斜杠与任何跳出主题目录的写法。
@@ -715,4 +784,61 @@ pub fn themes_root() -> PathBuf {
     std::env::var_os("GF_DECKART_THEMES")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("themes"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec_with(pips: &[(&str, Vec<[f64; 2]>)]) -> ClassicSpec {
+        let mut map = std::collections::BTreeMap::new();
+        for (k, v) in pips {
+            map.insert(k.to_string(), v.clone());
+        }
+        ClassicSpec {
+            corner_rank: Slot {
+                x: 30.0,
+                y: 30.0,
+                scale: 0.4,
+            },
+            corner_suit: Slot {
+                x: 36.0,
+                y: 100.0,
+                scale: 0.25,
+            },
+            pip_scale: 0.8,
+            ace_scale: 1.6,
+            pip_inset: 0.1,
+            pip_positions: map,
+            court_style: None,
+        }
+    }
+
+    #[test]
+    fn classic_pips_are_optional() {
+        assert!(validate_classic(&spec_with(&[])).is_ok());
+        assert!(validate_classic(&spec_with(&[
+            ("A", vec![[0.5, 0.5]]),
+            ("10", Vec::new()),
+            ("Q", vec![[0.4, 0.3], [0.6, 0.7]])
+        ]))
+        .is_ok());
+    }
+
+    #[test]
+    fn classic_pips_reject_bad_keys_and_coords() {
+        assert!(validate_classic(&spec_with(&[("Z", vec![[0.5, 0.5]])])).is_err());
+        assert!(validate_classic(&spec_with(&[("7", vec![[1.2, 0.5]])])).is_err());
+        let many: Vec<[f64; 2]> = (0..17).map(|i| [0.1, i as f64 / 20.0]).collect();
+        assert!(validate_classic(&spec_with(&[("7", many)])).is_err());
+    }
+
+    #[test]
+    fn hex_colors_need_seven_chars() {
+        assert!(is_hex_color("#1b1b1b"));
+        assert!(is_hex_color("#ABC123"));
+        assert!(!is_hex_color("#1b1b1"));
+        assert!(!is_hex_color("1b1b1b"));
+        assert!(!is_hex_color("#GGGGGG"));
+    }
 }

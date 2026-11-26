@@ -57,6 +57,43 @@ const CORNER_GAP: f64 = 10.0;
 /// 花阵宁可整体缩一点，也要留出这道缝，否则两列点位会粘在一起。
 const PIP_GAP: f64 = 26.0;
 
+/// 没在 `classic.pipPositions` 里声明的点数，按标准扑克花阵自动摆点位。
+/// 返回 `None` 的只有 A/J/Q/K：它们默认走中央一个大符号。
+/// 坐标是归一化的 (x, y)，x = 0.3 / 0.7 两列，y 在 0.26..0.74 之间。
+pub fn auto_pips(rank: Rank) -> Option<Vec<[f64; 2]>> {
+    let v = rank.value();
+    if v == 1 || v >= 11 {
+        return None;
+    }
+    if v <= 3 {
+        let ys = match v {
+            2 => vec![0.34, 0.66],
+            _ => vec![0.28, 0.50, 0.72],
+        };
+        return Some(ys.into_iter().map(|y| [0.5, y]).collect());
+    }
+
+    let mut pts = Vec::with_capacity(v as usize);
+    let rows = v / 2;
+    let top = 0.26;
+    let bottom = 0.74;
+    let y_at = |i: u8| top + (bottom - top) * i as f64 / (rows - 1) as f64;
+    for i in 0..rows {
+        pts.push([0.3, y_at(i)]);
+        pts.push([0.7, y_at(i)]);
+    }
+    if v % 2 == 1 {
+        // 5 居中，7/9 夹在第二、三排之间，读起来更接近实体牌
+        let y = match v {
+            5 => 0.5,
+            7 => 0.375,
+            _ => 0.5,
+        };
+        pts.push([0.5, y]);
+    }
+    Some(pts)
+}
+
 /// 单个牌面（角标按主题原样）。`level = None` 表示本局无级牌状态（不出 L4）。
 pub fn render_face(
     theme: &Theme,
@@ -188,7 +225,6 @@ fn render_normal_compact(
     corner: f64,
 ) -> Result<(), DeckError> {
     let meta = theme.meta();
-    let palette = &meta.palette;
     let mut slot = meta.slots.corner_rank;
     let mut suit_slot = meta.slots.corner_suit;
     let center = meta.slots.center_suit;
@@ -197,11 +233,7 @@ fn render_normal_compact(
 
     let suit_rel = meta.layers.suits.get(suit);
     let suit_frag = fragment(suit_rel, theme.asset(suit_rel))?;
-    let ink = if suit.is_red() {
-        &palette.red
-    } else {
-        &palette.black
-    };
+    let ink = meta.suit_ink(suit);
     let suit_inner = recolor(suit_frag.inner, ink);
     let rank_rel = theme.rank_asset(rank)?;
     let rank_frag = fragment(rank_rel, theme.asset(rank_rel))?;
@@ -296,17 +328,12 @@ fn render_normal_classic(
         .classic
         .as_ref()
         .ok_or_else(|| DeckError::ThemeInvalid("layout=classic 缺 classic 花阵规格".into()))?;
-    let palette = &meta.palette;
     let cw = meta.canvas.width;
     let ch = meta.canvas.height;
 
     let suit_rel = meta.layers.suits.get(suit);
     let suit_frag = fragment(suit_rel, theme.asset(suit_rel))?;
-    let ink = if suit.is_red() {
-        &palette.red
-    } else {
-        &palette.black
-    };
+    let ink = meta.suit_ink(suit);
     let suit_inner = recolor(suit_frag.inner, ink);
     let rank_rel = theme.rank_asset(rank)?;
     let rank_frag = fragment(rank_rel, theme.asset(rank_rel))?;
@@ -336,10 +363,20 @@ fn render_normal_classic(
         }
     }
 
-    // 中央花阵 / 大符号
+    // 中央内容：`classic.pipPositions` 里写了这个点数就用你配的摆放，
+    // 没写就回退到标准花阵（A/J/Q/K 默认画一个中央大符号）。
+    let custom = spec
+        .pip_positions
+        .get(rank.label())
+        .or_else(|| match rank.value() {
+            1 => spec.pip_positions.get("1"),
+            _ => None,
+        });
+    let points = custom.cloned().or_else(|| auto_pips(rank));
+
     writeln!(out, "<g id=\"L2-suit\">").ok();
-    match rank.value() {
-        1 | 11..=13 => {
+    match points {
+        None => {
             let s = spec.ace_scale;
             let tx = (cw - suit_frag.width * s) / 2.0;
             let ty = (ch - suit_frag.height * s) / 2.0;
@@ -353,11 +390,7 @@ fn render_normal_classic(
             )
             .ok();
         }
-        value => {
-            let points = spec
-                .pip_positions
-                .get(rank.label())
-                .ok_or_else(|| DeckError::ThemeInvalid(format!("classic 缺 {} 的花阵", value)))?;
+        Some(points) => {
             // 花阵安全区：先按 pipInset 留出内边距，再按角标实际宽度继续往里让，
             // 保证放大的点数/花色不会压到最近的点位。
             let corner_right = (corner_rank.x + rank_frag.width * corner_rank.scale)
@@ -639,4 +672,28 @@ pub fn render_all_opts(theme: &Theme, opts: FaceOptions) -> Result<Vec<RenderedF
         });
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_pips_covers_two_to_ten() {
+        for v in 2u8..=10 {
+            let rank = Rank::new(v).unwrap();
+            let pts = auto_pips(rank).unwrap_or_else(|| panic!("{rank:?} 应有自动花阵"));
+            assert_eq!(pts.len(), v as usize, "{} 的点位数不对", rank.label());
+            for p in &pts {
+                assert!((0.0..=1.0).contains(&p[0]) && (0.0..=1.0).contains(&p[1]));
+            }
+        }
+    }
+
+    #[test]
+    fn auto_pips_leaves_court_cards_to_big_symbol() {
+        for v in [1u8, 11, 12, 13] {
+            assert!(auto_pips(Rank::new(v).unwrap()).is_none());
+        }
+    }
 }
