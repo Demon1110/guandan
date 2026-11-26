@@ -27,6 +27,12 @@ use crate::events;
 /// 掼蛋经典四人座。
 pub const SEATS: u8 = 4;
 
+/// 房间码/匹配成房后，HTTP 先把座位预留给客户端，等待它接 WS 的最长时长。
+///
+/// 预留只是「别让两个人抢同一把椅子」的软占位：无账号阶段无法验证预留者身份，
+/// WS 带同一座位号进来即视为兑现（账号切片接入后改成 token 绑定座位）。
+pub const RESERVATION_TTL_MS: u64 = 60_000;
+
 /// 未在 §5.7 错误码全表内的临时动作级拒绝码。
 ///
 /// 设计缺口（M2-GAP-proto-04，待项目方裁决）：玩家误点导致的引擎拒绝
@@ -64,6 +70,8 @@ pub struct RoomHost {
     match_id: String,
     room: Mutex<Room>,
     out: RwLock<HashMap<u8, mpsc::UnboundedSender<Vec<u8>>>>,
+    /// HTTP 阶段预占的座位（`seat → 过期毫秒`），WS 入座时兑现。
+    reserved: Mutex<HashMap<u8, u64>>,
     ack_cache: Mutex<HashMap<(u8, String), Vec<u8>>>,
     started_at: Instant,
     opts: RoomOptions,
@@ -91,6 +99,7 @@ impl RoomHost {
             match_id,
             room: Mutex::new(room),
             out: RwLock::new(HashMap::new()),
+            reserved: Mutex::new(HashMap::new()),
             ack_cache: Mutex::new(HashMap::new()),
             started_at: Instant::now(),
             opts,
@@ -140,16 +149,24 @@ impl RoomHost {
         hint: Option<u8>,
         tx: mpsc::UnboundedSender<Vec<u8>>,
     ) -> Result<u8, JoinError> {
+        let now = self.now_ms();
+        // 锁序固定：先 `out` 再 `reserved`（`reserve` 同序），避免交叉等待。
         let mut out = self.out.write().await;
+        let mut reserved = self.reserved.lock().await;
+        reserved.retain(|_, expires| *expires > now);
         let occupied: Vec<u8> = out.keys().copied().collect();
         let seat = match hint {
-            Some(seat) if seat < SEATS && !occupied.contains(&seat) => seat,
+            // 预留座位只能由带同一座位号重来的人兑现（无账号阶段不做身份校验）。
+            Some(seat) if seat < SEATS && !occupied.contains(&seat) => {
+                reserved.remove(&seat);
+                seat
+            }
             Some(_) => {
                 return Err(JoinError::SeatTaken {
-                    available: free_seats(&occupied),
+                    available: free_seats(&occupied, reserved.keys().copied()),
                 })
             }
-            None => match (0..SEATS).find(|s| !occupied.contains(s)) {
+            None => match (0..SEATS).find(|s| !occupied.contains(s) && !reserved.contains_key(s)) {
                 Some(seat) => seat,
                 None => {
                     return Err(JoinError::SeatTaken {
@@ -160,6 +177,26 @@ impl RoomHost {
         };
         out.insert(seat, tx);
         Ok(seat)
+    }
+
+    /// 预占一个空座位（房间码 / 匹配成房后由 HTTP 返回给客户端）。
+    ///
+    /// 预留 `RESERVATION_TTL_MS` 后自动失效；WS 带该座位号入座即兑现。
+    pub async fn reserve(&self) -> Result<u8, JoinError> {
+        let now = self.now_ms();
+        let out = self.out.read().await;
+        let mut reserved = self.reserved.lock().await;
+        reserved.retain(|_, expires| *expires > now);
+        let seat = (0..SEATS).find(|s| !out.contains_key(s) && !reserved.contains_key(s));
+        match seat {
+            Some(seat) => {
+                reserved.insert(seat, now.saturating_add(RESERVATION_TTL_MS));
+                Ok(seat)
+            }
+            None => Err(JoinError::SeatTaken {
+                available: Vec::new(),
+            }),
+        }
     }
 
     /// 满四人即发牌开桌，并给每个座位各发一份全量快照 + 相位切换。
@@ -529,8 +566,11 @@ impl RoomHost {
     }
 }
 
-fn free_seats(occupied: &[u8]) -> Vec<u8> {
-    (0..SEATS).filter(|s| !occupied.contains(s)).collect()
+fn free_seats(occupied: &[u8], reserved: impl Iterator<Item = u8>) -> Vec<u8> {
+    let reserved: Vec<u8> = reserved.collect();
+    (0..SEATS)
+        .filter(|s| !occupied.contains(s) && !reserved.contains(s))
+        .collect()
 }
 
 fn auto_reason_str(reason: AutoReason) -> &'static str {
@@ -614,8 +654,10 @@ mod tests {
     }
 
     #[test]
-    fn free_seats_reports_all_empty_when_none_occupied() {
-        assert_eq!(free_seats(&[]), vec![0, 1, 2, 3]);
-        assert_eq!(free_seats(&[0, 2]), vec![1, 3]);
+    fn free_seats_excludes_occupied_and_reserved() {
+        assert_eq!(free_seats(&[], std::iter::empty()), vec![0, 1, 2, 3]);
+        assert_eq!(free_seats(&[0, 2], std::iter::empty()), vec![1, 3]);
+        assert_eq!(free_seats(&[0], [1u8, 2].into_iter()), vec![3]);
+        assert_eq!(free_seats(&[0, 1], [2u8, 3].into_iter()), Vec::<u8>::new());
     }
 }

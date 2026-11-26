@@ -341,11 +341,13 @@ dependencies = [
  "gf-engine",
  "gf-protocol",
  "gf-table-runtime",
+ "http-body-util",
  "prost",
  "serde",
  "serde_json",
  "tokio",
  "tokio-tungstenite",
+ "tower",
 ]
 
 [[package]]

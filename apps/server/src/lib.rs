@@ -12,6 +12,7 @@
 pub mod config;
 pub mod events;
 pub mod host;
+pub mod lobby;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -20,7 +21,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -30,15 +31,21 @@ use gf_protocol::gf::protocol::v1 as pb;
 use gf_protocol::wire;
 use prost::Message as _;
 use serde::Deserialize;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 
 pub use config::ServerConfig;
 pub use host::{JoinError, RoomHost, RoomOptions};
+pub use lobby::{Lobby, Mode, TicketState};
+
+/// 本服务只承载掼蛋一个玩法（`GET /api/games` 的 `gameId` 取值）。
+pub const GAME_ID: &str = "guandan";
 
 /// 进程级共享状态。
 pub struct App {
     cfg: ServerConfig,
     rooms: RwLock<HashMap<String, Arc<RoomHost>>>,
+    /// 房间码与匹配队列（内存态；PG/Redis 切片替换存储，接口不变）。
+    lobby: Mutex<Lobby>,
     room_seq: AtomicU64,
     started_at: Instant,
 }
@@ -49,9 +56,15 @@ impl App {
         Arc::new(Self {
             cfg,
             rooms: RwLock::new(HashMap::new()),
+            lobby: Mutex::new(Lobby::new()),
             room_seq: AtomicU64::new(1),
             started_at: Instant::now(),
         })
+    }
+
+    /// 单调毫秒（进程起点起算）。
+    pub fn now_ms(&self) -> u64 {
+        self.started_at.elapsed().as_millis() as u64
     }
 
     /// 取房间；不存在则按需建房（本机联调期的「进房即建房」）。
@@ -78,11 +91,85 @@ impl App {
         self.room_or_create(match_id).await
     }
 
+    /// `POST /api/room/create` 的实现：生成场次号 → 建房 → 出房间码。
+    pub async fn create_room_with_code(&self, _mode: Mode) -> (Arc<RoomHost>, String) {
+        let match_id = loop {
+            let id = self.lobby.lock().await.new_match_id();
+            if !self.rooms.read().await.contains_key(&id) {
+                break id;
+            }
+        };
+        let room = self.room_or_create(&match_id).await;
+        let code = {
+            let mut lobby = self.lobby.lock().await;
+            lobby.issue_code(&match_id, self.now_ms(), self.cfg.room_code_ttl_ms)
+        };
+        (room, code)
+    }
+
+    /// 凭房间码找房间；失效码返回 `None`。
+    pub async fn room_by_code(&self, code: &str) -> Option<Arc<RoomHost>> {
+        let match_id = self.lobby.lock().await.resolve_code(code, self.now_ms())?;
+        Some(self.room_or_create(&match_id).await)
+    }
+
+    /// 入匹配队列，返回票号。
+    pub async fn enqueue(&self, mode: Mode) -> String {
+        self.lobby
+            .lock()
+            .await
+            .enqueue(GAME_ID, mode, self.now_ms())
+    }
+
+    /// 轮询票状态。
+    pub async fn ticket_state(&self, ticket_id: &str) -> Option<(TicketState, Option<String>)> {
+        let now = self.now_ms();
+        self.lobby
+            .lock()
+            .await
+            .poll(ticket_id, now, self.cfg.match_timeout_ms)
+    }
+
+    /// 退队；返回是否真的退掉（已配对/不存在都返回 false）。
+    pub async fn cancel_ticket(&self, ticket_id: &str) -> bool {
+        let now = self.now_ms();
+        self.lobby.lock().await.cancel(ticket_id, now)
+    }
+
+    /// 尝试凑桌：够四张同模式等待票即建房并返回 `(matchId, 票号)`。
+    ///
+    /// 每次入队与轮询都调用一次，代价是 handful 次比较，不需要后台撮合线程。
+    pub async fn pump_match(&self, mode: Mode) -> Option<(String, Vec<String>)> {
+        // 已知场次号先快照出来，避免在撮合锁里 await 房间表（锁序：lobby → rooms）。
+        let taken: Vec<String> = self.rooms.read().await.keys().cloned().collect();
+        let now = self.now_ms();
+        let mut lobby = self.lobby.lock().await;
+        let (match_id, group) = lobby.form_group(
+            GAME_ID,
+            mode,
+            host::SEATS as usize,
+            now,
+            self.cfg.match_timeout_ms,
+            &taken,
+        )?;
+        drop(lobby);
+        self.room_or_create(&match_id).await;
+        Some((match_id, group))
+    }
+
     /// 路由表。
     pub fn router(self: &Arc<Self>) -> Router {
         Router::new()
             .route("/healthz", get(healthz))
+            // 本机联调用的直连建房（玩家侧正式入口是 /api/room/create）。
             .route("/api/rooms", post(create_room))
+            .route("/api/room/create", post(room_create))
+            .route("/api/room/join", post(room_join))
+            .route("/api/match/queue", post(match_queue))
+            .route(
+                "/api/match/queue/{ticket_id}",
+                get(match_status).delete(match_cancel),
+            )
             .route("/ws", get(ws_upgrade))
             .with_state(self.clone())
     }
@@ -123,6 +210,142 @@ async fn create_room(
         StatusCode::OK,
         Json(serde_json::json!({"match_id": room.match_id(), "seats": host::SEATS})),
     )
+}
+
+/// `POST /api/room/create`（§5.15）：建房并出房间码。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RoomCreateBody {
+    #[serde(default)]
+    game_id: Option<String>,
+    mode: String,
+    #[serde(default)]
+    seats_count: Option<u32>,
+}
+
+async fn room_create(
+    State(app): State<Arc<App>>,
+    Json(body): Json<RoomCreateBody>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    let game_id = body.game_id.unwrap_or_else(|| GAME_ID.to_owned());
+    if game_id != GAME_ID {
+        return invalid_request("GAME_UNKNOWN");
+    }
+    let Some(mode) = Mode::parse(&body.mode) else {
+        return invalid_request("MODE_UNKNOWN");
+    };
+    // 座位数由 RuleSet 的 `seats.count` 决定，客户端只能传同值（§5.15）。
+    if body.seats_count.is_some_and(|n| n != u32::from(host::SEATS)) {
+        return invalid_request("SEATS_MISMATCH");
+    }
+    let (room, code) = app.create_room_with_code(mode).await;
+    Json(serde_json::json!({
+        "matchId": room.match_id(),
+        "inviteCode": code,
+        "matchType": mode.match_type(),
+        "seatsCount": host::SEATS,
+    }))
+    .into_response()
+}
+
+/// `POST /api/room/join`（§5.15）：凭房间码预占座位，结果与 `JoinAck` 同构。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RoomJoinBody {
+    invite_code: String,
+}
+
+async fn room_join(
+    State(app): State<Arc<App>>,
+    Json(body): Json<RoomJoinBody>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    let Some(room) = app.room_by_code(&body.invite_code).await else {
+        // 错误码表里没有「邀请码不存在」，按入参不合规走 `RS_SCHEMA_INVALID`，
+        // 具体原因放 `detail`（`M2-GAP-05`，待项目方决定是否补正式码）。
+        return invalid_request("INVITE_CODE_UNKNOWN");
+    };
+    match room.reserve().await {
+        Ok(seat) => Json(serde_json::json!({
+            "matchId": room.match_id(),
+            "seat": seat,
+            "accept": true,
+            "availableSeats": [],
+        }))
+        .into_response(),
+        Err(JoinError::SeatTaken { available }) => Json(serde_json::json!({
+            "matchId": room.match_id(),
+            "seat": 0,
+            "accept": false,
+            "availableSeats": available,
+            "reason": "RS_SEAT_TAKEN",
+        }))
+        .into_response(),
+    }
+}
+
+/// `POST /api/match/queue`（§5.15）：入队，满四人即撮合成房。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MatchQueueBody {
+    #[serde(default)]
+    game_id: Option<String>,
+    mode: String,
+}
+
+async fn match_queue(
+    State(app): State<Arc<App>>,
+    Json(body): Json<MatchQueueBody>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    let game_id = body.game_id.unwrap_or_else(|| GAME_ID.to_owned());
+    if game_id != GAME_ID {
+        return invalid_request("GAME_UNKNOWN");
+    }
+    let Some(mode) = Mode::parse(&body.mode) else {
+        return invalid_request("MODE_UNKNOWN");
+    };
+    let ticket = app.enqueue(mode).await;
+    // 每次入队顺手撮一次：票数够就直接成房，客户端下一次轮询即见 matched。
+    app.pump_match(mode).await;
+    Json(serde_json::json!({"ticketId": ticket})).into_response()
+}
+
+async fn match_status(
+    State(app): State<Arc<App>>,
+    Path(ticket_id): Path<String>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    match app.ticket_state(&ticket_id).await {
+        Some((state, match_id)) => {
+            let mut body = serde_json::json!({"state": state.as_str()});
+            if let Some(match_id) = match_id {
+                body["matchId"] = serde_json::Value::String(match_id);
+            }
+            Json(body).into_response()
+        }
+        None => invalid_request("TICKET_UNKNOWN"),
+    }
+}
+
+async fn match_cancel(
+    State(app): State<Arc<App>>,
+    Path(ticket_id): Path<String>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    Json(serde_json::json!({"ok": app.cancel_ticket(&ticket_id).await})).into_response()
+}
+
+/// 入参不合规（§5.7 没有专门的「参数错误」码，统一复用 `RS_SCHEMA_INVALID`，
+/// 细分原因写 `detail`）。
+fn invalid_request(detail: &str) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({"reason": "RS_SCHEMA_INVALID", "detail": detail})),
+    )
+        .into_response()
 }
 
 async fn ws_upgrade(ws: WebSocketUpgrade, State(app): State<Arc<App>>) -> impl IntoResponse {

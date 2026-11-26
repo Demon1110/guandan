@@ -30,3 +30,5 @@ gf-table-runtime = { path = "../../crates/table-runtime" }
 
 [dev-dependencies]
 tokio-tungstenite = "0.29"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

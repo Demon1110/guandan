@@ -18,6 +18,10 @@ pub struct ServerConfig {
     pub next_deal_ms: u64,
     /// 心跳超时：超过该时长无任何消息即判掉线（§5.9：客户端 15s 一次、30s 判掉线）。
     pub heartbeat_timeout_ms: u64,
+    /// 房间码有效期（毫秒）。
+    pub room_code_ttl_ms: u64,
+    /// 匹配排队超时（毫秒），超时后轮询返回 `timeout`。
+    pub match_timeout_ms: u64,
 }
 
 impl Default for ServerConfig {
@@ -28,6 +32,8 @@ impl Default for ServerConfig {
             tick_ms: 50,
             next_deal_ms: 5_000,
             heartbeat_timeout_ms: 30_000,
+            room_code_ttl_ms: crate::lobby::DEFAULT_CODE_TTL_MS,
+            match_timeout_ms: crate::lobby::DEFAULT_QUEUE_TIMEOUT_MS,
         }
     }
 }
@@ -40,6 +46,8 @@ impl ServerConfig {
     /// - `GF_TICK_MS`
     /// - `GF_NEXT_DEAL_MS`
     /// - `GF_HEARTBEAT_TIMEOUT_MS`
+    /// - `GF_ROOM_CODE_TTL_MS`
+    /// - `GF_MATCH_TIMEOUT_MS`
     pub fn from_env() -> Self {
         let mut cfg = Self::default();
         if let Ok(v) = env::var("GF_BIND") {
@@ -56,6 +64,12 @@ impl ServerConfig {
         }
         if let Some(v) = env_u64("GF_HEARTBEAT_TIMEOUT_MS") {
             cfg.heartbeat_timeout_ms = v.max(1_000);
+        }
+        if let Some(v) = env_u64("GF_ROOM_CODE_TTL_MS") {
+            cfg.room_code_ttl_ms = v.max(60_000);
+        }
+        if let Some(v) = env_u64("GF_MATCH_TIMEOUT_MS") {
+            cfg.match_timeout_ms = v.max(1_000);
         }
         cfg
     }
