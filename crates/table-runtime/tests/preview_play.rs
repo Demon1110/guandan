@@ -94,6 +94,70 @@ fn preview_rejects_cards_not_in_hand_and_broken_shapes() {
 }
 
 #[test]
+fn submit_accepts_hand_picked_play_outside_candidate_list() {
+    // 回归：合法集只枚举每种牌型的代表组合（单张只列能压的那一张）。
+    // 用户在牌桌上手选的另一张同型牌，预检能过、提交也必须能过，
+    // 否则会出现「按钮亮着、点出牌被拒」。
+    let mut room = human_room(0x51ED_0033);
+    room.start(0).expect("发牌失败");
+    let (lead_seat, now) = wait_for_human(&mut room);
+
+    let lead_single = room
+        .legal_now()
+        .expect("合法集失败")
+        .iter()
+        .find_map(|a| match a {
+            Action::Play { cards } if cards.len() == 1 => Some(cards.clone()),
+            _ => None,
+        })
+        .expect("领出必有单张候选");
+    room.submit(lead_seat, Action::Play { cards: lead_single }, now)
+        .expect("领出单张应成功");
+
+    let (seat, now) = wait_for_human(&mut room);
+    let legal_now = room.legal_now().expect("合法集失败");
+    let legal_singles: Vec<u16> = legal_now
+        .iter()
+        .filter_map(|a| match a {
+            Action::Play { cards } if cards.len() == 1 => Some(cards[0]),
+            _ => None,
+        })
+        .collect();
+
+    let outside = {
+        let state = room.state().expect("取状态失败");
+        let engine = room.engine();
+        let hand = state
+            .zones
+            .iter()
+            .find(|z| z.seat == seat && !z.cards.is_empty())
+            .map(|z| z.cards.clone())
+            .expect("手牌区缺失");
+        hand.into_iter()
+            .find(|&id| {
+                !legal_singles.contains(&id)
+                    && matches!(engine.preview_play(state, &[id]), Ok((_, true)))
+            })
+            .expect("该有一张不在候选清单里、但压得过上家的单张")
+    };
+
+    assert!(
+        !legal_now.contains(&Action::Play {
+            cards: vec![outside]
+        }),
+        "前提：这张单张不在合法集里（否则用例测不到白名单外的手选路径）"
+    );
+    room.submit(
+        seat,
+        Action::Play {
+            cards: vec![outside],
+        },
+        now,
+    )
+    .expect("预检能过的手选单张，提交通道也必须放行");
+}
+
+#[test]
 fn preview_rejects_before_deal() {
     let room = human_room(0x51ED_0032);
     // 未开局：房间没有状态，合法集也报 NotStarted，预检同样无从谈起。

@@ -759,9 +759,20 @@ impl Room {
         let legal = self.legal_normalized()?;
         let candidate = normalize_action(action.clone());
         if !legal.contains(&candidate) {
-            return Err(RoomError::Engine(format!(
-                "动作不在合法集内：{candidate:?}"
-            )));
+            // 合法集只给每种牌型的代表组合（单张只列最大一张、顺子只列一条），
+            // 人类手选的同型牌因此常常不在清单里。这里按引擎口径复核一次：
+            // 牌型成立、且跟牌时压得过上一手，就放行；结构不成型 / 压不过仍拒。
+            let allow = match &candidate {
+                Action::Play { cards } => self.state.as_ref().is_some_and(|state| {
+                    matches!(self.engine.preview_play(state, cards), Ok((_, true)))
+                }),
+                Action::Pass => false,
+            };
+            if !allow {
+                return Err(RoomError::Engine(format!(
+                    "动作不在合法集内：{candidate:?}"
+                )));
+            }
         }
         let state = self.state.take().ok_or(RoomError::NotStarted)?;
         let round_no = state.round_no;
