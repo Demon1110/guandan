@@ -5,8 +5,8 @@
 // 再用同一个种子新建 Instance，按存档逐条重演，最终 `stateHash` 必须与存档哈希逐字节相等。
 // 相等即证明续局不依赖进程内存，只需要那份动作日志。
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const wasmPath = join(here, '..', '..', 'target', 'wasm32-unknown-unknown', 'release', 'gf_client_wasm.wasm');

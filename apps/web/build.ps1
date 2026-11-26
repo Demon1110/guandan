@@ -1,5 +1,5 @@
-# 构建 Web 端所需的 wasm 产物并放到 apps/client 目录（跨平台：路径全部走 Join-Path）。
-# 用法：pwsh -File apps/client/build.ps1
+# 构建 Web 端所需的 wasm 产物并放到 apps/web 目录（跨平台：路径全部走 Join-Path）。
+# 用法：pwsh -File apps/web/build.ps1
 $ErrorActionPreference = 'Stop'
 
 $root = Join-Path $PSScriptRoot '..' '..'

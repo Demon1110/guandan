@@ -3,8 +3,8 @@
 // native 侧由 `crates/ai/examples/local_match.rs` 打印 `fullHash=`；两侧相等即证明
 // 房间主干 + AI-L2 bot + 结算在 wasm 目标上与 native 逐字节同解。
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const wasmPath = join(here, '..', '..', 'target', 'wasm32-unknown-unknown', 'release', 'gf_client_wasm.wasm');

@@ -1,10 +1,10 @@
 # 零依赖静态服务（wasm 必须走 http(s) 才能 fetch，不能用 file:// 直接打开）。
-# 用法：pwsh -File apps/client/serve.ps1 [-Port 8123]
+# 用法：pwsh -File apps/web/serve.ps1 [-Port 8123]
 param([int]$Port = 8123)
 
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path $PSScriptRoot).Path
-# 主题包不再拷进 apps/client：/pkgs/ 直接映射到 crates/deckart/pkgs
+# 主题包不再拷进 apps/web：/pkgs/ 直接映射到 crates/deckart/pkgs
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $pkgs = Join-Path $repo 'crates\deckart\pkgs'
 

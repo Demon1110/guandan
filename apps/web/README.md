@@ -15,8 +15,8 @@ bot 出牌按 `recommend` 的最优整手拆分走：领出先出牌力最小的
 ## 跑起来
 
 ```powershell
-pwsh -File apps/client/build.ps1      # cargo build wasm + 复制到 apps/client
-pwsh -File apps/client/serve.ps1      # 起静态服务 http://127.0.0.1:8123/
+pwsh -File apps/web/build.ps1      # cargo build wasm + 复制到 apps/web
+pwsh -File apps/web/serve.ps1      # 起静态服务 http://127.0.0.1:8123/
 ```
 
 `file://` 打不开（wasm 必须走 fetch）。带查询参数会直接进牌桌（跳过大厅）：
@@ -117,18 +117,18 @@ IndexedDB 库 `guandan-m1`：
 ## 无头回归
 
 ```powershell
-node apps/client/test_restore.mjs
-node apps/client/verify_wasm_hash.mjs
+node apps/web/test_restore.mjs
+node apps/web/verify_wasm_hash.mjs
 ```
 
 `test_restore.mjs` 在一个 Node 进程内跑完「两局 → 存档 → 丢弃 Instance → 新建 Instance 回放」，
-断言恢复哈希与存档哈希相等且恢复后还能继续推进。这是 `apps/client` 的可自动化 gate。
+断言恢复哈希与存档哈希相等且恢复后还能继续推进。这是 `apps/web` 的可自动化 gate。
 
 ## 主题工坊 `theme-studio.html`
 
 单文件主题编辑器：`theme.json` 的每个字段都摊成表单，右侧 15 张牌（2–A + 大小王）实时预览。
 
-- **打开方式**：直接双击 `apps/client/theme-studio.html`（素材已内联，无任何外链），或走 `serve.ps1` 访问
+- **打开方式**：直接双击 `apps/web/theme-studio.html`（素材已内联，无任何外链），或走 `serve.ps1` 访问
   `http://127.0.0.1:8123/theme-studio.html`。
 - **预览不是贴图**：页面里那份渲染内核逐条照 `render.rs` 实现（角标倍率重排、`cornerSuitPlacement` 的
   下方/右侧分支、classic 花阵的 `pipInset` 安全区与 `PIP_GAP` 自适应收窄）。用同一份配置与

@@ -1,4 +1,4 @@
-# apps/server · 联机服务端（M2）
+# services/server · 联机服务端（M2）
 
 口袋级说明：怎么跑、代码怎么分层、哪些口径还没定。规则与协议的权威仍然是
 `docs/designs/2026-11-23-guandan-multiplatform/design_draft.md`，排期见 `docs/开发计划.md` §3。
@@ -6,11 +6,13 @@
 ## 跑起来
 
 ```powershell
-cd apps/server
-cargo run --bin gf-server          # 默认 127.0.0.1:8080
-cargo test                         # 单测 + 房间闭环 + WS 冒烟
-cargo clippy --all-targets -- -D warnings
+# 仓库根执行（本 crate 是根 workspace 成员，同仓同锁）
+cargo run -p gf-server --bin gf-server   # 默认 127.0.0.1:8080
+cargo test -p gf-server                  # 单测 + 房间闭环 + WS 冒烟
+cargo clippy -p gf-server --all-targets -- -D warnings
 ```
+
+只在服务端里干活时再 `cd services/server`，`cargo run --bin gf-server` 一样可用。
 
 手工探针：先起服务，再 `cargo run --example ws_probe`，会发一条 `JoinRoom` 并打印收到的帧类型。
 
@@ -153,7 +155,7 @@ cargo clippy --all-targets -- -D warnings
 
 ## 加测试的落点
 
-- 规则相关 → 不要写在 `apps/server`，写 `crates/table-runtime/tests/`。
+- 规则相关 → 不要写在 `services/server`，写 `crates/table-runtime/tests/`。
 - 服务端行为（幂等、水位、入座分配、广播帧形状）→ `tests/online_round.rs`。
 - 传输层（握手、帧编解码、版本闸门）→ `tests/ws_smoke.rs`。
 - 帧头编号 → `crates/protocol/src/wire.rs` 的单元测试（只增不减）。

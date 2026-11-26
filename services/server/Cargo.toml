@@ -4,10 +4,8 @@ version = "0.1.0"
 edition = "2021"
 description = "掼蛋联机服务端：axum + tokio，复用 gf-table-runtime 房间，protobuf over WebSocket"
 
-# 独立 workspace：服务端依赖树（axum/tokio）不并入根 workspace 的测试与覆盖率统计
-# （与 apps/shell-desktop/src-tauri 同一处理方式）。
-[workspace]
-
+# 根 workspace 成员（判题/覆盖率按 -p gf-server 单独跑，不影响引擎统计）：
+# 同仓同锁，`cargo test --workspace` 会把这里一起编进来；只在独立发布时单独 build。
 [lib]
 name = "gf_server"
 path = "src/lib.rs"

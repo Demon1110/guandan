@@ -1,19 +1,19 @@
-# apps/shell-desktop
+# apps/desktop
 
 掼蛋的桌面壳，Tauri 2，目标三平台：Windows / Linux / macOS。
-**壳层不加业务逻辑**：玩法、渲染、存档语义都在 `apps/client`（纯静态资源）与 `crates/client-wasm`，这里只负责窗口、WebView 生命周期与安装包。
+**壳层不加业务逻辑**：玩法、渲染、存档语义都在 `apps/web`（纯静态资源）与 `crates/client-wasm`，这里只负责窗口、WebView 生命周期与安装包。
 
 ## 目录
 
 ```
-apps/shell-desktop/
+apps/desktop/
 ├── build-installer.ps1       一键出包（cargo build --release + makensis）
 ├── installer/installer.nsi   自维护 NSIS 脚本（装 LocalAppData、卸载项、快捷方式）
 ├── dist/                     产物（已 gitignore）
 └── src-tauri/
     ├── Cargo.toml            独立 workspace（不并入根 workspace，避免 Tauri 依赖树污染测试与覆盖率）
     ├── build.rs              tauri-build
-    ├── tauri.conf.json       frontendDist 指向 ../../client；bundle.targets = nsis
+    ├── tauri.conf.json       frontendDist 指向 ../../web（同级复用的前端）；bundle.targets = nsis
     ├── capabilities/         Tauri 2 权限集，只放 core:default
     ├── icons/                cargo tauri icon 生成的全套图标（app-icon.png 是源图）
     └── src/
@@ -24,10 +24,10 @@ apps/shell-desktop/
 ## 打包（Windows，当前可用路径）
 
 ```powershell
-cd apps\shell-desktop
+cd apps\desktop
 pwsh -NoProfile -File .\build-installer.ps1            # cargo build --release + makensis
 pwsh -NoProfile -File .\build-installer.ps1 -SkipBuild  # 只重打包
-# 产物：apps\shell-desktop\dist\Guandan-0.1.0-x64-setup.exe
+# 产物：apps\desktop\dist\Guandan-0.1.0-x64-setup.exe
 ```
 
 **为什么不用 `cargo tauri build --bundles nsis`**：tauri-bundler 打包前会从 GitHub 拉 `nsis-3.13.zip`，本机实测 `timeout: global`；且它校验的文件清单要求定制包里的 `nsis_tauri_utils.dll`，官方 NSIS 包不满足，缓存放了也会被判定「missing files → Recreating it」并重新下载。所以这条路改成：官方 NSIS 3.13 + 自维护 `installer/installer.nsi`，链路完全离线。
@@ -37,7 +37,7 @@ NSIS 工具准备（一次性）：把 `nsis-3.13.zip` 解压到 `<repo>\target\
 
 `installer/installer.nsi` 内容：`RequestExecutionLevel user`、装到 `$LOCALAPPDATA\Guandan`、写 HKCU 卸载项、开始菜单与桌面快捷方式、`Uninstall.exe`、WebView2 运行时缺失时提示（不阻断）。脚本是 UTF-8，`makensis` 必须带 `-INPUTCHARSET UTF8`（否则报 `Bad text encoding`）。
 
-无前端构建链：`apps/client` 是纯静态目录（`index.html` / `app.js` / `styles.css` / `gf_client_wasm.wasm`），直接作为 `frontendDist` 打进 exe，`fetch('gf_client_wasm.wasm')` 走 `tauri.localhost` 同源加载，不需要额外协议配置。
+无前端构建链：`apps/web` 是纯静态目录（`index.html` / `app.js` / `styles.css` / `gf_client_wasm.wasm`），直接作为 `frontendDist` 打进 exe，`fetch('gf_client_wasm.wasm')` 走 `tauri.localhost` 同源加载，不需要额外协议配置。
 
 ## 验收方式（无人工点击）
 
@@ -62,7 +62,7 @@ Start-Process .\dist\Guandan-0.1.0-x64-setup.exe   # 或安装后的 guandan-des
 
 ## 待办（骨架之后的适配项）
 
-1. 存档载体：`apps/client/app.js` 现在用 IndexedDB；设计稿要求桌面壳用**本地文件**，需把存取抽成 storage 接口（浏览器 IndexedDB / 桌面文件两实现），否则杀进程续局在壳里要重做。
+1. 存档载体：`apps/web/app.js` 现在用 IndexedDB；设计稿要求桌面壳用**本地文件**，需把存取抽成 storage 接口（浏览器 IndexedDB / 桌面文件两实现），否则杀进程续局在壳里要重做。
 2. 关闭右键菜单、文本选择、浏览器快捷键，窗口最小尺寸与 DPR 适配。
 3. CI matrix：windows-latest / ubuntu-latest / macos-latest 出三端产物 + 签名公证。
 4. Linux WebKitGTK 差异是 CI 覆盖不了的风险，需在 Ubuntu 桌面手动冒烟一次（四端冒烟清单 §10.7）。
