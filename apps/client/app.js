@@ -231,15 +231,17 @@ const theme = {
   },
 
   /** 单张牌面 SVG。`levelRank` 用点数标签（`'2'`…`'A'`，`null` = 不带级牌态），
-   *  真正进 wasm 时才由 `rankCode()` 换成主题的 `Rank` 编号；缓存键也用标签。 */
-  svg(id, levelRank) {
+   *  真正进 wasm 时才由 `rankCode()` 换成主题的 `Rank` 编号；缓存键也用标签。
+   *  `cornerPct` 是角标字号百分比，由 deckart 在牌面内部放大点数与花色（不是整张图放大）。 */
+  svg(id, levelRank, cornerPct = state.cornerPct) {
     if (!this.loaded) return null;
-    const key = `${id}@${levelRank ?? '-'}`;
+    const pct = clampCornerPct(cornerPct);
+    const key = `${id}@${levelRank ?? '-'}@${pct}`;
     if (this.cache.has(key)) return this.cache.get(key);
     const code = new TextEncoder().encode(faceCode(id));
     const t0 = performance.now();
     const level = rankCode(levelRank);
-    const r = JSON.parse(withBytes(code, (ptr, len) => cstr(ex.gf_theme_card(ptr, len, level))));
+    const r = JSON.parse(withBytes(code, (ptr, len) => cstr(ex.gf_theme_card(ptr, len, level, pct))));
     this.stats.cards += 1;
     this.stats.ms += performance.now() - t0;
     const svg = r.ok ? r.svg : null;
@@ -356,7 +358,28 @@ const state = {
   themeSkin: false,
   // 手牌布局：cols（同点数一列纵向叠放，现状）| fan（横排紧叠，露左上角标）
   handStyle: 'cols',
+  // 角标字号（百分比）：牌面内部放大点数与花色，100 = 主题原样。
+  // 手牌横排时每张只露一条边，靠它把点数顶到能读的大小；设置面板可调。
+  cornerPct: 220,
 };
+
+/** 角标字号的合法区间（和 deckart 的 CORNER_SCALE_MIN/MAX 对齐，单位百分比）。 */
+const CORNER_PCT_MIN = 100;
+const CORNER_PCT_MAX = 300;
+
+function clampCornerPct(v) {
+  const n = Math.round(Number(v));
+  if (!Number.isFinite(n)) return 220;
+  return Math.min(CORNER_PCT_MAX, Math.max(CORNER_PCT_MIN, n));
+}
+
+/** 把当前角标字号同步到设置面板的滑块与数值（初始化顺序：loadSettings 先跑，URL 覆盖在后）。 */
+function syncCornerControl() {
+  const slider = el('set-corner');
+  if (!slider) return;
+  slider.value = String(state.cornerPct);
+  el('set-corner-val').textContent = `${state.cornerPct}%`;
+}
 
 const el = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -380,6 +403,10 @@ function seedFromQuery() {
   // 所以开了主题又没显式给 hand 参数时，默认走 fan。
   const handParam = q.get('hand');
   state.handStyle = handParam === 'fan' || (handParam === null && state.themeSkin) ? 'fan' : 'cols';
+  // ?corner=260 覆盖角标字号（好处是截图/联调能给死值，不受本机 localStorage 影响）
+  const cornerParam = q.get('corner');
+  state.cornerPct = clampCornerPct(cornerParam ?? localStorage.getItem('guandan-corner-pct') ?? state.cornerPct);
+  syncCornerControl();
   return true;
 }
 
@@ -589,7 +616,12 @@ function cardButton(id, index, myTurn) {
   if (svg) {
     // 整张牌面交给主题：角标、花阵、级牌胶囊、逢人配都在 SVG 里
     b.classList.add('themed');
-    b.innerHTML = `${svg}${state.showIds ? `<span class="cid">${id}</span>` : ''}`;
+    // 王没有「角标」这一层：素材是整幅图案，横排叠放时只见左边一条，
+    // 大小王分不出来。补一个跟随角标字号的文字角标（小王 / 大王）。
+    const tag = f.joker
+      ? `<span class="corner joker-tag" style="font-size:${Math.round(9 * state.cornerPct / 100)}px"><b>${f.rank}</b><span>${f.suit}</span></span>`
+      : '';
+    b.innerHTML = `${svg}${tag}${state.showIds ? `<span class="cid">${id}</span>` : ''}`;
   } else {
     b.innerHTML = `<span class="corner"><b>${f.rank}</b><span class="suit">${f.suit}</span></span>${state.showIds ? `<span class="cid">${id}</span>` : ''}`;
   }
@@ -1185,6 +1217,8 @@ function loadSettings() {
     el('set-speed').value = raw.speedName ?? 'normal';
     el('set-ids').checked = state.showIds;
     el('set-log').checked = state.showLog;
+    // 角标字号由 seedFromQuery() 定好（URL > localStorage > 默认），这里只把控件同步过去
+    syncCornerControl();
   } catch { /* 忽略坏设置 */ }
   // 窄屏没有横向空间放侧栏，首次进入默认收起（用户仍可在设置里打开）。
   if (!stored && window.innerWidth < 1200) {
@@ -1214,6 +1248,16 @@ el('toggle-log').onclick = () => {
   el('side').classList.toggle('hidden', !state.showLog);
 };
 el('open-settings').onclick = () => el('settings').classList.remove('hidden');
+// 角标字号：拖一下就地重算牌面（wasm 单张 0.015ms，一手 27 张也不到 1ms）
+el('set-corner').oninput = (e) => {
+  state.cornerPct = clampCornerPct(e.target.value);
+  el('set-corner-val').textContent = `${state.cornerPct}%`;
+  localStorage.setItem('guandan-corner-pct', String(state.cornerPct));
+  if (state.themeSkin) theme.cache.clear();
+  renderPlayZone();
+  renderCenter();
+  renderHand();
+};
 el('set-close').onclick = () => { saveSettings(); el('settings').classList.add('hidden'); renderAll(); };
 el('set-clear').onclick = async () => {
   if (state.matchId && state.db) await clearMatch(state.db, state.matchId);

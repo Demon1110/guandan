@@ -26,12 +26,62 @@ pub struct RenderedFace {
     pub svg: String,
 }
 
-/// 单个牌面。`level = None` 表示本局无级牌状态（不出 L4）。
+/// 牌面渲染的可选参数。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FaceOptions {
+    /// `None` 表示本局无级牌状态（不出 L4）
+    pub level: Option<LevelState>,
+    /// 角标（左上点数 + 角标花色）的尺寸倍率，`1.0` = 按主题原样。
+    /// 手牌横排紧叠时只露得出一条牌宽，用它可以只放大角标、不动中央花阵与底框。
+    pub corner_scale: f64,
+}
+
+impl Default for FaceOptions {
+    fn default() -> Self {
+        FaceOptions {
+            level: None,
+            corner_scale: 1.0,
+        }
+    }
+}
+
+/// 角标的允许区间：太小看不清、太大压到中央花阵，两端都不给。
+pub const CORNER_SCALE_MIN: f64 = 0.6;
+pub const CORNER_SCALE_MAX: f64 = 3.0;
+
+/// 放大角标时，点数与角标花色之间的固定间隙（画布单位）。主题默认间距是按小字号给的，
+/// 字号一放大就得重排，否则花色会被点数压住。
+const CORNER_GAP: f64 = 10.0;
+
+/// 单个牌面（角标按主题原样）。`level = None` 表示本局无级牌状态（不出 L4）。
 pub fn render_face(
     theme: &Theme,
     face: Face,
     level: Option<LevelState>,
 ) -> Result<String, DeckError> {
+    render_face_opts(
+        theme,
+        face,
+        FaceOptions {
+            level,
+            corner_scale: 1.0,
+        },
+    )
+}
+
+/// 单个牌面，带角标尺寸倍率。
+pub fn render_face_opts(
+    theme: &Theme,
+    face: Face,
+    opts: FaceOptions,
+) -> Result<String, DeckError> {
+    let corner = opts.corner_scale;
+    if !corner.is_finite() || !(CORNER_SCALE_MIN..=CORNER_SCALE_MAX).contains(&corner) {
+        return Err(DeckError::FaceInvalid(format!(
+            "corner_scale 越界（合法 {CORNER_SCALE_MIN}..={CORNER_SCALE_MAX}）"
+        )));
+    }
+    let level = opts.level;
     let meta = theme.meta();
     let mut out = String::with_capacity(4096);
     let w = meta.canvas.width;
@@ -68,8 +118,8 @@ pub fn render_face(
             out.push_str("</g>\n");
         }
         Face::Normal { suit, rank } => match meta.layout {
-            Layout::Compact => render_normal_compact(&mut out, theme, suit, rank)?,
-            Layout::Classic => render_normal_classic(&mut out, theme, suit, rank)?,
+            Layout::Compact => render_normal_compact(&mut out, theme, suit, rank, corner)?,
+            Layout::Classic => render_normal_classic(&mut out, theme, suit, rank, corner)?,
         },
     }
 
@@ -135,16 +185,16 @@ fn render_normal_compact(
     theme: &Theme,
     suit: Suit,
     rank: Rank,
+    corner: f64,
 ) -> Result<(), DeckError> {
     let meta = theme.meta();
     let palette = &meta.palette;
-    let slot = meta.slots.corner_rank;
-    let suit_slot = meta.slots.corner_suit;
+    let mut slot = meta.slots.corner_rank;
+    let mut suit_slot = meta.slots.corner_suit;
     let center = meta.slots.center_suit;
     let w = meta.canvas.width;
     let h = meta.canvas.height;
 
-    // L2 花色：角标 + 中央 + 右下镜像（角标区）
     let suit_rel = meta.layers.suits.get(suit);
     let suit_frag = fragment(suit_rel, theme.asset(suit_rel))?;
     let ink = if suit.is_red() {
@@ -153,7 +203,19 @@ fn render_normal_compact(
         &palette.black
     };
     let suit_inner = recolor(suit_frag.inner, ink);
+    let rank_rel = theme.rank_asset(rank)?;
+    let rank_frag = fragment(rank_rel, theme.asset(rank_rel))?;
+    let rank_inner = recolor(rank_frag.inner, ink);
 
+    // 角标倍率：点数与角标花色一起放大，并把花色重新排在放大后的点数下方，
+    // 否则大字号下点数会压到花色上（原布局的间距是按小字号给的）。
+    if (corner - 1.0).abs() > f64::EPSILON {
+        slot.scale *= corner;
+        suit_slot.scale *= corner;
+        suit_slot.y = slot.y + rank_frag.height * slot.scale + CORNER_GAP * corner;
+    }
+
+    // L2 花色：角标 + 中央 + 右下镜像（角标区）
     writeln!(out, "<g id=\"L2-suit\">").ok();
     writeln!(
         out,
@@ -176,9 +238,6 @@ fn render_normal_compact(
     writeln!(out, "</g>").ok();
 
     // L3 点数：左上角标 + 右下镜像
-    let rank_rel = theme.rank_asset(rank)?;
-    let rank_frag = fragment(rank_rel, theme.asset(rank_rel))?;
-    let rank_inner = recolor(rank_frag.inner, ink);
     writeln!(out, "<g id=\"L3-rank\">").ok();
     writeln!(
         out,
@@ -221,6 +280,7 @@ fn render_normal_classic(
     theme: &Theme,
     suit: Suit,
     rank: Rank,
+    corner_scale: f64,
 ) -> Result<(), DeckError> {
     let meta = theme.meta();
     let spec = meta
@@ -282,6 +342,8 @@ fn render_normal_classic(
         }
     }
     // 四角花色
+    let mut corner_suit = spec.corner_suit;
+    corner_suit.scale *= corner_scale;
     let suit_art = Fragment {
         inner: &suit_inner,
         width: suit_frag.width,
@@ -293,12 +355,14 @@ fn render_normal_classic(
         Corner::BottomLeft,
         Corner::BottomRight,
     ] {
-        place(out, &suit_art, spec.corner_suit, corner, cw, ch);
+        place(out, &suit_art, corner_suit, corner, cw, ch);
     }
     writeln!(out, "</g>").ok();
 
     // 四角点数
     writeln!(out, "<g id=\"L3-rank\">").ok();
+    let mut corner_rank = spec.corner_rank;
+    corner_rank.scale *= corner_scale;
     let rank_art = Fragment {
         inner: &rank_inner,
         width: rank_frag.width,
@@ -310,7 +374,7 @@ fn render_normal_classic(
         Corner::BottomLeft,
         Corner::BottomRight,
     ] {
-        place(out, &rank_art, spec.corner_rank, corner, cw, ch);
+        place(out, &rank_art, corner_rank, corner, cw, ch);
     }
     writeln!(out, "</g>").ok();
     Ok(())
@@ -514,11 +578,25 @@ pub fn render_all(
     theme: &Theme,
     level: Option<LevelState>,
 ) -> Result<Vec<RenderedFace>, DeckError> {
+    render_all_opts(
+        theme,
+        FaceOptions {
+            level,
+            corner_scale: 1.0,
+        },
+    )
+}
+
+/// 54 面全量出图，带角标尺寸倍率（出「大字角标」整包时用）。
+pub fn render_all_opts(
+    theme: &Theme,
+    opts: FaceOptions,
+) -> Result<Vec<RenderedFace>, DeckError> {
     let mut out = Vec::with_capacity(54);
     for face in crate::card::all_faces() {
         out.push(RenderedFace {
             code: face.code(),
-            svg: render_face(theme, face, level)?,
+            svg: render_face_opts(theme, face, opts)?,
         });
     }
     Ok(out)

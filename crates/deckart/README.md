@@ -272,7 +272,9 @@ themes/
 
 ```powershell
 gfdeck render --theme themes/defaults --face H8 --level 8 -o out/H8.svg
+gfdeck render --theme themes/defaults --face H8 --level 8 --corner 240 -o out/H8-big.svg   # 角标放大 2.4 倍
 gfdeck render-all --theme themes/defaults --level 8 -o out/          # 54 张 + 牌背
+gfdeck render-all --theme themes/defaults --corner 240 -o out-big/    # 大字角标整包
 gfdeck png out/H8.svg --scale 2 -o out/H8@2x.png
 gfdeck pack   themes/defaults -o themes/defaults.gfdeck --encrypt --key-file k.bin
 gfdeck unpack themes/defaults.gfdeck -o /tmp/decoded --key-file k.bin
@@ -280,7 +282,7 @@ gfdeck verify themes/defaults.gfdeck                                 # 摘要 + 
 gfdeck info   themes/defaults.gfdeck                                 # themeId/version/条目/许可
 ```
 
-`render-all` 产 55 个文件（54 面 + 1 牌背），并写 `manifest.json`（face → 文件 → sha256）。
+`render-all` 产 55 个文件（54 面 + 1 牌背），并写 `manifest.json`（face → 文件 → sha256，另记 `cornerScale`）。
 
 ---
 
@@ -293,6 +295,7 @@ gfdeck info   themes/defaults.gfdeck                                 # themeId/v
 | 快照 | `defaults` 主题 55 张 SVG 文本哈希固定（改素材必须显式更新快照） |
 | 包往返 | `pack → unpack → render` 产出与直接读目录逐字节一致 |
 | 预览一致 | `preview` 配置生效（默认四张 2 全带级牌、`levelRank=null` 不出 `L4`、非法 faces/越界点数加载期报错）；wasm 端输出与 `gfdeck render` 逐字节一致 |
+| 角标倍率 | 1.0 与旧入口逐字节一致；0.6~3.0 内点数与角标花色同步放大、花色重排到点数下方、底面层不动；越界报 `DK-FACE-INVALID` |
 | 坏包 | 截断/改一字节/换 themeId/签名不符/路径穿越 全部拒绝并给明确错误码 |
 | 性能 | 单张合成 P99 < 1 ms（native），55 张 < 20 ms；包加载（含解密）< 10 ms |
 | 覆盖率 | 并入 workspace 后按现行门禁（行 ≥90% + 区域 ≥90%） |
@@ -354,21 +357,21 @@ crates/deckart/
 
 - `card`：牌面语义类型，编码 `H8` / `S10` / `JOKER-B` / `JOKER-S`
 - `theme`：目录加载 + schema 校验（id 规则、13 字形、路径穿越、外链/字体/位图禁用）
-- `render`：四层合成、级牌与逢人配判定、固定图层 id 与 `data-*` 属性；`compact` 与 `classic` 两种布局；可选文本层（`L4t-level-label`）
+- `render`：四层合成、级牌与逢人配判定、固定图层 id 与 `data-*` 属性；`compact` 与 `classic` 两种布局；可选文本层（`L4t-level-label`）；`FaceOptions.corner_scale` 角标字号倍率（0.6..=3.0，见 14.6）
 - `pack`：`.gfdeck` 打包 / 解密 / 签名 / 摘要校验 / 边界校验，`open()` 可直接在内存里用主题；`open_bytes()` / `info_from_bytes()` 走纯字节入口（wasm 没有文件系统）
 - `preview`：`theme.json` 的 `preview` 配置 + `render_preview()`，主题选择界面与牌桌共用同一条渲染路径
 - `png`：SVG → PNG（`--features png`，不进 wasm）
-- `gfdeck` CLI：`render` / `render-all` / `pack` / `unpack` / `info` / `verify` / `png`
+- `gfdeck` CLI：`render` / `render-all` / `pack` / `unpack` / `info` / `verify` / `png`（`render`、`render-all` 支持 `--corner <pct>`）
 
-### 测试（31 个单测 + 1 个 doctest，全绿）
+### 测试（35 个单测 + 1 个 doctest，全绿）
 
 ```powershell
 cd crates\deckart
-cargo test                 # 5 lib + 12 pack + 14 render + 1 doctest
+cargo test                 # 5 lib + 12 pack + 18 render + 1 doctest
 cargo test --features png  # 额外可用 PNG 子命令
 ```
 
-覆盖：54 面编码唯一且闭合、级牌只在匹配点数命中、红桃级牌必须同时有 level + wild 两层、王永不级牌、无级牌态不出徽章、输出不得含外链/字体/位图、渲染确定性；文本层三态矩阵（`both` 两层都在、`badge-only` 无 text、`text-only` 无素材层、非级牌三种模式都不出 L4、关闭后退化为素材层、`text-only` 缺 label 报错而 `badge-only` 缺 label 合法）、classic 花阵数量（7 → 7 花阵 + 4 角标、A → 1 + 4）、classic 缺花阵规格即报错；包往返逐字节一致、错钥拒绝、改一字节即失败、签名必须匹配公钥、无密钥可读 header、截断/非包拒绝、缺素材与路径穿越在加载期就报错。
+覆盖：54 面编码唯一且闭合、级牌只在匹配点数命中、红桃级牌必须同时有 level + wild 两层、王永不级牌、无级牌态不出徽章、输出不得含外链/字体/位图、渲染确定性；文本层三态矩阵（`both` 两层都在、`badge-only` 无 text、`text-only` 无素材层、非级牌三种模式都不出 L4、关闭后退化为素材层、`text-only` 缺 label 报错而 `badge-only` 缺 label 合法）、classic 花阵数量（7 → 7 花阵 + 4 角标、A → 1 + 4）、classic 缺花阵规格即报错；角标倍率（1.0 与旧入口逐字节一致、2.4 倍时点数与花色同步放大且花色重排、classic 四角同样生效、越界拒绝）；包往返逐字节一致、错钥拒绝、改一字节即失败、签名必须匹配公钥、无密钥可读 header、截断/非包拒绝、缺素材与路径穿越在加载期就报错。
 
 ### 实测（2026-11-26）
 
@@ -452,7 +455,7 @@ gfdeck png target/preview/C2.svg -o cover-c2.png --scale 2
 | --- | --- | --- |
 | `gf_theme_load(pack_ptr, pack_len, pub_ptr, pub_len)` | 包字节 + 公钥 32B（`pub_len = 0` 跳过验签） | `{ok, themeId, version, name, license, layout, bytes, levelRank, faces, preview:[{code,svg}]}` |
 | `gf_theme_preview()` | — | `{ok, cards:[{code,svg}]}` |
-| `gf_theme_card(code_ptr, code_len, level_rank)` | 牌面编码 + 级牌点（`0` = 无级牌态） | `{ok, code, svg}` |
+| `gf_theme_card(code_ptr, code_len, level_rank, corner_pct)` | 牌面编码 + 级牌点（`0` = 无级牌态）+ 角标字号百分比（`0`/`100` = 原样） | `{ok, code, svg}` |
 | `gf_theme_back()` | — | `{ok, svg}` |
 | `gf_theme_unload()` | — | `1` |
 
@@ -465,8 +468,8 @@ new Uint8Array(ex.memory.buffer, ptr, packBytes.length).set(packBytes);
 const meta = JSON.parse(readStr(ex.gf_theme_load(ptr, packBytes.length, pubPtr, 32)));
 // meta.preview → [{code:'C2', svg:'<svg …>'}, …]，直接插进主题卡的四个 <div>
 
-// 2) 上桌逐张取（缓存键 (themeId, themeVersion, code, levelRank)）
-const card = JSON.parse(readStr(ex.gf_theme_card(codePtr, 2, levelRank)));
+// 2) 上桌逐张取（缓存键 (themeId, themeVersion, code, levelRank, cornerPct)）
+const card = JSON.parse(readStr(ex.gf_theme_card(codePtr, 2, levelRank, 240)));
 ```
 
 要点：
@@ -487,6 +490,54 @@ preview     0 ms（再算一次四张）
 错误公钥      拒绝（PackSignature）
 逐字节一致    wasm 的 C2 与 `gfdeck render --face C2 --level 2` 输出 2609 字节完全相同
 级牌落点      13 档逐档断言（2→K→A）：`data-level` 与 `data-leveled` 只命中该档，不串档
+角标倍率      浏览器 wasm 单张（106 张均值）：100% 0.018 ms / 240% 0.023 ms / 300% 0.015 ms，放大不吃性能
 ```
 
 体积涨的主要是验签（`ed25519-dalek` + `curve25519`）与 `serde_json`；若要压回去，下一步接 `wasm-opt -Oz`（当前机器未装）。
+
+### 14.6 角标字号可调（`FaceOptions.corner_scale`，2026-11-26）
+
+**为什么不做「整张 SVG 放大再裁切」**：手机/PC 上横排紧叠时，早先的做法是把整张 100×140 的牌按 350% 放大、只露左上角。结果是主题的底板圆角、描边、中央花阵层面**全被裁掉**，屏幕上只剩白底 + 一个点数，看着跟主题没关系——用户判断「这也不是默认主题」。正确做法是**在牌面内部只放大角标那一区**，底板/描边/花阵原地不动。
+
+API 形状：
+
+```rust
+pub struct FaceOptions {
+    pub level: Option<LevelState>,   // 本局级牌态，None = 不出 L4
+    pub corner_scale: f64,           // 角标倍率，1.0 = 主题原样；合法 0.6..=3.0
+}
+pub fn render_face_opts(theme, face, opts) -> Result<String, DeckError>;  // 新增
+pub fn render_face(theme, face, level)     -> Result<String, DeckError>;  // 保留，等价 corner_scale = 1.0
+```
+
+`corner_scale != 1.0` 时做什么（`render_normal_compact` / `render_normal_classic` 同一套口径）：
+
+1. `slots.corner_rank.scale` 与 `slots.corner_suit.scale` **同乘**倍率——点数与花色一起长大，只放大点数会显得头重脚轻；
+2. 放大后角标花色**重新定位**：`suit.y = rank.y + rank 素材高 × 新 scale + 间隙 × 倍率`（间隙基准 10 画布单位）。主题默认那点间距是按小字号排的，字号一大花色就被点数压住了；
+3. 中央花阵、底面、徽章、镜像角标的位置全部不动；右下镜像用同一个 scale，自动跟着放大。
+
+尺寸换算（canvas 500×700，牌面 100×140 CSS px，1 单位 = 0.2 px）：
+
+| 倍率 | 点数高（桌面 100×140） | 手机 70×96 |
+| --- | --- | --- |
+| 100%（主题原样） | ≈ 9 px | ≈ 6 px |
+| **220%**（客户端默认） | ≈ 26 px | ≈ 18 px |
+| 240% | ≈ 28 px | ≈ 20 px |
+| 300%（上限） | ≈ 34 px，开始压到中央花阵 | ≈ 24 px |
+
+**王没有角标层**：素材是整幅图案（冠 + 星），放大角标的机制对它无效；横排只露一条边时大小王分不出来。客户端在主题牌面上给王补一个文字角标（`小王` / `大王`，字号跟随同一个百分比），图案保留在底下，选中/出牌区看整张时仍然完整。
+
+边界与报错：
+
+- 倍率越界（`< 0.6`、`> 3.0`、`NaN`）→ `DeckError::FaceInvalid("corner_scale 越界（合法 0.6..=3.0）")`，不吃掉一张牌；
+- `corner_scale = 1.0` 与旧入口 `render_face` **逐字节一致**（测试 `corner_scale_one_is_byte_identical_to_plain_render` 卡住）；
+- 只影响渲染，**不进主题包**：`theme.json` 里那套 `slots.corner_*` 仍是主题作者定的基准值，客户端倍数覆盖在它之上。
+
+测试（`crates/deckart/tests/render.rs`，新增 4 条）：
+
+| 用例 | 判据 |
+| --- | --- |
+| `corner_scale_one_is_byte_identical_to_plain_render` | 倍率 1.0 = 旧入口逐字节一致 |
+| `corner_scale_enlarges_corner_and_reflows_suit` | L3/L2 首处 scale 都乘到 2.4；角标花色 y 下移 > 60 单位；底面层前 200 字节不动 |
+| `corner_scale_survives_classic_layout` | `layout = classic` 四角点数同样乘倍率 |
+| `corner_scale_rejects_out_of_range` | 0.1 / 0.0 / -1.0 / 4.0 / NaN 全部拒绝；0.6 与 3.0 边界可用 |

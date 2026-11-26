@@ -420,3 +420,159 @@ fn rendering_is_deterministic() {
     let b = render_face(&theme, face, level(3)).unwrap();
     assert_eq!(a, b, "同样输入必须逐字节一致");
 }
+
+// ---- 角标字号倍率 ----
+
+/// 抓某个图层里第一处 `scale(…)` 的数值。
+fn layer_scale(svg: &str, layer: &str) -> f64 {
+    let start = svg.find(layer).unwrap_or_else(|| panic!("缺图层 {layer}"));
+    let tail = &svg[start..];
+    let at = tail.find("scale(").expect("图层内应有 scale") + "scale(".len();
+    let end = at + tail[at..].find(')').expect("scale 应有右括号");
+    tail[at..end].parse().expect("scale 应是数字")
+}
+
+/// 抓某个图层最后一次 `translate(x y)` 的 y。
+fn layer_translate(svg: &str, layer: &str) -> (f64, f64) {
+    let start = svg.find(layer).unwrap_or_else(|| panic!("缺图层 {layer}"));
+    let tail = &svg[start..];
+    let at = tail.find("translate(").expect("图层内应有 translate") + "translate(".len();
+    let end = at + tail[at..].find(')').expect("translate 应有右括号");
+    let mut it = tail[at..end].split_whitespace().map(|v| {
+        v.parse::<f64>()
+            .unwrap_or_else(|_| panic!("translate 应有数字，得到 {v}"))
+    });
+    (it.next().unwrap(), it.next().unwrap())
+}
+
+#[test]
+fn corner_scale_one_is_byte_identical_to_plain_render() {
+    let theme = theme();
+    let face = Face::normal(Suit::Spade, Rank::new(4).unwrap());
+    let plain = render_face(&theme, face, level(2)).unwrap();
+    let with_one = gf_deckart::render_face_opts(
+        &theme,
+        face,
+        gf_deckart::FaceOptions {
+            level: level(2),
+            corner_scale: 1.0,
+        },
+    )
+    .unwrap();
+    assert_eq!(plain, with_one, "倍率 1.0 必须与旧入口逐字节一致（向后兼容）");
+}
+
+#[test]
+fn corner_scale_enlarges_corner_and_reflows_suit() {
+    let theme = theme();
+    let face = Face::normal(Suit::Spade, Rank::new(4).unwrap());
+    let base = render_face(&theme, face, None).unwrap();
+    let big = gf_deckart::render_face_opts(
+        &theme,
+        face,
+        gf_deckart::FaceOptions {
+            level: None,
+            corner_scale: 2.4,
+        },
+    )
+    .unwrap();
+
+    let rank_base = layer_scale(&base, "<g id=\"L3-rank\">");
+    let rank_big = layer_scale(&big, "<g id=\"L3-rank\">");
+    assert!(
+        (rank_big / rank_base - 2.4).abs() < 1e-6,
+        "点数应放大 2.4 倍：{rank_base} → {rank_big}"
+    );
+    let suit_base = layer_scale(&base, "<g id=\"L2-suit\">");
+    let suit_big = layer_scale(&big, "<g id=\"L2-suit\">");
+    assert!(
+        (suit_big / suit_base - 2.4).abs() < 1e-6,
+        "角标花色应同步放大：{suit_base} → {suit_big}"
+    );
+
+    // 花色要重新排在放大后的点数下方，不能被压住
+    let (_, suit_y_base) = layer_translate(&base, "<g id=\"L2-suit\">");
+    let (_, suit_y_big) = layer_translate(&big, "<g id=\"L2-suit\">");
+    assert!(
+        suit_y_big > suit_y_base + 60.0,
+        "花色 y 应随大字重排：{suit_y_base} → {suit_y_big}"
+    );
+
+    // 底框与中央花阵不跟着放大（这才是「只放大角标」的意思）
+    let center_base = base.matches("scale(").count();
+    let center_big = big.matches("scale(").count();
+    assert_eq!(center_base, center_big, "图层结构不应变化");
+    let header = "<g id=\"L1-base\">";
+    let base_layer = &base[base.find(header).unwrap()..];
+    let base_layer_big = &big[big.find(header).unwrap()..];
+    let cut = base_layer.len().min(200);
+    assert_eq!(
+        &base_layer[..cut],
+        &base_layer_big[..cut],
+        "底面层必须原样不动"
+    );
+}
+
+#[test]
+fn corner_scale_survives_classic_layout() {
+    let src = theme();
+    let mut meta = src.meta().clone();
+    meta.layout = gf_deckart::Layout::Classic;
+    let assets: std::collections::HashMap<String, String> = meta
+        .asset_paths()
+        .iter()
+        .map(|p| (p.clone(), src.asset(p).to_string()))
+        .collect();
+    let theme = Theme::from_parts(meta, assets, "test:classic-corner").unwrap();
+
+    let face = Face::normal(Suit::Heart, Rank::new(10).unwrap());
+    let base = render_face(&theme, face, None).unwrap();
+    let big = gf_deckart::render_face_opts(
+        &theme,
+        face,
+        gf_deckart::FaceOptions {
+            level: None,
+            corner_scale: 2.0,
+        },
+    )
+    .unwrap();
+    let rank_base = layer_scale(&base, "<g id=\"L3-rank\">");
+    let rank_big = layer_scale(&big, "<g id=\"L3-rank\">");
+    assert!((rank_big / rank_base - 2.0).abs() < 1e-6, "四角点数应为 2 倍");
+}
+
+#[test]
+fn corner_scale_rejects_out_of_range() {
+    let theme = theme();
+    let face = Face::normal(Suit::Diamond, Rank::new(3).unwrap());
+    for bad in [0.1, 0.0, -1.0, 4.0, f64::NAN] {
+        let err = gf_deckart::render_face_opts(
+            &theme,
+            face,
+            gf_deckart::FaceOptions {
+                level: None,
+                corner_scale: bad,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, gf_deckart::DeckError::FaceInvalid(_)),
+            "倍率 {bad} 应被拒"
+        );
+    }
+    // 边界值本身可用
+    for ok in [gf_deckart::CORNER_SCALE_MIN, gf_deckart::CORNER_SCALE_MAX] {
+        assert!(
+            gf_deckart::render_face_opts(
+                &theme,
+                face,
+                gf_deckart::FaceOptions {
+                    level: None,
+                    corner_scale: ok,
+                },
+            )
+            .is_ok(),
+            "边界 {ok} 应可用"
+        );
+    }
+}

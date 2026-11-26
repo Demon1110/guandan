@@ -272,8 +272,29 @@ header .dot { opacity: .5; }
   padding: 0;
   border-radius: 6px;
   overflow: hidden;
+  position: relative;
 }
 .card.themed svg { width: 100%; height: 100%; display: block; }
+/* 主题牌面里的王：素材是整幅图案没有角标，补一层文字角标，字号跟角标字号一起走 */
+.card.themed .joker-tag {
+  position: absolute;
+  left: 4px;
+  top: 5px;
+  padding: 2px 3px 3px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.05;
+  font-weight: 700;
+  color: #16181a;
+  background: rgba(255, 255, 255, .94);
+  border-radius: 5px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .06);
+  pointer-events: none;
+}
+.card.themed.red .joker-tag { color: #c0392b; }
+.card.themed .joker-tag b { font-size: 1em; }
+.card.themed .joker-tag span { font-size: .9em; }
 .card.themed.picked {
   outline: none;
   box-shadow: 0 10px 22px rgba(0, 0, 0, .45);
@@ -312,7 +333,8 @@ header .dot { opacity: .5; }
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 20;
+  /* 手牌按 index 设了 1..N 的 z-index（叠放顺序），弹窗必须压在所有牌上面，否则会被牌盖住 */
+  z-index: 60;
 }
 .modal-box {
   width: min(460px, 92vw);
@@ -331,6 +353,10 @@ header .dot { opacity: .5; }
 
 .setting-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px dashed var(--line); font-size: 13px; }
 .setting-row select { padding: 6px 8px; border-radius: 8px; background: #0b1f18; color: var(--text); border: 1px solid var(--line); font: inherit; }
+/* 角标字号滑块：占住一行右侧，值用等宽数字别抖 */
+.setting-row input[type="range"] { width: 150px; accent-color: #f2c14e; }
+#set-corner-val { color: #f2c14e; font-variant-numeric: tabular-nums; }
+.modal-box code { background: rgba(255, 255, 255, .08); padding: 0 4px; border-radius: 4px; }
 .switch { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
 
 /* ---------- 窄屏（笔记本半屏 / 手机） ---------- */
@@ -378,9 +404,11 @@ header .dot { opacity: .5; }
 
 
 
-/* 变体：横向紧叠时只放大左上角标区（整张 SVG 放大 2.3 倍后裁切），点数才读得清 */
+/* 横排紧叠：整张牌按 1:1 显示，点数/花色的大小由 deckart 在牌面内部重排（FaceOptions.corner_scale）。
+   早先那套「整张 SVG 放大 350% 再裁切」会把主题的底板、描边、中央花阵一起裁掉，
+   看着像一张白底字卡，等于没用上主题——已废弃。 */
 .hand.fan .card.themed { position: relative; overflow: hidden; }
-.hand.fan .card.themed svg { position: absolute; top: 0; left: 0; width: 350%; height: 350%; }
+.hand.fan .card.themed svg { width: 100%; height: 100%; }
 
 /* 手牌横排的横向滚动条收细，别在牌桌下方露出粗条 */
 .hand.fan { scrollbar-width: thin; }
@@ -398,7 +426,6 @@ header .dot { opacity: .5; }
 @media (max-width: 760px) {
   .hand.fan .card { width: 70px; height: 96px; }
   .hand.fan .card + .card { margin: 0 0 0 -48px; }
-  .hand.fan .card.themed svg { width: 220%; height: 220%; }
   .hand.fan { gap: 5px; padding: 6px 2px; }
   .hand-area:has(.hand.fan) .hand-head { padding-left: 96px; }
   header { padding: 6px 10px; gap: 6px; flex-wrap: wrap; }

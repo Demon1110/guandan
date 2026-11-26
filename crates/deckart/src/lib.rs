@@ -33,7 +33,10 @@ pub mod png;
 
 pub use card::{all_faces, Face, Rank, Suit};
 pub use error::DeckError;
-pub use render::{render_all, render_back, render_face, render_preview, LevelState, RenderedFace};
+pub use render::{
+    render_all, render_all_opts, render_back, render_face, render_face_opts, render_preview,
+    FaceOptions, LevelState, RenderedFace, CORNER_SCALE_MAX, CORNER_SCALE_MIN,
+};
 pub use theme::{
     BadgeMode, ClassicSpec, LabelText, Layout, PreviewSpec, TextLayer, Theme, ThemeMeta,
 };

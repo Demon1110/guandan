@@ -651,7 +651,7 @@ pub extern "C" fn gf_l0_probe(seat: u8) -> *mut u8 {
 // `gf-deckart` 现场生成，与 CLI `gfdeck render` 逐字节一致。三条导出：
 // - `gf_theme_load(pack, pub)`  加载主题包（公钥长度 0 = 跳过验签）
 // - `gf_theme_preview()`        取「主题选择界面」要的那几张（`theme.json` 的 `preview` 配）
-// - `gf_theme_card(code, level)` 取任意一张（牌桌用，`level` 由服务端下发）
+// - `gf_theme_card(code, level, cornerPct)` 取任意一张（牌桌用，`level` 由服务端下发）
 
 static DECK: Global<Option<gf_deckart::Theme>> = Global(UnsafeCell::new(None));
 
@@ -757,13 +757,15 @@ pub extern "C" fn gf_theme_preview() -> *mut u8 {
     }
 }
 
-/// 单张牌面。`level_rank` 传 0 表示「不带级牌态」（主题选择页看纯牌面时用）。
-/// 返回 `{"ok":true,"code","svg"}`。缓存键建议 `(themeId, themeVersion, code, levelRank)`。
+/// 单张牌面。`level_rank` 传 0 表示「不带级牌态」（主题选择页看纯牌面时用）；
+/// `corner_pct` 是角标字号百分比（100 = 主题原样，0 也按 100 处理）。
+/// 返回 `{"ok":true,"code","svg"}`。缓存键建议 `(themeId, themeVersion, code, levelRank, cornerPct)`。
 #[no_mangle]
 pub unsafe extern "C" fn gf_theme_card(
     code_ptr: *const u8,
     code_len: usize,
     level_rank: u8,
+    corner_pct: u8,
 ) -> *mut u8 {
     let Some(t) = deck() else {
         return theme_err("no theme loaded");
@@ -784,7 +786,18 @@ pub unsafe extern "C" fn gf_theme_card(
             Err(e) => return theme_err(e),
         }
     };
-    match gf_deckart::render_face(t, face, level) {
+    match gf_deckart::render_face_opts(
+        t,
+        face,
+        gf_deckart::FaceOptions {
+            level,
+            corner_scale: if corner_pct == 0 || corner_pct == 100 {
+                1.0
+            } else {
+                f64::from(corner_pct) / 100.0
+            },
+        },
+    ) {
         Ok(svg) => out(format!(
             "{{\"ok\":true,\"code\":{},\"svg\":{}}}",
             json_str(&face.code()),

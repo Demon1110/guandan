@@ -148,7 +148,12 @@
         <span>动作日志</span>
         <label class="switch"><input type="checkbox" id="set-log" checked /> <span>显示</span></label>
       </div>
+      <div class="setting-row">
+        <span>角标字号 <b id="set-corner-val">220%</b></span>
+        <input type="range" id="set-corner" min="100" max="300" step="10" value="220" />
+      </div>
       <p class="hint">bot 档位在大厅选，开局后锁定（bot 在发牌时绑定）。</p>
+      <p class="hint">角标字号只在主题皮肤（<code>?theme=1</code>）下生效：牌面里的点数和花色会按这个比例重新排版，牌桌底色与描边不受影响。</p>
       <div class="modal-actions">
         <button id="set-clear" class="danger">清空当前存档</button>
         <button id="set-reload">刷新页面</button>

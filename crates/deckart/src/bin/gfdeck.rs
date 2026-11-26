@@ -52,8 +52,8 @@ fn print_usage() {
     println!(
         "gfdeck {}\n\
          子命令：\n\
-         \x20 render      --theme <dir> --face <H8|JOKER-B> [--level <A|2..K>] -o <file>\n\
-         \x20 render-all  --theme <dir> [--level <rank>] -o <dir>\n\
+         \x20 render      --theme <dir> --face <H8|JOKER-B> [--level <A|2..K>] [--corner 260] -o <file>\n\
+         \x20 render-all  --theme <dir> [--level <rank>] [--corner <pct>] -o <dir>\n\
          \x20 pack        <theme-dir> -o <file.gfdeck> [--key-file <f>] [--key-id <id>] [--sign-key <hex32>]\n\
          \x20 unpack      <file.gfdeck> -o <dir> [--key-file <f>] [--verify-key <hex64>]\n\
          \x20 info        <file.gfdeck>\n\
@@ -86,24 +86,47 @@ fn parse_level(args: &[String]) -> Result<Option<LevelState>, DeckError> {
     }
 }
 
+/// 角标字号，按百分比给（100 = 主题原样，260 = 2.6 倍）。缺省 100。
+fn parse_corner(args: &[String]) -> Result<f64, DeckError> {
+    match opt(args, "--corner") {
+        None => Ok(1.0),
+        Some(v) => {
+            let pct: f64 = v
+                .trim_end_matches('%')
+                .parse()
+                .map_err(|_| DeckError::FaceInvalid(format!("--corner 无效: {v}")))?;
+            Ok(pct / 100.0)
+        }
+    }
+}
+
 fn cmd_render(args: &[String]) -> Result<(), DeckError> {
     let theme = Theme::load_dir(Path::new(&require(args, "--theme")?))?;
     let face = Face::parse(&require(args, "--face")?)?;
     let level = parse_level(args)?;
+    let corner = parse_corner(args)?;
     let out = PathBuf::from(require(args, "-o")?);
     if let Some(parent) = out.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)?;
         }
     }
-    let svg = gf_deckart::render_face(&theme, face, level)?;
+    let svg = gf_deckart::render_face_opts(
+        &theme,
+        face,
+        gf_deckart::FaceOptions {
+            level,
+            corner_scale: corner,
+        },
+    )?;
     std::fs::write(&out, &svg)?;
     println!(
-        "{} → {}（{} 字节，级别 {}）",
+        "{} → {}（{} 字节，级别 {}，角标 {:.0}%）",
         face.code(),
         out.display(),
         svg.len(),
-        level.map(|l| l.level_rank.label()).unwrap_or("none")
+        level.map(|l| l.level_rank.label()).unwrap_or("none"),
+        corner * 100.0
     );
     Ok(())
 }
@@ -111,11 +134,16 @@ fn cmd_render(args: &[String]) -> Result<(), DeckError> {
 fn cmd_render_all(args: &[String]) -> Result<(), DeckError> {
     let theme = Theme::load_dir(Path::new(&require(args, "--theme")?))?;
     let level = parse_level(args)?;
+    let corner = parse_corner(args)?;
     let out_dir = PathBuf::from(require(args, "-o")?);
     std::fs::create_dir_all(&out_dir)?;
 
     let mut manifest_faces = Vec::new();
-    for rendered in gf_deckart::render_all(&theme, level)? {
+    let opts = gf_deckart::FaceOptions {
+        level,
+        corner_scale: corner,
+    };
+    for rendered in gf_deckart::render_all_opts(&theme, opts)? {
         let file = format!("{}.svg", rendered.code);
         std::fs::write(out_dir.join(&file), &rendered.svg)?;
         manifest_faces.push(format!(
@@ -129,20 +157,31 @@ fn cmd_render_all(args: &[String]) -> Result<(), DeckError> {
     std::fs::write(out_dir.join("BACK.svg"), &back_svg)?;
 
     let manifest = format!(
-        "{{\n  \"themeId\": \"{}\",\n  \"themeVersion\": {},\n  \"level\": \"{}\",\n  \"layout\": \"{:?}\",\n  \"faces\": [\n{}\n  ],\n  \"back\": {{\"file\": \"BACK.svg\", \"sha256\": \"{}\"}}\n}}\n",
+        "{{\n  \"themeId\": \"{}\",\n  \"themeVersion\": {},\n  \"level\": \"{}\",\n  \"cornerScale\": {},\n  \"layout\": \"{:?}\",\n  \"faces\": [\n{}\n  ],\n  \"back\": {{\"file\": \"BACK.svg\", \"sha256\": \"{}\"}}\n}}\n",
         theme.meta().id,
         theme.meta().version,
         level.map(|l| l.level_rank.label()).unwrap_or("none"),
+        num_json(corner),
         theme.meta().layout,
         manifest_faces.join(",\n"),
         hex(&Sha256::digest(back_svg.as_bytes()))
     );
     std::fs::write(out_dir.join("manifest.json"), manifest)?;
     println!(
-        "55 张（54 面 + 牌背）已写入 {}，manifest.json 已生成",
-        out_dir.display()
+        "55 张（54 面 + 牌背）已写入 {}，角标 {:.0}%，manifest.json 已生成",
+        out_dir.display(),
+        corner * 100.0
     );
     Ok(())
+}
+
+/// 极简数值序列化：整数不带小数点，其余保留 2 位，避免 manifest 里出现 `1.0000000000000002`。
+fn num_json(v: f64) -> String {
+    if (v - v.round()).abs() < 1e-9 {
+        format!("{}", v.round() as i64)
+    } else {
+        format!("{v:.2}")
+    }
 }
 
 fn load_key(args: &[String]) -> Result<([u8; 32], String), DeckError> {
