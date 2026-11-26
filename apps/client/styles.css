@@ -110,9 +110,9 @@ header .dot { opacity: .5; }
 .seat .tag.finished { background: #24405a; color: #cfe4ff; }
 
 .slot-top { top: 16px; left: 50%; transform: translateX(-50%); }
-.slot-left { left: 16px; top: 34%; }
+.slot-left { left: 16px; top: 22%; }
 .slot-right { right: 16px; top: 34%; }
-.slot-bottom { left: 16px; bottom: 300px; }
+.slot-bottom { left: 16px; top: calc(22% + 180px); min-height: 92px; }
 
 /* 左上角：双方级牌 + 打级方高亮 */
 .scoreboard {
@@ -159,7 +159,7 @@ header .dot { opacity: .5; }
 .play-zone[data-rel="0"] { left: 50%; bottom: 292px; transform: translateX(-50%); }
 .play-zone[data-rel="1"] { right: 10px; top: calc(30% + 132px); width: min(210px, 32%); transform: none; }
 .play-zone[data-rel="2"] { left: 50%; top: 134px; transform: translateX(-50%); }
-.play-zone[data-rel="3"] { left: 10px; top: calc(30% + 132px); width: min(210px, 32%); transform: none; }
+.play-zone[data-rel="3"] { left: 10px; top: calc(22% + 92px); width: min(210px, 32%); transform: none; }
 .play-who { font-size: 11px; letter-spacing: 1px; color: var(--muted); margin-bottom: 5px; }
 .last-play { min-height: 36px; display: flex; flex-wrap: wrap; gap: 5px; justify-content: center; align-items: center; }
 .last-play .fold-hint { font-size: 11px; color: var(--muted); cursor: pointer; }
@@ -264,6 +264,30 @@ header .dot { opacity: .5; }
 }
 .mini-card.red { color: #c0392b; }
 
+/* ---------- 牌面主题（gf-deckart 运行时合成） ---------- */
+/* 整张牌面就是一段 SVG：去掉 CSS 画的边框/底色/内边距，让 SVG 自己撑满 */
+.card.themed {
+  background: none;
+  border: none;
+  padding: 0;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.card.themed svg { width: 100%; height: 100%; display: block; }
+.card.themed.picked {
+  outline: none;
+  box-shadow: 0 10px 22px rgba(0, 0, 0, .45);
+  transform: translateX(9px);
+}
+/* 手牌横排紧叠：一条行、左→右牌力降序，每张只露左上角标那一条 */
+.hand.fan { flex-direction: column; align-items: center; justify-content: center; padding: 10px 4px 8px; gap: 6px; min-height: auto; }
+.hand.fan .hand-col { flex-direction: row; padding: 0; border: none; background: none; }
+.hand.fan .card { width: 100px; height: 140px; border-radius: 8px; }
+.hand.fan .card + .card { margin: 0 0 0 -44px; }
+.hand.fan .card.picked { transform: translateY(-18px); }
+.mini-card.themed { padding: 0; border: none; background: none; width: 34px; height: 48px; }
+.mini-card.themed svg { width: 100%; height: 100%; display: block; border-radius: 4px; }
+
 /* ---------- 侧栏日志 ---------- */
 .side {
   width: 280px;
@@ -352,4 +376,43 @@ header .dot { opacity: .5; }
   .hand { gap: 5px; }
 }
 
+
+
+/* 变体：横向紧叠时只放大左上角标区（整张 SVG 放大 2.3 倍后裁切），点数才读得清 */
+.hand.fan .card.themed { position: relative; overflow: hidden; }
+.hand.fan .card.themed svg { position: absolute; top: 0; left: 0; width: 350%; height: 350%; }
+
+/* 手牌横排的横向滚动条收细，别在牌桌下方露出粗条 */
+.hand.fan { scrollbar-width: thin; }
+.hand.fan::-webkit-scrollbar { height: 6px; }
+.hand.fan::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, .22); border-radius: 3px; }
+
+/* 横排叠放的接缝：左缘一道内阴影，避免裁切后几张白牌糊成一条白带 */
+.hand.fan .card.themed { box-shadow: inset 7px 0 9px -7px rgba(0, 0, 0, .45); }
+
+
+/* 横排模式下「手牌 N 张」往右让开左下座位卡，别贴到卡面上 */
+.hand-area:has(.hand.fan) .hand-head { padding-left: 186px; }
+
+/* 窄屏（手机/窄窗）：手牌 13 张一行折两行，座位卡收成小卡片，牌桌钉在一屏内不滚 */
+@media (max-width: 760px) {
+  .hand.fan .card { width: 70px; height: 96px; }
+  .hand.fan .card + .card { margin: 0 0 0 -48px; }
+  .hand.fan .card.themed svg { width: 220%; height: 220%; }
+  .hand.fan { gap: 5px; padding: 6px 2px; }
+  .hand-area:has(.hand.fan) .hand-head { padding-left: 96px; }
+  header { padding: 6px 10px; gap: 6px; flex-wrap: wrap; }
+  header .title { font-size: 15px; }
+  .meta { font-size: 10px; flex-wrap: nowrap; overflow: hidden; white-space: nowrap; max-width: 100%; }
+  .hash-span { display: none; }
+  .table-wrap { height: calc(100svh - 96px); padding: 6px 8px; }
+  .board { min-height: 0; padding: 8px; }
+  .seat { width: 96px; padding: 6px 8px; border-radius: 9px; font-size: 10px; }
+  .slot-left { left: 8px; top: 10%; }
+  .slot-right { right: 8px; top: 10%; }
+  .slot-bottom { left: 8px; top: calc(10% + 152px); bottom: auto; min-height: 0; }
+  .play-zone[data-rel="3"] { left: 8px; top: calc(10% + 84px); }
+  .turn-actions { margin-bottom: 4px; }
+  .arrange-bar { margin-top: 4px; }
+}
 

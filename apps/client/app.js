@@ -4,6 +4,13 @@
 const RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
 const SUITS = ['♠', '♥', '♦', '♣'];
 const JOKER_BASE = 104;
+// 横排手牌：一行最多几张，按屏宽取值，多了折行（27 张在 1600 宽上正好 14 + 13）
+function fanPerRow() {
+  const w = window.innerWidth;
+  if (w < 700) return 7;
+  if (w < 1100) return 10;
+  return 14;
+}
 
 function cardLabel(id) {
   if (id >= JOKER_BASE) return id < JOKER_BASE + 2 ? '小王' : '大王';
@@ -146,6 +153,82 @@ function withCards(cards, fn) {
   }
 }
 
+// ---------- 牌面主题（gf-deckart 在 wasm 里现场合成） ----------
+//
+// `.gfdeck` 只装 theme.json + 23 个分层素材；这里解密后逐张要 SVG，与 CLI 输出逐字节一致。
+// 加载失败（包损坏 / 签名不符）一律回退到原来的字卡渲染，牌桌不阻塞。
+
+const THEME_PACK_URL = 'themes/defaults.gfdeck';
+// 开发期签名公钥（私钥种子全 0x11）；正式分发换成后台下发的公钥。
+const THEME_PUBKEY = 'd04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737';
+const CODE_SUIT = ['S', 'H', 'D', 'C'];
+const CODE_RANK = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
+
+function faceCode(id) {
+  if (id >= JOKER_BASE) return id >= JOKER_BASE + 2 ? 'JOKER-B' : 'JOKER-S';
+  const base = Math.floor(id / 2);
+  return CODE_SUIT[Math.floor(base / 13)] + CODE_RANK[base % 13];
+}
+
+function hexToBytes(hex) {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i += 1) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+
+function withBytes(bytes, fn) {
+  const ptr = ex.gf_alloc(bytes.length);
+  new Uint8Array(ex.memory.buffer, ptr, bytes.length).set(bytes);
+  try {
+    return fn(ptr, bytes.length);
+  } finally {
+    ex.gf_mem_free(ptr, bytes.length);
+  }
+}
+
+const theme = {
+  loaded: false,
+  meta: null,
+  cache: new Map(),
+  stats: { cards: 0, ms: 0 },
+
+  async load() {
+    if (this.loaded || !ex || !ex.gf_theme_load) return this.loaded;
+    try {
+      const buf = new Uint8Array(await (await fetch(THEME_PACK_URL)).arrayBuffer());
+      const pub = hexToBytes(THEME_PUBKEY);
+      const r = JSON.parse(withBytes(buf, (ptr, len) => withBytes(pub, (pp, plen) => cstr(ex.gf_theme_load(ptr, len, pp, plen)))));
+      if (!r.ok) {
+        log(`主题加载失败：${r.error}（回退字卡）`);
+        return false;
+      }
+      this.meta = r;
+      this.loaded = true;
+      log(`主题 ${r.themeId}@${r.version}「${r.name}」已载入：${r.bytes} 字节、${r.layout}、预览 ${r.preview.length} 张`);
+      return true;
+    } catch (e) {
+      log(`主题加载异常：${e.message}（回退字卡）`);
+      return false;
+    }
+  },
+
+  /** 单张牌面 SVG（`levelRank` 传 0 = 不带级牌态），按 (id, levelRank) 缓存。 */
+  svg(id, levelRank) {
+    if (!this.loaded) return null;
+    const key = `${id}@${levelRank}`;
+    if (this.cache.has(key)) return this.cache.get(key);
+    const code = new TextEncoder().encode(faceCode(id));
+    const t0 = performance.now();
+    const r = JSON.parse(withBytes(code, (ptr, len) => cstr(ex.gf_theme_card(ptr, len, levelRank))));
+    this.stats.cards += 1;
+    this.stats.ms += performance.now() - t0;
+    const svg = r.ok ? r.svg : null;
+    if (!r.ok) this.lastError = r.error;
+    this.cache.set(key, svg);
+    return svg;
+  },
+};
+
 const room = {
   create(seedHi, seedLo, humanMask, level) {
     // gf_room_new_level 是新增导出；旧产物没有它时退化为默认 L2。
@@ -249,6 +332,10 @@ const state = {
   // 每个花色当前展示到第几个同花顺窗口（多点几次轮换方案）。
   flushCursor: {},
   previewCache: null,
+  // 牌面皮肤：true = 用主题包 SVG（wasm 现场合成），false = 原来的 DOM 字卡
+  themeSkin: false,
+  // 手牌布局：cols（同点数一列纵向叠放，现状）| fan（横排紧叠，露左上角标）
+  handStyle: 'cols',
 };
 
 const el = (id) => document.getElementById(id);
@@ -267,6 +354,12 @@ function seedFromQuery() {
   state.humanMask = 1 << state.humanSeat;
   const level = Number(q.get('level') ?? 2);
   state.level = level === 0 || level === 1 ? level : 2;
+  // 实验开关（只走查询参数，不进设置面板）：?theme=1 用主题 SVG 牌面；?hand=fan 手牌横排紧叠
+  state.themeSkin = q.get('theme') === '1';
+  // 主题牌面只能配横排：44×62 的纵列叠放会把整张牌缩到角标只有 5px（已截图验证糊成白带）。
+  // 所以开了主题又没显式给 hand 参数时，默认走 fan。
+  const handParam = q.get('hand');
+  state.handStyle = handParam === 'fan' || (handParam === null && state.themeSkin) ? 'fan' : 'cols';
   return true;
 }
 
@@ -430,6 +523,8 @@ function renderPlayZone() {
   const cards = [...last.cards].sort((a, b) => columnKey(b, levelRankIndex()) - columnKey(a, levelRankIndex())
     || suitIndexOf(a) - suitIndexOf(b));
   box.innerHTML = cards.map((id) => {
+    const svg = state.themeSkin ? theme.svg(id, levelRankIndex() + 1) : null;
+    if (svg) return `<span class="mini-card themed">${svg}</span>`;
     const f = cardFace(id);
     return `<span class="mini-card${f.red ? ' red' : ''}">${f.rank}${f.suit}</span>`;
   }).join('');
@@ -470,7 +565,14 @@ function cardButton(id, index, myTurn) {
   b.className = `card${f.red ? ' red' : ''}${f.joker ? ' joker' : ''}${state.selected.has(id) ? ' picked' : ''}${myTurn ? '' : ' dim'}`;
   b.style.zIndex = String(index + 1);
   b.dataset.cid = String(id);
-  b.innerHTML = `<span class="corner"><b>${f.rank}</b><span class="suit">${f.suit}</span></span>${state.showIds ? `<span class="cid">${id}</span>` : ''}`;
+  const svg = state.themeSkin ? theme.svg(id, levelRankIndex() + 1) : null;
+  if (svg) {
+    // 整张牌面交给主题：角标、花阵、级牌胶囊、逢人配都在 SVG 里
+    b.classList.add('themed');
+    b.innerHTML = `${svg}${state.showIds ? `<span class="cid">${id}</span>` : ''}`;
+  } else {
+    b.innerHTML = `<span class="corner"><b>${f.rank}</b><span class="suit">${f.suit}</span></span>${state.showIds ? `<span class="cid">${id}</span>` : ''}`;
+  }
   return b;
 }
 
@@ -508,21 +610,45 @@ function renderHand() {
 
   const left = state.arranged.filter((g) => g.layout === 'left');
   const right = state.arranged.filter((g) => g.layout === 'right');
-  left.forEach((g) => pushColumn(box, g.cards, myTurn, { side: 'left', index: state.arranged.indexOf(g), patternId: g.patternId }));
+  const fan = state.handStyle === 'fan';
+  box.classList.toggle('fan', fan);
+  if (fan) {
+    // 横排紧叠：左→右按牌力降序，理牌组仍在两端（只是不再单独框列）。
+    // 牌大一号后一行放不下 27 张：按最多 13 张一行折成 1~3 行（手机上也不会挤成一条白带）。
+    const ordered = [
+      ...left.flatMap((g) => sortedCards(g.cards)),
+      ...sortedCards(cards.filter((id) => !groupedIds.has(id))),
+      ...right.flatMap((g) => sortedCards(g.cards)),
+    ];
+    const rows = Math.min(2, Math.max(1, Math.ceil(ordered.length / fanPerRow())));
+    const per = Math.ceil(ordered.length / rows);
+    let idx = 0;
+    for (let r = 0; r < rows; r += 1) {
+      const row = document.createElement('div');
+      row.className = 'hand-col fan-row';
+      for (const id of ordered.slice(r * per, (r + 1) * per)) {
+        row.appendChild(cardButton(id, idx, myTurn));
+        idx += 1;
+      }
+      if (row.childElementCount > 0) box.appendChild(row);
+    }
+  } else {
+    left.forEach((g) => pushColumn(box, g.cards, myTurn, { side: 'left', index: state.arranged.indexOf(g), patternId: g.patternId }));
 
-  // 未理的牌仍按同点数一列、列键降序（大王、小王、级牌、A、K…2）。
-  const cols = new Map();
-  for (const id of cards) {
-    if (groupedIds.has(id)) continue;
-    const key = columnKey(id, levelIdx);
-    if (!cols.has(key)) cols.set(key, []);
-    cols.get(key).push(id);
-  }
-  for (const key of [...cols.keys()].sort((a, b) => b - a)) {
-    pushColumn(box, cols.get(key), myTurn, null);
-  }
+    // 未理的牌仍按同点数一列、列键降序（大王、小王、级牌、A、K…2）。
+    const cols = new Map();
+    for (const id of cards) {
+      if (groupedIds.has(id)) continue;
+      const key = columnKey(id, levelIdx);
+      if (!cols.has(key)) cols.set(key, []);
+      cols.get(key).push(id);
+    }
+    for (const key of [...cols.keys()].sort((a, b) => b - a)) {
+      pushColumn(box, cols.get(key), myTurn, null);
+    }
 
-  right.forEach((g) => pushColumn(box, g.cards, myTurn, { side: 'right', index: state.arranged.indexOf(g), patternId: g.patternId }));
+    right.forEach((g) => pushColumn(box, g.cards, myTurn, { side: 'right', index: state.arranged.indexOf(g), patternId: g.patternId }));
+  }
 
   el('hand-count').textContent = `手牌 ${cards.length} 张`;
   syncSuitTabs(cards, groupedIds);
@@ -936,6 +1062,8 @@ async function startGame() {
   state.waitingSeat = null;
   state.phase = 'play';
   el('log').innerHTML = '';
+  // 牌面主题：包损坏 / 签名不符时只回退字卡，不影响开局（日志清空后再载入，避免提示被清掉）
+  if (state.themeSkin) await theme.load();
 
   const saved = await loadMatch(state.db, state.matchId);
   const acts = await loadActions(state.db, state.matchId);
@@ -1197,5 +1325,5 @@ init().catch((e) => {
 
 // 调试钩子：URL 带 debug=1 时可从控制台看内部状态（不影响正常路径）。
 if (location.search.includes('debug')) {
-  window.__gd = { state, room, currentLegal, previewSelection };
+  window.__gd = { state, room, currentLegal, previewSelection, theme, get ex() { return ex; } };
 }

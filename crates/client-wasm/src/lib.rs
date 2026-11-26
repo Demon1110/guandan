@@ -785,7 +785,11 @@ pub unsafe extern "C" fn gf_theme_card(
         }
     };
     match gf_deckart::render_face(t, face, level) {
-        Ok(svg) => out(card_json(&face.code(), &svg)),
+        Ok(svg) => out(format!(
+            "{{\"ok\":true,\"code\":{},\"svg\":{}}}",
+            json_str(&face.code()),
+            json_str(&svg)
+        )),
         Err(e) => theme_err(e),
     }
 }
