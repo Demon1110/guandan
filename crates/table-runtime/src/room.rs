@@ -409,6 +409,13 @@ impl Room {
         self.state.as_ref().ok_or(RoomError::NotStarted)
     }
 
+    /// 当前行动窗口的截止时刻（虚拟时钟毫秒）；未开窗为 `None`。
+    ///
+    /// 服务端广播 `TurnChangedEvent.deadlineMs` 时读这个值，客户端按它画倒计时。
+    pub fn turn_deadline_ms(&self) -> Option<u64> {
+        self.turn_deadline_ms
+    }
+
     /// 引擎句柄（只读；供服务端自证、客户端本地副本重放、测试使用）。
     pub fn engine(&self) -> &M0Engine {
         &self.engine

@@ -1,6 +1,9 @@
 // 掼蛋 M1 本地房间 · 表现层
 // 牌面 id 编码与引擎一致：`(suit × 13 + rank) × 2 + copy`，suit 0..3 = ♠♥♦♣，rank 0..12 = 2..A；
 // 王 id 从 104 起：104/105 小王，106/107 大王（两副牌）。
+// 点数标签表，自然序 2→A。**全文件只有这一份点数表**：牌编码的点数段、引擎
+// `round.level`（`levelTable.ranks` 的档位下标）都直接拿它当下标取标签；
+// 只有跨进主题（deckart `Rank` 编号 1=A、2=2…13=K）时才由 `rankCode()` 转一次。
 const RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
 const SUITS = ['♠', '♥', '♦', '♣'];
 const JOKER_BASE = 104;
@@ -27,15 +30,30 @@ function cardFace(id) {
   return { rank: RANKS[base % 13], suit: SUITS[suit], red: suit === 1 || suit === 2, joker: false };
 }
 
-// 手牌列序：大王 > 小王 > 级牌 > A > K > … > 3 > 2（级牌从自然序里抽出，
-// 与引擎的合成序一致）。`round.level` 是 levelTable.ranks 的档位下标，
-// 本项目夹具里档位 0..12 恰对应点数 2..A，故可直接当点数下标用。
+// 手牌列序：大王 > 小王 > 级牌 > A > K > … > 3 > 2（级牌从自然序里抽出，与引擎的合成序一致）。
 function levelRankIndex() {
   try {
     const lv = room.view(state.humanSeat)['round.level'];
     if (typeof lv === 'number' && lv >= 0 && lv <= 12) return lv;
   } catch { /* 视图不可用时按无级牌处理 */ }
   return -1;
+}
+
+/** 本局级牌的点数标签（`'2'`…`'A'`）；无级牌（score-only / 视图缺字段）返回 `null`。 */
+function levelRankLabel() {
+  const idx = levelRankIndex();
+  return idx < 0 ? null : RANKS[idx];
+}
+
+/** 点数标签 → deckart `Rank` 编号（1=A、2=2……13=K）；`null` → `0`（不带级牌态）。
+ *  只给 `gf_theme_card` 用，业务逻辑一律用标签，不碰这套编号。 */
+function rankCode(label) {
+  if (!label) return 0;
+  if (label === 'A') return 1;
+  if (label === 'J') return 11;
+  if (label === 'Q') return 12;
+  if (label === 'K') return 13;
+  return Number(label); // '2'…'10'
 }
 
 function rankIndexOf(id) {
@@ -48,14 +66,14 @@ function suitIndexOf(id) {
   return Math.floor(Math.floor(id / 2) / 13);
 }
 
-// 列键越大越靠左；王 1000/999，级牌 998，其余按「去掉级牌后的自然序位次」100+idx。
-function columnKey(id, levelIdx) {
+// 列键越大越靠左；王 1000/999，级牌 998，其余按「去掉级牌后的自然序位次」100+pos。
+function columnKey(id, levelRank) {
   if (id >= JOKER_BASE) return id >= JOKER_BASE + 2 ? 1000 : 999;
   const r = rankIndexOf(id);
-  if (r === levelIdx) return 998;
+  if (RANKS[r] === levelRank) return 998;
   let pos = 0;
   for (let i = 0; i < 13; i += 1) {
-    if (i === levelIdx) continue;
+    if (RANKS[i] === levelRank) continue;
     if (i === r) return 100 + pos;
     pos += 1;
   }
@@ -212,14 +230,16 @@ const theme = {
     }
   },
 
-  /** 单张牌面 SVG（`levelRank` 传 0 = 不带级牌态），按 (id, levelRank) 缓存。 */
+  /** 单张牌面 SVG。`levelRank` 用点数标签（`'2'`…`'A'`，`null` = 不带级牌态），
+   *  真正进 wasm 时才由 `rankCode()` 换成主题的 `Rank` 编号；缓存键也用标签。 */
   svg(id, levelRank) {
     if (!this.loaded) return null;
-    const key = `${id}@${levelRank}`;
+    const key = `${id}@${levelRank ?? '-'}`;
     if (this.cache.has(key)) return this.cache.get(key);
     const code = new TextEncoder().encode(faceCode(id));
     const t0 = performance.now();
-    const r = JSON.parse(withBytes(code, (ptr, len) => cstr(ex.gf_theme_card(ptr, len, levelRank))));
+    const level = rankCode(levelRank);
+    const r = JSON.parse(withBytes(code, (ptr, len) => cstr(ex.gf_theme_card(ptr, len, level))));
     this.stats.cards += 1;
     this.stats.ms += performance.now() - t0;
     const svg = r.ok ? r.svg : null;
@@ -520,10 +540,10 @@ function renderPlayZone() {
     return;
   }
   box.onclick = null;
-  const cards = [...last.cards].sort((a, b) => columnKey(b, levelRankIndex()) - columnKey(a, levelRankIndex())
+  const cards = [...last.cards].sort((a, b) => columnKey(b, levelRankLabel()) - columnKey(a, levelRankLabel())
     || suitIndexOf(a) - suitIndexOf(b));
   box.innerHTML = cards.map((id) => {
-    const svg = state.themeSkin ? theme.svg(id, levelRankIndex() + 1) : null;
+    const svg = state.themeSkin ? theme.svg(id, levelRankLabel()) : null;
     if (svg) return `<span class="mini-card themed">${svg}</span>`;
     const f = cardFace(id);
     return `<span class="mini-card${f.red ? ' red' : ''}">${f.rank}${f.suit}</span>`;
@@ -565,7 +585,7 @@ function cardButton(id, index, myTurn) {
   b.className = `card${f.red ? ' red' : ''}${f.joker ? ' joker' : ''}${state.selected.has(id) ? ' picked' : ''}${myTurn ? '' : ' dim'}`;
   b.style.zIndex = String(index + 1);
   b.dataset.cid = String(id);
-  const svg = state.themeSkin ? theme.svg(id, levelRankIndex() + 1) : null;
+  const svg = state.themeSkin ? theme.svg(id, levelRankLabel()) : null;
   if (svg) {
     // 整张牌面交给主题：角标、花阵、级牌胶囊、逢人配都在 SVG 里
     b.classList.add('themed');
@@ -577,7 +597,7 @@ function cardButton(id, index, myTurn) {
 }
 
 function sortedCards(list) {
-  return [...list].sort((a, b) => columnKey(b, levelRankIndex()) - columnKey(a, levelRankIndex())
+  return [...list].sort((a, b) => columnKey(b, levelRankLabel()) - columnKey(a, levelRankLabel())
     || suitIndexOf(a) - suitIndexOf(b) || (a % 2) - (b % 2));
 }
 
@@ -596,7 +616,7 @@ function pushColumn(box, ids, myTurn, grouped) {
 function renderHand() {
   const v = room.view(state.humanSeat);
   const cards = [...(v.hand.cards ?? [])];
-  const levelIdx = levelRankIndex();
+  const levelRank = levelRankLabel();
   const box = el('hand');
   box.innerHTML = '';
   const myTurn = state.waitingSeat === state.humanSeat;
@@ -639,7 +659,7 @@ function renderHand() {
     const cols = new Map();
     for (const id of cards) {
       if (groupedIds.has(id)) continue;
-      const key = columnKey(id, levelIdx);
+      const key = columnKey(id, levelRank);
       if (!cols.has(key)) cols.set(key, []);
       cols.get(key).push(id);
     }
@@ -886,7 +906,7 @@ function renderActions() {
   if (state.selected.size === 0) parts.push('未选牌');
   else {
     parts.push(`已选 ${state.selected.size} 张：${[...state.selected]
-      .sort((a, b) => columnKey(b, levelRankIndex()) - columnKey(a, levelRankIndex()))
+      .sort((a, b) => columnKey(b, levelRankLabel()) - columnKey(a, levelRankLabel()))
       .map(cardLabel).join(' ')}`);
     parts.push(pickLegal ? `✔ 可出${pickPattern ? `（${pickPattern}）` : ''}` : '✘ 不合法');
   }
@@ -1327,3 +1347,5 @@ init().catch((e) => {
 if (location.search.includes('debug')) {
   window.__gd = { state, room, currentLegal, previewSelection, theme, get ex() { return ex; } };
 }
+
+

@@ -473,6 +473,7 @@ const card = JSON.parse(readStr(ex.gf_theme_card(codePtr, 2, levelRank)));
 
 - 入参用 `gf_alloc` 写字节、`gf_mem_free` 归还；出参读 NUL 截止后 `gf_str_free`，与房间那套完全一致；
 - 公钥是 32 字节原始公钥（不是 PEM/hex 串），`0x11×32` 私钥对应的公钥为 `d04ab232…c9778737`；
+- **两套点数编号别混**：`gf_theme_card` 的 `level_rank` 是 `Rank` 编号（**1=A、2=2、…、13=K**），而引擎 `round.level` 是 `levelTable.ranks` 的**档位下标**（0=2、…、12=A）。推荐做法：客户端内部一律用**点数标签**（`'2'`…`'A'`，一份 `RANKS` 表），只在调 wasm 前用 `rankCode(label)` 转成 `Rank` 编号；直接拿下标加减（如 `下标 + 1`）会整体错一档：打 4 画到 3 上、打 2 画到 A 上、打 A 画到 K 上（2026-11-26 已实机修掉，并补了 13 档逐档断言）；
 - **降级**：`gf_theme_load` 返回 `ok:false`（包损坏、签名不符、缺素材）时，客户端退回现有的 DOM/CSS + Unicode 花色卡片，牌桌不阻塞；
 - 换主题先 `gf_theme_unload()` 再 load，避免同时挂两份素材。
 
@@ -485,6 +486,7 @@ preview     0 ms（再算一次四张）
 单张 SVG    C2 2609 / S2 2606 / H2 2721 / D2 2153 字节，牌背 766 字节
 错误公钥      拒绝（PackSignature）
 逐字节一致    wasm 的 C2 与 `gfdeck render --face C2 --level 2` 输出 2609 字节完全相同
+级牌落点      13 档逐档断言（2→K→A）：`data-level` 与 `data-leveled` 只命中该档，不串档
 ```
 
 体积涨的主要是验签（`ed25519-dalek` + `curve25519`）与 `serde_json`；若要压回去，下一步接 `wasm-opt -Oz`（当前机器未装）。

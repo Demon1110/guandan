@@ -6,6 +6,9 @@
 //! - 类型入口：`gf_protocol::gf::protocol::v1::*`。
 //!
 //! 纪律：`crates/engine` 不依赖本 crate——引擎不该知道网络形状。
+//!
+//! 传输层：消息体之外的 WS 帧头见 [`wire`]（`[kind: u16 大端][protobuf body]`），
+//! 服务端与客户端共用这一份编解码。
 
 // 生成代码不在此手工改动；prost 输出的 clippy 告警统一在本层级 suppress，
 // 不回改生成内容。
@@ -17,3 +20,5 @@ pub mod gf {
         }
     }
 }
+
+pub mod wire;
