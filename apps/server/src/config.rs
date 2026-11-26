@@ -22,6 +22,16 @@ pub struct ServerConfig {
     pub room_code_ttl_ms: u64,
     /// 匹配排队超时（毫秒），超时后轮询返回 `timeout`。
     pub match_timeout_ms: u64,
+    /// 手机号哈希盐（§5.8：单盐，轮换按 §9.7 五步；生产必须由环境变量给）。
+    pub auth_salt: String,
+    /// access/refresh token 的 HS256 签名密钥（§8.5：支持双密钥轮换）。
+    pub jwt_secret: String,
+    /// 短信通道未批前的测试白名单手机号（规范化 11 位；空表 = 口子关闭）。
+    pub sms_test_whitelist: Vec<String>,
+    /// 白名单手机号使用的固定验证码。
+    pub sms_test_code: String,
+    /// 是否强制所有玩家侧接口与 WS 入座都带 access token。
+    pub require_auth: bool,
 }
 
 impl Default for ServerConfig {
@@ -34,6 +44,12 @@ impl Default for ServerConfig {
             heartbeat_timeout_ms: 30_000,
             room_code_ttl_ms: crate::lobby::DEFAULT_CODE_TTL_MS,
             match_timeout_ms: crate::lobby::DEFAULT_QUEUE_TIMEOUT_MS,
+            // 开发默认值只为本机联调能跑；生产未覆盖视为配置事故（启动时会告警）。
+            auth_salt: "gf-dev-salt-change-me".to_owned(),
+            jwt_secret: "gf-dev-jwt-secret-change-me".to_owned(),
+            sms_test_whitelist: Vec::new(),
+            sms_test_code: crate::auth::DEFAULT_TEST_CODE.to_owned(),
+            require_auth: false,
         }
     }
 }
@@ -48,6 +64,10 @@ impl ServerConfig {
     /// - `GF_HEARTBEAT_TIMEOUT_MS`
     /// - `GF_ROOM_CODE_TTL_MS`
     /// - `GF_MATCH_TIMEOUT_MS`
+    /// - `GF_AUTH_SALT` / `GF_JWT_SECRET`（生产必填，缺省值是开发用固定串）
+    /// - `GF_SMS_TEST_WHITELIST`（逗号分隔的 11 位手机号）
+    /// - `GF_SMS_TEST_CODE`
+    /// - `GF_REQUIRE_AUTH`（`1`/`true` 强制玩家侧接口与 WS 带 token）
     pub fn from_env() -> Self {
         let mut cfg = Self::default();
         if let Ok(v) = env::var("GF_BIND") {
@@ -71,7 +91,34 @@ impl ServerConfig {
         if let Some(v) = env_u64("GF_MATCH_TIMEOUT_MS") {
             cfg.match_timeout_ms = v.max(1_000);
         }
+        if let Ok(v) = env::var("GF_AUTH_SALT") {
+            cfg.auth_salt = v;
+        }
+        if let Ok(v) = env::var("GF_JWT_SECRET") {
+            cfg.jwt_secret = v;
+        }
+        if let Ok(v) = env::var("GF_SMS_TEST_WHITELIST") {
+            cfg.sms_test_whitelist = v
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect();
+        }
+        if let Ok(v) = env::var("GF_SMS_TEST_CODE") {
+            if !v.trim().is_empty() {
+                cfg.sms_test_code = v.trim().to_owned();
+            }
+        }
+        if let Ok(v) = env::var("GF_REQUIRE_AUTH") {
+            cfg.require_auth = matches!(v.trim(), "1" | "true" | "TRUE" | "True" | "yes");
+        }
         cfg
+    }
+
+    /// 是否还在用开发默认密钥（生产启动时应告警）。
+    pub fn uses_dev_secrets(&self) -> bool {
+        self.auth_salt == "gf-dev-salt-change-me" || self.jwt_secret == "gf-dev-jwt-secret-change-me"
     }
 
     /// 客户端版本是否满足下限（§5.16）。下限为空表示不校验。

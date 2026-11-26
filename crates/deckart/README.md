@@ -86,6 +86,8 @@ L1 底面模板（裁圆角） → L2 花色符号 → L3 点数/角标 → L4 �
 例：`centerSuit = {x:155, y:242, scale:1.9}` → 100×100 放大到 190px，左上角落在 (155,242)，即中心 (250,337)。
 `classic` 的四角用同一语义，额外自动旋转：右上 `translate(W-x, y+h·s)`、左下 `translate(x+w·s, H-y)`、右下 `translate(W-x, H-y)`，三者统一 `rotate(180)` 让字头朝牌心。要少画几个角就用 `corners` 过滤（14.8），位置公式不变。
 
+角标花色摆在哪由 `cornerSuitPlacement` 决定（`below` 缺省 = 点数下方，`right` = 点数右侧，见 14.10）：配成 `right` 时 `slots.cornerSuit` / `classic.cornerSuit` 的 `x/y` 会被忽略，渲染层按点数放大后的实际右缘重新算。
+
 > 改素材尺寸必须同步本表与 `theme.json`；只改配色/形状则不用动配置。
 
 ### 花阵规范（`layout = classic`）
@@ -94,9 +96,10 @@ L1 底面模板（裁圆角） → L2 花色符号 → L3 点数/角标 → L4 �
 
 ```json
 "classic": {
-  "cornerRank": { "x": 34, "y": 30, "scale": 0.40 },
-  "cornerSuit": { "x": 38, "y": 98, "scale": 0.30 },
-  "pipScale": 0.60,
+  "cornerRank": { "x": 34, "y": 30, "scale": 0.36 },
+  "cornerSuit": { "x": 38, "y": 98, "scale": 0.22 },
+  "pipScale": 0.88,
+  "pipInset": 0.10,
   "aceScale": 1.70,
   "courtStyle": "monogram",
   "pipPositions": {
@@ -110,6 +113,9 @@ L1 底面模板（裁圆角） → L2 花色符号 → L3 点数/角标 → L4 �
 
 - `pipPositions` 是**归一化中心坐标**（0..1），数量必须等于点数（2→2 个、10→10 个），否则加载期报 `DK-THEME-INVALID`；
 - 因为归一化，换画布尺寸（如以后 600×840）只改 `canvas`，点位表不用重写；
+- 点位表是「花阵长什么样」，**不是**「能画到哪」：渲染时会把每个点位按 `pipInset` 压进内边距，再按角标放大后的实际宽度继续往里让（左右对称），所以点位表写了 0.28 也未必落在 0.28——角标越大，花阵越往中间收（见 14.9）；
+- `pipScale` 是单个花符号的缩放（素材 100×100 → 画布单位），0.88 在 500 宽的牌面上约 88px；角标特别大时渲染层会自动等比缩小一点，避免两列点位粘在一起；
+- `pipInset` 是花阵安全区的归一化内边距（缺省 0.10，合法 0..=0.35），保证花阵四周留白、不贴牌边；
 - A 用 `aceScale` 单个大符号；J/Q/K 的 `courtStyle = "monogram"` 也是单个大符号，`"figure"` 是为将来人物素材留的 schema 位（当前不支持）；
 - 四角标无条件绘制，花阵只影响中央。
 
@@ -195,6 +201,7 @@ themes/
   "layout": "compact",
   "cornerScale": 2.2,
   "corners": ["topLeft", "bottomRight"],
+  "cornerSuitPlacement": "below",
   "layers": {
     "base": "base.svg",
     "suits": { "spade": "suits/spade.svg", … },
@@ -211,10 +218,10 @@ themes/
   },
   "textLayer": { "enabled": true, "badge": "both", "fontFamily": "…", "levelLabel": { "text": "级牌", "x": 404, "y": 58, "size": 28, "color": "#FFFFFF", "anchor": "middle" } },
   "preview": { "faces": ["C2", "S2", "H2", "D2"], "levelRank": 2 },
-  "classic": { "cornerRank": {…}, "cornerSuit": {…}, "pipScale": 0.60, "aceScale": 1.70, "courtStyle": "monogram", "pipPositions": {…} }
+  "classic": { "cornerRank": {…}, "cornerSuit": {…}, "pipScale": 0.88, "pipInset": 0.10, "aceScale": 1.70, "courtStyle": "monogram", "pipPositions": {…} }
 }
 ```
-`textLayer`、`preview`、`cornerScale`、`corners` 与 `classic` 都是可选块（缺省用默认值/关闭），完整字段含义见第 3 节的尺寸规范、花阵规范与文本层说明，`preview` 见第 14 节，`cornerScale` 见 14.6/14.7，`corners` 见 14.8。
+`textLayer`、`preview`、`cornerScale`、`corners`、`cornerSuitPlacement` 与 `classic` 都是可选块（缺省用默认值/关闭），完整字段含义见第 3 节的尺寸规范、花阵规范与文本层说明，`preview` 见第 14 节，`cornerScale` 见 14.6/14.7，`corners` 见 14.8，`cornerSuitPlacement` 见 14.10。
 `version` 是主题版本号，用来让客户端缓存失效：加了文本层与 classic 配置后 defaults 已从 1 升到 2。
 
 `ranks.kind = "atlas"` 时改为 `{ "kind": "atlas", "image": "ranks.png", "index": "ranks.json" }`，`index` 给每字形的 `{x,y,w,h,advance}`，兼容后续位图字库。
@@ -300,12 +307,13 @@ cargo run -p gf-deckart --bin gfdeck -- render-all --theme themes/defaults --lev
 {
   "themeId": "defaults", "themeVersion": 2, "level": "2", "cornerScale": 2.20,
   "layout": "Compact",
+  "corners": ["topLeft", "bottomRight"],
   "faces": [{ "code": "S2", "file": "S2.svg", "sha256": "…" }, …],
   "back": { "file": "BACK.svg", "sha256": "…" }
 }
 ```
 
-`manifest.json` 里的 sha256 是给「素材换版/灰产换皮」做逐张比对的，客户端不用它；`cornerScale` 记的是这一批出图实际用的倍率（`2.20` = 220%）。
+`manifest.json` 里的 sha256 是给「素材换版/灰产换皮」做逐张比对的，客户端不用它；`cornerScale` 记的是这一批出图实际用的倍率（`2.20` = 220%），`corners` 记的是实际画了哪几个角标（`theme.json` 的 `corners` 配过就按配的，见 14.8）。
 
 要换字号就加 `--corner`，整包 54 张一起改（压过主题默认）：
 
@@ -393,14 +401,14 @@ render H8 --level 8 --corner 100 → 2789 字节（含文本层「级牌」）
 render H8 --level 8 --corner 240 → 2799 字节
 png H8.svg --scale 2             → 151,767 字节（1000×1400）
 png H8@240.svg --scale 2         → 164,395 字节
-pack --key-id builtin-v1 --sign-key <0x11×32> → 24 条目 / 17,288 字节，加密=true、签名=true
+pack --key-id builtin-v1 --sign-key <0x11×32> → 24 条目 / 17,312 字节，加密=true、签名=true
 公钥                               d04ab232…c9778737
 info                             → defaults@2，license=CC0-1.0，24 条目，加密=true，签名=true，keyId=builtin-v1
 verify --verify-key <pub>        → 校验通过：defaults@2，24 条目，54 面可渲染，角标 220%（主题默认）
 unpack --verify-key <pub>        → 还原 24 个文件（theme.json + 23 素材），可直接 Theme::load_dir
 ```
 
-（`apps/client/themes/defaults.gfdeck` 已按上面命令重打过：17,288 字节，包里有 `preview` 块和 `cornerScale: 2.2`。）
+（`apps/client/themes/defaults.gfdeck` 已按上面命令重打过：17,312 字节，包里有 `preview` 块、`cornerScale: 2.2` 与 `classic.pipInset`。）
 
 ---
 
@@ -415,6 +423,9 @@ unpack --verify-key <pub>        → 还原 24 个文件（theme.json + 23 素�
 | 预览一致 | `preview` 配置生效（默认四张 2 全带级牌、`levelRank=null` 不出 `L4`、非法 faces/越界点数加载期报错）；wasm 端输出与 `gfdeck render` 逐字节一致 |
 | 角标倍率 | 1.0 与旧入口逐字节一致；0.6~3.0 内点数与角标花色同步放大、花色重排到点数下方、底面层不动；越界报 `DK-FACE-INVALID` |
 | 默认角标 | `theme.json` 的 `cornerScale` 可选（缺省 1.0）、1.0~3.0 外报 `DK-THEME-INVALID`；打包往返不丢；CLI 不给 `--corner` 时用它，`--corner` 压过它 |
+| 角标位置 | `corners` 决定画哪几个角（缺省 compact 左上+右下 / classic 四角）；重复、超 4 项、未知名字加载期拒绝；`manifest.json` 同步记录 |
+| 花阵安全区 | classic 的点位一律落在 `pipInset` 内边距之内；角标 100%/240%/300% 下每个点位都不与角标点数（放大后的实际宽度）相交；两列间距 ≥ 26 单位（角标过大时花阵自动等比缩小）；`pipInset` 越界加载期拒绝 |
+| 角标花色位置 | `cornerSuitPlacement` 缺省 `below`（compact 1.0 时逐字节同素材原样）；配 `right` 后花色落在点数右缘之外并纵向居中；classic 下花阵左缘始终不压到右侧花色；`left` / `above` 等未知名加载期拒绝 |
 | 坏包 | 截断/改一字节/换 themeId/签名不符/路径穿越 全部拒绝并给明确错误码 |
 | 性能 | 单张合成 P99 < 1 ms（native），55 张 < 20 ms；包加载（含解密）< 10 ms |
 | 覆盖率 | 并入 workspace 后按现行门禁（行 ≥90% + 区域 ≥90%） |
@@ -476,21 +487,21 @@ crates/deckart/
 
 - `card`：牌面语义类型，编码 `H8` / `S10` / `JOKER-B` / `JOKER-S`
 - `theme`：目录加载 + schema 校验（id 规则、13 字形、路径穿越、外链/字体/位图禁用）
-- `render`：四层合成、级牌与逢人配判定、固定图层 id 与 `data-*` 属性；`compact` 与 `classic` 两种布局；可选文本层（`L4t-level-label`）；`FaceOptions.corner_scale` 角标字号倍率（0.6..=3.0，见 14.6）；`theme.json` 的 `cornerScale` 给主题默认（1.0..=3.0，缺省 1.0，见 14.7）
+- `render`：四层合成、级牌与逢人配判定、固定图层 id 与 `data-*` 属性；`compact` 与 `classic` 两种布局；可选文本层（`L4t-level-label`）；`FaceOptions.corner_scale` 角标字号倍率（0.6..=3.0，见 14.6）；`theme.json` 的 `cornerScale` 给主题默认（1.0..=3.0，缺省 1.0，见 14.7）；`corners` 决定画哪几个角标（缺省按布局，见 14.8）；classic 花阵的安全区与自适应缩放（`pipInset` / `pipScale`，见 14.9）；角标花色摆点数下方还是右侧（`cornerSuitPlacement`，见 14.10）
 - `pack`：`.gfdeck` 打包 / 解密 / 签名 / 摘要校验 / 边界校验，`open()` 可直接在内存里用主题；`open_bytes()` / `info_from_bytes()` 走纯字节入口（wasm 没有文件系统）
 - `preview`：`theme.json` 的 `preview` 配置 + `render_preview()`，主题选择界面与牌桌共用同一条渲染路径
 - `png`：SVG → PNG（`--features png`，不进 wasm）
 - `gfdeck` CLI：`render` / `render-all` / `pack` / `unpack` / `info` / `verify` / `png`（`render`、`render-all` 支持 `--corner <pct>`）
 
-### 测试（38 个单测 + 1 个 doctest，全绿）
+### 测试（44 个单测 + 1 个 doctest，全绿）
 
 ```powershell
 cd crates\deckart
-cargo test                 # 5 lib + 13 pack + 20 render + 1 doctest
+cargo test                 # 5 lib + 13 pack + 26 render + 1 doctest
 cargo test --features png  # 额外可用 PNG 子命令
 ```
 
-覆盖：54 面编码唯一且闭合、级牌只在匹配点数命中、红桃级牌必须同时有 level + wild 两层、王永不级牌、无级牌态不出徽章、输出不得含外链/字体/位图、渲染确定性；文本层三态矩阵（`both` 两层都在、`badge-only` 无 text、`text-only` 无素材层、非级牌三种模式都不出 L4、关闭后退化为素材层、`text-only` 缺 label 报错而 `badge-only` 缺 label 合法）、classic 花阵数量（7 → 7 花阵 + 4 角标、A → 1 + 4）、classic 缺花阵规格即报错；角标倍率（1.0 与旧入口逐字节一致、2.4 倍时点数与花色同步放大且花色重排、classic 四角同样生效、越界拒绝）；主题默认角标（声明 2.2 读得出、字段可省、1.0~3.0 外加载期拒绝、打包往返不丢）；包往返逐字节一致、错钥拒绝、改一字节即失败、签名必须匹配公钥、无密钥可读 header、截断/非包拒绝、缺素材与路径穿越在加载期就报错。
+覆盖：54 面编码唯一且闭合、级牌只在匹配点数命中、红桃级牌必须同时有 level + wild 两层、王永不级牌、无级牌态不出徽章、输出不得含外链/字体/位图、渲染确定性；文本层三态矩阵（`both` 两层都在、`badge-only` 无 text、`text-only` 无素材层、非级牌三种模式都不出 L4、关闭后退化为素材层、`text-only` 缺 label 报错而 `badge-only` 缺 label 合法）、classic 花阵数量（7 → 7 花阵 + 4 角标、A → 1 + 4）、classic 缺花阵规格即报错；角标倍率（1.0 与旧入口逐字节一致、2.4 倍时点数与花色同步放大且花色重排、classic 四角同样生效、越界拒绝）；主题默认角标（声明 2.2 读得出、字段可省、1.0~3.0 外加载期拒绝、打包往返不丢）；角标位置（compact 默认两角 / classic 默认四角 / 收成两角后的旋转计数、空数组合法、重复与未知名字拒绝）；classic 花阵安全区（100%/240%/300% 三档点位都不与角标点数相交、四缘在 `pipInset` 内、两列间距下限、`pipInset` 越界拒绝）；角标花色位置（缺省不重排、`right` 落到点数右缘外并纵向居中、classic 花阵让位、未知名拒绝）；包往返逐字节一致、错钥拒绝、改一字节即失败、签名必须匹配公钥、无密钥可读 header、截断/非包拒绝、缺素材与路径穿越在加载期就报错。
 
 ### 实测（2026-11-26）
 
@@ -501,8 +512,8 @@ gfdeck render-all --theme themes/defaults --level 8 -o target/deckout
   → 55 张（54 面 + 牌背）、manifest.json 6507 字节、单张 766~2789 字节（带文本层的级牌最大）
      （角标走主题默认 220%；要看素材原样加 --corner 100）
 gfdeck pack themes/defaults -o defaults.gfdeck --sign-key <hex32>
-  → 24 条目（theme.json 5136B 的 pretty 序列化 + 23 素材）、17288 字节、加密 + 签名、keyId=builtin-v1
-     （上一版是 17,137 字节、包里没有 `preview` 块与 `cornerScale`；加 `preview` 后 17,266，再加 `cornerScale: 2.2` 是 17,288）
+  → 24 条目（theme.json 5160B 的 pretty 序列化 + 23 素材）、17312 字节、加密 + 签名、keyId=builtin-v1
+     （上一版是 17,137 字节、包里没有 `preview` 块与 `cornerScale`；加 `preview` 后 17,266，加 `cornerScale: 2.2` 是 17,288，再加 `pipInset` 与 classic 新参数是 17,312）
 gfdeck info   → defaults@2，license=CC0-1.0，加密=true，签名=true
 gfdeck verify --verify-key <pub>  → 校验通过：defaults@2、24 条目、54 面可渲染、角标 220%（主题默认）
 gfdeck verify（不给公钥）        → [DK-PACK-SIGNATURE] 拒绝
@@ -694,4 +705,102 @@ pub fn render_face(theme, face, level)     -> Result<String, DeckError>;  // 保
 | `theme_declares_default_corner_scale` | defaults 声明了 2.2，`Theme::corner_scale()` 读得出来 |
 | `theme_corner_scale_is_optional_and_bounded` | 删掉字段 → `None`；3.5 / 0.5 / -2.0 在加载期报 `DK-THEME-INVALID`；1.0 与 3.0 可用 |
 | `pack_preserves_declared_corner_scale` | 打包会重新序列化 `theme.json`，`cornerScale` 不能在路上丢 |
+
+### 14.8 角标位置可配（`theme.json` 的 `corners`，2026-11-26）
+
+`layout = classic` 的默认就是**四角标 + 花阵**（真实扑克排布），所以用 classic 出图时四角都有点数与花色不是 bug。要让 classic 也只画左上 + 右下（牌桌横排只露一条边，四个角有俩永远看不见，还多花一次渲染），加一行配置：
+
+```json
+{
+  "layout": "classic",
+  "cornerScale": 2.4,
+  "corners": ["topLeft", "bottomRight"],
+  "classic": { … }
+}
+```
+
+| 项 | 规则 |
+| --- | --- |
+| 取值 | `topLeft` / `topRight` / `bottomLeft` / `bottomRight`，数组，最多 4 项 |
+| 缺省 | 不写 = 跟布局走：`compact` → 左上 + 右下；`classic` → 四角全画 |
+| 朝向 | 左上正写；其余三个一律 `rotate(180)`（字头/花尖朝牌心），与 classic 原口径一致，位置公式不变 |
+| 空数组 | 合法，等于「一个角标都不画」，只剩中央大花色 / 花阵 + 徽章 |
+| 校验 | 未知名字（serde 层）、重复项、超过 4 项 → 加载期 `DK-THEME-INVALID` |
+| 与 `cornerScale` | 正交：`corners` 决定**画哪几个角**，`cornerScale` 决定**画多大** |
+| 花阵 | 不受影响：classic 的点位表照旧，去掉两个角标后原本被大字号角标压住的点位会露出来 |
+| `manifest.json` | `render-all` 会写 `"corners": [...]`，记录这批图实际画了哪几个角 |
+| 客户端 | 横排紧叠只露左上一条边，**主题若去掉 `topLeft`，横排就看不到点数**——要上牌桌的主题请留着左上 |
+
+`defaults` 没写 `corners`（compact 本来就是两角）。想把四角收成两角时，`layout` 与 `corners` 一起改，然后按第 8 节重打一次包即可。
+
+实测（`D10`、classic、`--corner 240`）：四角版 3414 字节，`corners: ["topLeft","bottomRight"]` 后 2558 字节（少 6 个 `rotate(180)` 角标组里的 4 个），花阵点位一个不少。
+
+相关测试（`tests/render.rs` 2 条）：
+
+| 用例 | 判据 |
+| --- | --- |
+| `corners_config_limits_marks_in_both_layouts` | compact 默认 2 处旋转、只留左上 0 处、classic 默认 6 处、classic 收两角 2 处；花阵组仍在 |
+| `corners_config_is_validated` | 重复 / 5 项 / 未知名字在加载期拒绝；空数组合法且 `corner_positions()` 为空 |
+
+### 14.9 classic 花阵：安全区 + 自适应缩放（`pipInset` / 自动收窄，2026-11-26）
+
+角标字号一放大，两个老问题一起爆出来：点数把角标花色压住（14.6 已修，classic 这次同一套口径补齐），以及**放大的角标压到花阵点位**——`D10` 在 classic + 240% 下，10 个 ♦ 只能看见 6 个，靠近四角的 4 个被点数挡住。点位表本身没错，错在「点位表写的是全幅坐标，没给角标让出地方」。
+
+现在渲染层按三步摆花阵：
+
+1. **算角标实际占多宽**：`cornerRank.x + 素材宽 × 角标 scale`，与角标花色取大的那个（都按放大后的 scale 算）；
+2. **定安全区**：`insetX = max(pipInset × 牌宽, 角标右缘 + CORNER_GAP × 倍率)`，上限 34% 牌宽；`insetY = pipInset × 牌高`；
+3. **对称收拢 + 自适应缩放**：每个点位按 `min(p_x, 1-p_x)` 先算离牌边多远，压不进安全区就左右**对称**往里推（不会整片花阵歪到一边）；如果角标大到两列会被挤在一起（列间距 < `PIP_GAP` = 26），整个花阵等比缩小到刚好留出这道缝。
+
+`pipInset` 缺省 0.10（合法 0..=0.35，越界 `DK-THEME-INVALID`）。想更宽松就 0.14，想更满就 0.06。
+
+`defaults` 这次一起调了 classic 的观感（对齐 CC0 参考牌：大字点数 + 紧随其下的小花色 + 大花阵 + 充足留白）：
+
+| 字段 | 改前 | 改后 | 为什么 |
+| --- | --- | --- | --- |
+| `classic.cornerRank.scale` | 0.40 | 0.36 | 数字窄一点，给花阵腾横向空间（放大后仍是大字） |
+| `classic.cornerSuit.scale` | 0.30 | 0.22 | 参考牌的花色明显小于点数，且不再被点数压住 |
+| `classic.pipScale` | 0.60 | 0.88 | 花阵单个 ♦ 从 60 涨到 88（牌宽 17.6%），整体放大 |
+| `classic.pipInset` | 无 | 0.10 | 花阵四周留白，不与角标/牌边相压 |
+
+实测（`D10`、classic + `corners:["topLeft","bottomRight"]`、×2 PNG）：100% → 花阵 88、列距 220；240% → 花阵 88、列距 110（角标右缘 130 之外的对称位）；300% → 角标宽 108，花阵自动缩到 67、列距 93，10 个点位全部露头、互不相压。compact 布局不受影响（`pipScale` / `pipInset` 只属于 classic 块，compact 的中央大花走 `slots.centerSuit`）。
+
+相关测试（`tests/render.rs` 2 条）：
+
+| 用例 | 判据 |
+| --- | --- |
+| `classic_pips_clear_corner_marks_when_corners_are_huge` | 100% / 240% / 300% 三档：每个点位左缘 ≥ 角标点数右缘（按放大后实际宽度算）、四缘都在 `pipInset` 之内、两列间距 ≥ 20、角标花色 y 排在点数下方 |
+| `classic_pip_inset_is_validated` | `pipInset` 0.5 / -0.1 在加载期报 `DK-THEME-INVALID` |
+
+### 14.10 角标花色摆哪：点数下方 or 点数右侧（`cornerSuitPlacement`，2026-11-26）
+
+`cornerScale` 只管放大，放大之后花色摆哪儿原来是写死的「点数下方」。现在进 `theme.json`：
+
+```json
+{
+  "cornerScale": 2.2,
+  "cornerSuitPlacement": "right",
+  "classic": { … }
+}
+```
+
+| 取值 | 摆放 | 说明 |
+| --- | --- | --- |
+| `below`（缺省） | 花色在点数正下方 | 传统扑克口径；`cornerScale = 1.0` 时完全沿用 `slots.cornerSuit` 的坐标，输出逐字节不变 |
+| `right` | 花色贴点数右缘（`x = 点数x + 素材宽 × scale + 10`），纵向与点数居中 | 角标读起来是「10♦」这种横排；`slots.cornerSuit` / `classic.cornerSuit` 的 `x/y` 会被忽略，只保留 `scale` |
+
+两条布局都支持，但代价不一样：
+
+- **compact** 中央只有一个大花色，右侧摆完全不吃位置，240% 下画面仍然干净（`10 ♦` 并排 + 中央大 ♦）。
+- **classic** 有花阵，右侧摆会把角标区撑宽（点数本身已经占掉 1/4 牌宽），花阵只能整体往中间收、并且按 `PIP_GAP` 下限缩一点。实测 `D10`（classic + 两角）：`right` + 180% 花阵仍 63~79，观感与「下方」近似；`right` + 240% 花阵只剩 44、`right` + 300% 只剩 27，牌面会显得空。所以 classic 想用右侧摆放，建议角标 ≤ 200%，或者把 `classic.cornerRank.scale` 从 0.36 收到 0.30 左右；要大字 + 大花阵就还是 `below`。
+
+`right` 时点数与花色之间的间隙固定为 `CORNER_GAP`（10），不跟着倍率涨——否则角标区太宽，花阵没地方站。
+
+相关测试（`tests/render.rs` 2 条）：
+
+| 用例 | 判据 |
+| --- | --- |
+| `corner_suit_can_be_placed_right_of_the_rank` | 缺省时花色仍用 slot 原坐标（x 36）；`right` + 220% 时花色 x ≥ 点数右缘 + 9、纵向中心与点数中心差 < 1；classic `right` 在 100%/180%/240% 下花阵左缘都 ≥ 花色右缘 |
+| `corner_suit_placement_rejects_unknown_value` | `left` / `above` 在解析期就报 `DK-THEME-INVALID` |
+
 

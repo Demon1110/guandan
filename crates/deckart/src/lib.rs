@@ -38,8 +38,8 @@ pub use render::{
     FaceOptions, LevelState, RenderedFace, CORNER_SCALE_MAX, CORNER_SCALE_MIN,
 };
 pub use theme::{
-    BadgeMode, ClassicSpec, CornerPos, LabelText, Layout, PreviewSpec, TextLayer, Theme, ThemeMeta,
-    THEME_CORNER_MAX, THEME_CORNER_MIN,
+    BadgeMode, ClassicSpec, CornerPos, CornerSuitPlacement, LabelText, Layout, PreviewSpec,
+    TextLayer, Theme, ThemeMeta, THEME_CORNER_MAX, THEME_CORNER_MIN,
 };
 
 /// crate 版本，写进生成的 SVG 注释里便于追溯。

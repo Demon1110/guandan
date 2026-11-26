@@ -29,8 +29,8 @@ pub const SEATS: u8 = 4;
 
 /// 房间码/匹配成房后，HTTP 先把座位预留给客户端，等待它接 WS 的最长时长。
 ///
-/// 预留只是「别让两个人抢同一把椅子」的软占位：无账号阶段无法验证预留者身份，
-/// WS 带同一座位号进来即视为兑现（账号切片接入后改成 token 绑定座位）。
+/// 预留只是「别让两个人抢同一把椅子」的软占位：带 token 时预留绑定玩家 ID，
+/// 只有同一玩家能兑现；无账号（token 缺省）时退化为「带同一座位号即兑现」。
 pub const RESERVATION_TTL_MS: u64 = 60_000;
 
 /// 未在 §5.7 错误码全表内的临时动作级拒绝码。
@@ -65,13 +65,23 @@ pub enum JoinError {
     SeatTaken { available: Vec<u8> },
 }
 
+/// 一条座位预留。
+#[derive(Clone, Debug)]
+struct Reservation {
+    until_ms: u64,
+    /// `Some(player_id)` 表示该座位绑定到某个账号；`None` 是匿名预留（本机联调）。
+    owner: Option<String>,
+}
+
 /// 一张联机桌。
 pub struct RoomHost {
     match_id: String,
     room: Mutex<Room>,
     out: RwLock<HashMap<u8, mpsc::UnboundedSender<Vec<u8>>>>,
-    /// HTTP 阶段预占的座位（`seat → 过期毫秒`），WS 入座时兑现。
-    reserved: Mutex<HashMap<u8, u64>>,
+    /// HTTP 阶段预占的座位，WS 入座时兑现。
+    reserved: Mutex<HashMap<u8, Reservation>>,
+    /// 已入座的座位属于哪个玩家（账号阶段用于重连时校验身份）。
+    owners: RwLock<HashMap<u8, String>>,
     ack_cache: Mutex<HashMap<(u8, String), Vec<u8>>>,
     started_at: Instant,
     opts: RoomOptions,
@@ -100,6 +110,7 @@ impl RoomHost {
             room: Mutex::new(room),
             out: RwLock::new(HashMap::new()),
             reserved: Mutex::new(HashMap::new()),
+            owners: RwLock::new(HashMap::new()),
             ack_cache: Mutex::new(HashMap::new()),
             started_at: Instant::now(),
             opts,
@@ -149,48 +160,103 @@ impl RoomHost {
         hint: Option<u8>,
         tx: mpsc::UnboundedSender<Vec<u8>>,
     ) -> Result<u8, JoinError> {
+        self.join_as(hint, tx, None).await
+    }
+
+    /// 带身份的入座：账号预留的座位只由同一 `owner` 兑现（账号切片起收紧）。
+    pub async fn join_as(
+        &self,
+        hint: Option<u8>,
+        tx: mpsc::UnboundedSender<Vec<u8>>,
+        owner: Option<String>,
+    ) -> Result<u8, JoinError> {
         let now = self.now_ms();
         // 锁序固定：先 `out` 再 `reserved`（`reserve` 同序），避免交叉等待。
         let mut out = self.out.write().await;
         let mut reserved = self.reserved.lock().await;
-        reserved.retain(|_, expires| *expires > now);
+        reserved.retain(|_, r| r.until_ms > now);
         let occupied: Vec<u8> = out.keys().copied().collect();
+        let owner_ref = owner.as_deref();
         let seat = match hint {
-            // 预留座位只能由带同一座位号重来的人兑现（无账号阶段不做身份校验）。
             Some(seat) if seat < SEATS && !occupied.contains(&seat) => {
+                if let Some(reservation) = reserved.get(&seat) {
+                    // 预留者若不是本人（且预留带了身份），不得抢占。
+                    if reservation.owner.as_deref().is_some_and(|o| Some(o) != owner_ref) {
+                        return Err(JoinError::SeatTaken {
+                            available: free_for(&occupied, &reserved, owner_ref),
+                        });
+                    }
+                }
                 reserved.remove(&seat);
                 seat
             }
             Some(_) => {
                 return Err(JoinError::SeatTaken {
-                    available: free_seats(&occupied, reserved.keys().copied()),
+                    available: free_for(&occupied, &reserved, owner_ref),
                 })
             }
-            None => match (0..SEATS).find(|s| !occupied.contains(s) && !reserved.contains_key(s)) {
-                Some(seat) => seat,
-                None => {
-                    return Err(JoinError::SeatTaken {
-                        available: Vec::new(),
-                    })
+            None => {
+                // 有身份的入座优先兑现自己那条预留。
+                let mine = owner_ref
+                    .and_then(|o| {
+                        reserved
+                            .iter()
+                            .find(|(s, r)| !occupied.contains(s) && r.owner.as_deref() == Some(o))
+                            .map(|(s, _)| *s)
+                    });
+                match mine.or_else(|| {
+                    (0..SEATS)
+                        .find(|s| !occupied.contains(s) && !reserved.contains_key(s))
+                }) {
+                    Some(seat) => {
+                        reserved.remove(&seat);
+                        seat
+                    }
+                    None => {
+                        return Err(JoinError::SeatTaken {
+                            available: free_for(&occupied, &reserved, owner_ref),
+                        })
+                    }
                 }
-            },
+            }
         };
         out.insert(seat, tx);
+        drop(out);
+        drop(reserved);
+        if let Some(owner) = owner {
+            self.owners.write().await.insert(seat, owner);
+        }
         Ok(seat)
+    }
+
+    /// 该座位绑定的玩家（未带 token 入座的座位为 `None`）。
+    pub async fn seat_owner(&self, seat: u8) -> Option<String> {
+        self.owners.read().await.get(&seat).cloned()
     }
 
     /// 预占一个空座位（房间码 / 匹配成房后由 HTTP 返回给客户端）。
     ///
     /// 预留 `RESERVATION_TTL_MS` 后自动失效；WS 带该座位号入座即兑现。
     pub async fn reserve(&self) -> Result<u8, JoinError> {
+        self.reserve_for(None).await
+    }
+
+    /// 带身份预占：只有同一 `owner` 能兑现该座位。
+    pub async fn reserve_for(&self, owner: Option<String>) -> Result<u8, JoinError> {
         let now = self.now_ms();
         let out = self.out.read().await;
         let mut reserved = self.reserved.lock().await;
-        reserved.retain(|_, expires| *expires > now);
+        reserved.retain(|_, r| r.until_ms > now);
         let seat = (0..SEATS).find(|s| !out.contains_key(s) && !reserved.contains_key(s));
         match seat {
             Some(seat) => {
-                reserved.insert(seat, now.saturating_add(RESERVATION_TTL_MS));
+                reserved.insert(
+                    seat,
+                    Reservation {
+                        until_ms: now.saturating_add(RESERVATION_TTL_MS),
+                        owner,
+                    },
+                );
                 Ok(seat)
             }
             None => Err(JoinError::SeatTaken {
@@ -566,10 +632,21 @@ impl RoomHost {
     }
 }
 
-fn free_seats(occupied: &[u8], reserved: impl Iterator<Item = u8>) -> Vec<u8> {
-    let reserved: Vec<u8> = reserved.collect();
+/// 可分配座位：空座里排除「被别人预留」的那些。
+///
+/// 匿名预留（`owner = None`）仍算可分配：它的兑现条件本来就是「带同一座位号」；
+/// 带身份的预留只对同一玩家可见。
+fn free_for(
+    occupied: &[u8],
+    reserved: &HashMap<u8, Reservation>,
+    requester: Option<&str>,
+) -> Vec<u8> {
     (0..SEATS)
-        .filter(|s| !occupied.contains(s) && !reserved.contains(s))
+        .filter(|seat| !occupied.contains(seat))
+        .filter(|seat| match reserved.get(seat).and_then(|r| r.owner.as_deref()) {
+            None => true,
+            Some(owner) => requester == Some(owner),
+        })
         .collect()
 }
 
@@ -654,10 +731,40 @@ mod tests {
     }
 
     #[test]
-    fn free_seats_excludes_occupied_and_reserved() {
-        assert_eq!(free_seats(&[], std::iter::empty()), vec![0, 1, 2, 3]);
-        assert_eq!(free_seats(&[0, 2], std::iter::empty()), vec![1, 3]);
-        assert_eq!(free_seats(&[0], [1u8, 2].into_iter()), vec![3]);
-        assert_eq!(free_seats(&[0, 1], [2u8, 3].into_iter()), Vec::<u8>::new());
+    fn free_seats_excludes_occupied_and_other_owners_reservations() {
+        let reservation = |owner: Option<&str>| Reservation {
+            until_ms: u64::MAX,
+            owner: owner.map(|o| o.to_owned()),
+        };
+        assert_eq!(free_for(&[], &HashMap::new(), None), vec![0, 1, 2, 3]);
+
+        let mut reserved = HashMap::new();
+        reserved.insert(1, reservation(Some("p-1")));
+        reserved.insert(2, reservation(None));
+        // p-2 看不到 p-1 的座位，但能看到匿名预留（带座位号即可兑现）。
+        assert_eq!(free_for(&[0], &reserved, Some("p-2")), vec![2, 3]);
+        // p-1 能看到自己的预留。
+        assert_eq!(free_for(&[0], &reserved, Some("p-1")), vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn reservation_binds_to_owner() {
+        let host = RoomHost::spawn("m-owner", 7, RoomOptions::default()).expect("建桌");
+        let seat = host.reserve_for(Some("p-1".to_owned())).await.expect("预留");
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let other = host
+            .join_as(Some(seat), tx.clone(), Some("p-2".to_owned()))
+            .await;
+        assert!(
+            matches!(other, Err(JoinError::SeatTaken { .. })),
+            "别人不得抢占已绑定的预留"
+        );
+
+        let same = host
+            .join_as(Some(seat), tx, Some("p-1".to_owned()))
+            .await
+            .expect("本人兑现预留");
+        assert_eq!(same, seat);
     }
 }

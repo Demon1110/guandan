@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use crate::card::{Face, Rank, Suit};
 use crate::error::DeckError;
-use crate::theme::{CornerPos, Layout, Theme};
+use crate::theme::{CornerPos, CornerSuitPlacement, Layout, Theme};
 
 /// 本局级牌状态。只认服务端下发的 `levelRank`，客户端不自行推断。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,6 +52,10 @@ pub const CORNER_SCALE_MAX: f64 = 3.0;
 /// 放大角标时，点数与角标花色之间的固定间隙（画布单位）。主题默认间距是按小字号给的，
 /// 字号一放大就得重排，否则花色会被点数压住。
 const CORNER_GAP: f64 = 10.0;
+
+/// classic 花阵左右两列之间的最小视觉间距（画布单位）。角标放大到极限时，
+/// 花阵宁可整体缩一点，也要留出这道缝，否则两列点位会粘在一起。
+const PIP_GAP: f64 = 26.0;
 
 /// 单个牌面（角标按主题原样）。`level = None` 表示本局无级牌状态（不出 L4）。
 pub fn render_face(
@@ -212,7 +216,20 @@ fn render_normal_compact(
     if (corner - 1.0).abs() > f64::EPSILON {
         slot.scale *= corner;
         suit_slot.scale *= corner;
-        suit_slot.y = slot.y + rank_frag.height * slot.scale + CORNER_GAP * corner;
+    }
+    // 花色摆点数下方还是右侧（`cornerSuitPlacement`）。下方只在放大后重排（1.0 保持素材原样），
+    // 右侧是配置驱动的，任何时候都按点数的实际右缘/底缘摆。
+    match meta.corner_suit_placement() {
+        CornerSuitPlacement::Below if (corner - 1.0).abs() > f64::EPSILON => {
+            suit_slot.y = slot.y + rank_frag.height * slot.scale + CORNER_GAP * corner;
+        }
+        CornerSuitPlacement::Below => {}
+        CornerSuitPlacement::Right => {
+            // 右侧摆放：贴着点数的右缘，纵向居中对齐点数（中央没有花阵，不用担心挤压）
+            suit_slot.x = slot.x + rank_frag.width * slot.scale + CORNER_GAP * corner;
+            suit_slot.y = slot.y
+                + (rank_frag.height * slot.scale - suit_frag.height * suit_slot.scale) / 2.0;
+        }
     }
 
     // L2 花色：角标 + 中央 + 右下镜像（角标区）
@@ -299,6 +316,33 @@ fn render_normal_classic(
     let rank_frag = fragment(rank_rel, theme.asset(rank_rel))?;
     let rank_inner = recolor(rank_frag.inner, ink);
 
+    // 角标：点数放大后把花色重排到放大后的点数下方（与 compact 同一套规则），
+    // 否则大字会直接压住花色，读不出什么花色。下方 / 右侧由 `cornerSuitPlacement` 决定。
+    let mut corner_rank = spec.corner_rank;
+    let mut corner_suit = spec.corner_suit;
+    if (corner_scale - 1.0).abs() > f64::EPSILON {
+        corner_rank.scale *= corner_scale;
+        corner_suit.scale *= corner_scale;
+    }
+    match meta.corner_suit_placement() {
+        CornerSuitPlacement::Below if (corner_scale - 1.0).abs() > f64::EPSILON => {
+            corner_suit.y = corner_rank.y
+                + rank_frag.height * corner_rank.scale
+                + CORNER_GAP * corner_scale;
+        }
+        CornerSuitPlacement::Below => {}
+        CornerSuitPlacement::Right => {
+            // 右侧摆放靠点数本身占位，花色到这儿的间距不再跟着倍率涨（否则花阵没地方站）
+            let gap = CORNER_GAP;
+            corner_suit.x =
+                corner_rank.x + rank_frag.width * corner_rank.scale + gap;
+            corner_suit.y = corner_rank.y
+                + (rank_frag.height * corner_rank.scale
+                    - suit_frag.height * corner_suit.scale)
+                    / 2.0;
+        }
+    }
+
     // 中央花阵 / 大符号
     writeln!(out, "<g id=\"L2-suit\">").ok();
     match rank.value() {
@@ -321,10 +365,40 @@ fn render_normal_classic(
                 .pip_positions
                 .get(rank.label())
                 .ok_or_else(|| DeckError::ThemeInvalid(format!("classic 缺 {} 的花阵", value)))?;
-            let s = spec.pip_scale;
+            // 花阵安全区：先按 pipInset 留出内边距，再按角标实际宽度继续往里让，
+            // 保证放大的点数/花色不会压到最近的点位。
+            let corner_right = (corner_rank.x + rank_frag.width * corner_rank.scale)
+                .max(corner_suit.x + suit_frag.width * corner_suit.scale);
+            let corner_gap = match meta.corner_suit_placement() {
+                CornerSuitPlacement::Below => CORNER_GAP * corner_scale,
+                CornerSuitPlacement::Right => CORNER_GAP,
+            };
+            let inset_x = (spec.pip_inset * cw)
+                .max(corner_right + corner_gap)
+                .min(cw * 0.42);
+            let inset_y = spec.pip_inset * ch;
+            // 角标特别大时左右两列会被挤到一起：此时等比缩小花阵，宁可小一点也不让点位互相压住
+            let two_col = points.iter().any(|p| (p[0] - 0.5).abs() > 0.1);
+            let mut s = spec.pip_scale;
+            if two_col {
+                // 两列中心分别在 inset_x + 半宽 与 cw - inset_x - 半宽，两列间距 = cw - 2*inset_x - 符号宽
+                let cap = (cw - 2.0 * inset_x - PIP_GAP) / (2.0 * suit_frag.width);
+                s = s.min(cap.max(0.15));
+            }
+            let half_w = suit_frag.width * s / 2.0;
+            let half_h = suit_frag.height * s / 2.0;
+            let min_x = inset_x + half_w;
+            let min_y = inset_y + half_h;
+            let max_y = (ch - inset_y - half_h).max(min_y);
             for p in points {
-                let tx = p[0] * cw - suit_frag.width * s / 2.0;
-                let ty = p[1] * ch - suit_frag.height * s / 2.0;
+                // 左右对称收拢：哪一列离牌边近就按哪一列让开，避免花阵整体偏到一边
+                let dx = p[0].min(1.0 - p[0]) * cw;
+                let ceiling = (cw * 0.5).max(min_x);
+                let dx = dx.clamp(min_x, ceiling);
+                let cx = if p[0] < 0.5 { dx } else { cw - dx };
+                let cy = (p[1] * ch).clamp(min_y, max_y);
+                let tx = cx - half_w;
+                let ty = cy - half_h;
                 writeln!(
                     out,
                     "<g transform=\"translate({} {}) scale({})\">{}</g>",
@@ -338,8 +412,6 @@ fn render_normal_classic(
         }
     }
     // 四角花色
-    let mut corner_suit = spec.corner_suit;
-    corner_suit.scale *= corner_scale;
     let suit_art = Fragment {
         inner: &suit_inner,
         width: suit_frag.width,
@@ -353,8 +425,6 @@ fn render_normal_classic(
 
     // 四角点数
     writeln!(out, "<g id=\"L3-rank\">").ok();
-    let mut corner_rank = spec.corner_rank;
-    corner_rank.scale *= corner_scale;
     let rank_art = Fragment {
         inner: &rank_inner,
         width: rank_frag.width,

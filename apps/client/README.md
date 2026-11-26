@@ -71,6 +71,8 @@ http://127.0.0.1:8123/index.html?seed=0x51EDA101&seat=2&level=1
 - **默认值来自主题包**：`theme.json` 里可选 `cornerScale`（1.0–3.0，即 100%–300%），`defaults` 声明了 2.2。
   优先级是 `?corner=` / `localStorage`（手动调过）> 主题 `cornerScale` > 客户端兜底 220；
   采用了主题默认时日志会写一条「角标字号采用主题默认：220%（theme.json cornerScale=2.2）」（详见 deckart README 14.7）。
+- **角标位置也由主题决定**：`theme.json` 的 `corners` 可选 `topLeft`/`topRight`/`bottomLeft`/`bottomRight`
+  （详见 deckart README 14.8）。横排只露左上一条边，主题若去掉 `topLeft`，横排就读不出点数。
 - **不做整图放大裁切**：早先版本把 100×140 的牌按 350% 放大、只露左上角，主题的底板圆角、描边、
   中央花阵全被裁掉，看着就是一张白底字卡。现在整张牌 **1:1 显示**，只把角标那一区在牌面内部放大。
 - **横排紧叠**：桌面 100×140、`margin-left:-44px`（每张露 56px），每行最多 14 张、27 张折 2 行；

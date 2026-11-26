@@ -1,14 +1,14 @@
-//! 掼蛋联机服务端（M2 首个切片）。
+//! 掼蛋联机服务端（M2）。
 //!
-//! 本切片交付的东西：
-//! - HTTP：`/healthz`、`/api/rooms`（建房 / 查房）；
-//! - WS：`/ws`，protobuf over WebSocket（帧头见 `gf_protocol::wire`）；
-//! - 房间：满四人自动发牌，动作判定走 `gf-table-runtime::Room`，结算广播，
-//!   断线重连给全量快照。
+//! 已交付的切片：
+//! - 联机骨架：HTTP 建房、WS protobuf、满四人发牌、动作判定、结算广播；
+//! - 增量重连：`ReconnectBuffer` 内补发 `RoomDelta`，跨局/结算落快照重置；
+//! - 大厅：房间码、凭码预占座位、匹配队列（内存态）；
+//! - 账号：手机号 + 短信验证码登录、access/refresh token、测试白名单。
 //!
-//! 明确不在本切片：账号与短信、匹配队列、PG/Redis 落库、回放导出、观战。
-//! 这些按 `docs/开发计划.md` §3 M2 的顺序排在后面的切片。
+//! 未做：PG/Redis 落库、回放导出、观战、桌面壳产物。
 
+pub mod auth;
 pub mod config;
 pub mod events;
 pub mod host;
@@ -21,8 +21,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -33,6 +33,7 @@ use prost::Message as _;
 use serde::Deserialize;
 use tokio::sync::{mpsc, Mutex, RwLock};
 
+pub use auth::{Auth, Profile, Session};
 pub use config::ServerConfig;
 pub use host::{JoinError, RoomHost, RoomOptions};
 pub use lobby::{Lobby, Mode, TicketState};
@@ -46,6 +47,8 @@ pub struct App {
     rooms: RwLock<HashMap<String, Arc<RoomHost>>>,
     /// 房间码与匹配队列（内存态；PG/Redis 切片替换存储，接口不变）。
     lobby: Mutex<Lobby>,
+    /// 账号、验证码与令牌（内存态；PG 切片替换 `profiles` 存储）。
+    auth: Auth,
     room_seq: AtomicU64,
     started_at: Instant,
 }
@@ -53,10 +56,18 @@ pub struct App {
 impl App {
     /// 建进程状态。
     pub fn new(cfg: ServerConfig) -> Arc<Self> {
+        let auth = Auth::new(
+            cfg.auth_salt.clone(),
+            cfg.jwt_secret.clone(),
+            cfg.sms_test_whitelist.clone(),
+            cfg.sms_test_code.clone(),
+            Box::new(auth::LogSmsSender),
+        );
         Arc::new(Self {
             cfg,
             rooms: RwLock::new(HashMap::new()),
             lobby: Mutex::new(Lobby::new()),
+            auth,
             room_seq: AtomicU64::new(1),
             started_at: Instant::now(),
         })
@@ -170,9 +181,61 @@ impl App {
                 "/api/match/queue/{ticket_id}",
                 get(match_status).delete(match_cancel),
             )
+            .route("/api/auth/sms", post(auth_sms))
+            .route("/api/auth/login", post(auth_login))
+            .route("/api/auth/refresh", post(auth_refresh))
+            .route("/api/profile", get(profile))
             .route("/ws", get(ws_upgrade))
             .with_state(self.clone())
     }
+
+    /// 从 `Authorization: Bearer ...` 取玩家身份。
+    ///
+    /// - 没带 token 且未开 `GF_REQUIRE_AUTH`：返回 `Ok(None)`（本机联调放行）；
+    /// - 带了 token 但无效：一律 401（显式给了坏凭据不能当匿名）；
+    /// - 开了强制鉴权却没带：401。
+    ///
+    /// `Err` 装箱：`Response` 超过 128 字节，直接塞进 `Result` 会被 clippy 判大错误体。
+    fn authenticate(
+        &self,
+        headers: &HeaderMap,
+    ) -> Result<Option<String>, Box<axum::response::Response>> {
+        let raw = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok());
+        match raw {
+            Some(value) => {
+                let token = value
+                    .strip_prefix("Bearer ")
+                    .or_else(|| value.strip_prefix("bearer "))
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty());
+                match token.and_then(|t| self.auth.verify_access(t, now_unix_ms())) {
+                    Some(player_id) => Ok(Some(player_id)),
+                    None => Err(Box::new(unauthorized())),
+                }
+            }
+            None if self.cfg.require_auth => Err(Box::new(unauthorized())),
+            None => Ok(None),
+        }
+    }
+}
+
+/// 墙钟毫秒：账号令牌的有效期要跨进程重启，不能用进程内单调时钟。
+pub fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn unauthorized() -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(serde_json::json!({"reason": "AUTH_INVALID"})),
+    )
+        .into_response()
 }
 
 /// 启动监听；`addr` 由调用方给出（`0` 端口可用于测试）。
@@ -225,9 +288,13 @@ struct RoomCreateBody {
 
 async fn room_create(
     State(app): State<Arc<App>>,
+    headers: HeaderMap,
     Json(body): Json<RoomCreateBody>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse as _;
+    if let Err(resp) = app.authenticate(&headers) {
+        return *resp;
+    }
     let game_id = body.game_id.unwrap_or_else(|| GAME_ID.to_owned());
     if game_id != GAME_ID {
         return invalid_request("GAME_UNKNOWN");
@@ -258,15 +325,20 @@ struct RoomJoinBody {
 
 async fn room_join(
     State(app): State<Arc<App>>,
+    headers: HeaderMap,
     Json(body): Json<RoomJoinBody>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse as _;
+    let owner = match app.authenticate(&headers) {
+        Ok(owner) => owner,
+        Err(resp) => return *resp,
+    };
     let Some(room) = app.room_by_code(&body.invite_code).await else {
         // 错误码表里没有「邀请码不存在」，按入参不合规走 `RS_SCHEMA_INVALID`，
         // 具体原因放 `detail`（`M2-GAP-05`，待项目方决定是否补正式码）。
         return invalid_request("INVITE_CODE_UNKNOWN");
     };
-    match room.reserve().await {
+    match room.reserve_for(owner).await {
         Ok(seat) => Json(serde_json::json!({
             "matchId": room.match_id(),
             "seat": seat,
@@ -296,9 +368,13 @@ struct MatchQueueBody {
 
 async fn match_queue(
     State(app): State<Arc<App>>,
+    headers: HeaderMap,
     Json(body): Json<MatchQueueBody>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse as _;
+    if let Err(resp) = app.authenticate(&headers) {
+        return *resp;
+    }
     let game_id = body.game_id.unwrap_or_else(|| GAME_ID.to_owned());
     if game_id != GAME_ID {
         return invalid_request("GAME_UNKNOWN");
@@ -337,6 +413,119 @@ async fn match_cancel(
     Json(serde_json::json!({"ok": app.cancel_ticket(&ticket_id).await})).into_response()
 }
 
+/// `POST /api/auth/sms`（§5.15）：发验证码。
+#[derive(Deserialize)]
+struct SmsBody {
+    phone: String,
+}
+
+async fn auth_sms(
+    State(app): State<Arc<App>>,
+    Json(body): Json<SmsBody>,
+) -> axum::response::Response {
+    use auth::SmsError;
+    use axum::response::IntoResponse as _;
+    match app.auth.request_sms(&body.phone, now_unix_ms()) {
+        Ok(challenge) => Json(serde_json::json!({
+            "requestId": challenge.request_id,
+            "cooldownSec": challenge.cooldown_sec,
+        }))
+        .into_response(),
+        Err(SmsError::InvalidPhone) => invalid_request("PHONE_INVALID"),
+        Err(SmsError::RateLimited { retry_after_ms }) => (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({
+                "reason": "RATE_LIMITED",
+                "retryAfterMs": retry_after_ms,
+            })),
+        )
+            .into_response(),
+    }
+}
+
+/// `POST /api/auth/login`（§5.15）：校码登录，发 access + refresh。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LoginBody {
+    phone: String,
+    code: String,
+    #[serde(default)]
+    client_version: String,
+}
+
+async fn auth_login(
+    State(app): State<Arc<App>>,
+    Json(body): Json<LoginBody>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    if !app.cfg.accepts_version(&body.client_version) {
+        return (
+            StatusCode::UPGRADE_REQUIRED,
+            Json(serde_json::json!({"reason": "CLIENT_TOO_OLD"})),
+        )
+            .into_response();
+    }
+    match app.auth.login(&body.phone, &body.code, now_unix_ms()) {
+        Ok(session) => Json(serde_json::json!({
+            "token": session.token,
+            "refreshToken": session.refresh_token,
+            "expiresIn": session.expires_in,
+            "playerId": session.player_id,
+        }))
+        .into_response(),
+        Err(_) => unauthorized(),
+    }
+}
+
+/// `POST /api/auth/refresh`（§5.15）：换新 access，旧 refresh 立刻作废。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RefreshBody {
+    refresh_token: String,
+}
+
+async fn auth_refresh(
+    State(app): State<Arc<App>>,
+    Json(body): Json<RefreshBody>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    match app.auth.refresh(&body.refresh_token, now_unix_ms()) {
+        Ok(session) => Json(serde_json::json!({
+            "token": session.token,
+            "refreshToken": session.refresh_token,
+            "expiresIn": session.expires_in,
+        }))
+        .into_response(),
+        Err(_) => unauthorized(),
+    }
+}
+
+/// `GET /api/profile`（§5.15）：个人资料。
+///
+/// `stats` 在 PG 切片接入 `player_stat` 前恒为空表——字段位先按契约留好。
+async fn profile(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    let player_id = match app.authenticate(&headers) {
+        Ok(Some(player_id)) => player_id,
+        Ok(None) => return unauthorized(),
+        Err(resp) => return *resp,
+    };
+    let Some(profile) = app.auth.profile(&player_id) else {
+        return unauthorized();
+    };
+    Json(serde_json::json!({
+        "playerId": profile.player_id,
+        "nickname": profile.nickname,
+        "phoneTail4": profile.phone_tail4,
+        "stats": [],
+    }))
+    .into_response()
+}
+
+
 /// 入参不合规（§5.7 没有专门的「参数错误」码，统一复用 `RS_SCHEMA_INVALID`，
 /// 细分原因写 `detail`）。
 fn invalid_request(detail: &str) -> axum::response::Response {
@@ -348,12 +537,29 @@ fn invalid_request(detail: &str) -> axum::response::Response {
         .into_response()
 }
 
-async fn ws_upgrade(ws: WebSocketUpgrade, State(app): State<Arc<App>>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| session(app, socket))
+#[derive(Deserialize)]
+struct WsQuery {
+    token: Option<String>,
+}
+
+async fn ws_upgrade(
+    ws: WebSocketUpgrade,
+    State(app): State<Arc<App>>,
+    Query(query): Query<WsQuery>,
+) -> axum::response::Response {
+    let owner = match query.token.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        Some(token) => match app.auth.verify_access(token, now_unix_ms()) {
+            Some(player_id) => Some(player_id),
+            None => return unauthorized(),
+        },
+        None if app.cfg.require_auth => return unauthorized(),
+        None => None,
+    };
+    ws.on_upgrade(move |socket| session(app, socket, owner))
 }
 
 /// 单条 WS 连接的生命周期：入座 → 收动作/重连 → 断开记账。
-async fn session(app: Arc<App>, socket: WebSocket) {
+async fn session(app: Arc<App>, socket: WebSocket, owner: Option<String>) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
@@ -407,7 +613,7 @@ async fn session(app: Arc<App>, socket: WebSocket) {
                 }
                 let room = app.room_or_create(&join.match_id).await;
                 let hint = join.seat.and_then(|s| u8::try_from(s).ok());
-                match room.join(hint, tx.clone()).await {
+                match room.join_as(hint, tx.clone(), owner.clone()).await {
                     Ok(seat) => {
                         let _ = tx.send(events::join_ack_frame(
                             &join.match_id,
@@ -458,6 +664,12 @@ async fn session(app: Arc<App>, socket: WebSocket) {
                 let Ok(re) = pb::Reconnect::decode(body) else { break };
                 let room = app.room_or_create(&re.match_id).await;
                 let Ok(seat) = u8::try_from(re.seat) else { break };
+                // 带 token 的重连只允许回到本人占过的座位（§5.9 AUTH_INVALID 的座位口径）。
+                if let Some(owner) = &owner {
+                    if room.seat_owner(seat).await.as_deref() != Some(owner.as_str()) {
+                        break;
+                    }
+                }
                 if !room.rebind(seat, tx.clone()).await {
                     break;
                 }
@@ -490,3 +702,4 @@ async fn session(app: Arc<App>, socket: WebSocket) {
     drop(tx);
     let _ = writer.await;
 }
+

@@ -716,3 +716,196 @@ fn corner_scale_rejects_out_of_range() {
         );
     }
 }
+
+/// 抠出 L2-suit 里每一个 `<g transform="translate(x y)…scale(s)">` 的 (x, y, s)。
+/// 花阵点位写在最前面，角标花色在最后，调用方按顺序切分。
+fn suit_groups(svg: &str) -> Vec<(f64, f64, f64)> {
+    let start = svg.find("<g id=\"L2-suit\">").expect("应有 L2-suit");
+    let end = svg.find("<g id=\"L3-rank\">").expect("应有 L3-rank");
+    let body = &svg[start..end];
+    let mut out = Vec::new();
+    let mut rest = body;
+    while let Some(idx) = rest.find("translate(") {
+        rest = &rest[idx + "translate(".len()..];
+        let close = rest.find(')').expect("translate 应有右括号");
+        let coords: Vec<f64> = rest[..close]
+            .split_whitespace()
+            .filter_map(|t| t.parse().ok())
+            .collect();
+        assert_eq!(coords.len(), 2, "translate 应是两个坐标");
+        let tail = &rest[close..];
+        let scale_start = tail.find("scale(").expect("组上应有 scale");
+        let scale_end = tail[scale_start..].find(')').expect("scale 应有右括号");
+        let s: f64 = tail[scale_start + "scale(".len()..scale_start + scale_end]
+            .parse()
+            .expect("scale 应是数字");
+        out.push((coords[0], coords[1], s));
+    }
+    out
+}
+
+#[test]
+fn classic_pips_clear_corner_marks_when_corners_are_huge() {
+    for corner in [1.0, 2.4, 3.0] {
+        let theme = theme_variant("classic-clear", |json| {
+            json.replace("\"layout\": \"compact\"", "\"layout\": \"classic\"")
+        });
+        let face = Face::normal(Suit::Diamond, Rank::new(10).unwrap());
+        let svg = gf_deckart::render_face_opts(
+            &theme,
+            face,
+            gf_deckart::FaceOptions {
+                level: None,
+                corner_scale: corner,
+            },
+        )
+        .unwrap();
+        let groups = suit_groups(&svg);
+        // 前 10 个是 D10 的花阵，最后 2 个是左上 / 右下的角标花色
+        let pips = &groups[..10];
+        let corner_suit = groups[10];
+
+        // 角标点数放大后的实际宽度（素材 100×140，classic cornerRank scale=0.36）
+        let rank_scale = 0.36 * corner;
+        let rank_right = 34.0 + 100.0 * rank_scale;
+        let rank_bottom = 30.0 + 140.0 * rank_scale;
+        let inset = 0.10 * 500.0;
+
+        for (i, (x, y, s)) in pips.iter().enumerate() {
+            assert!(
+                *x >= rank_right - 0.01,
+                "{corner}x 第 {i} 个点位左缘 {x} 压到了角标（角标右缘 {rank_right}）"
+            );
+            assert!(*x + 100.0 * s <= 500.0 - inset + 0.01, "点位右缘越界");
+            assert!(*y >= inset * (700.0 / 500.0) - 0.01, "点位顶缘越界");
+            assert!(*y + 100.0 * s <= 700.0 - inset * (700.0 / 500.0) + 0.01, "点位底缘越界");
+        }
+
+        // 两列不能粘在一起
+        let left_x = pips[0].0 + 100.0 * pips[0].2;
+        let right_x = pips[1].0;
+        assert!(
+            right_x - left_x >= 20.0,
+            "{corner}x 左右两列间距过小：{left_x} → {right_x}"
+        );
+
+        // 角标花色必须排在放大后的点数下方
+        assert!(
+            corner_suit.1 >= rank_bottom + 8.0,
+            "{corner}x 角标花色 y={} 仍被点数（底 {rank_bottom}）压住",
+            corner_suit.1
+        );
+    }
+}
+
+#[test]
+fn classic_pip_inset_is_validated() {
+    let src = std::fs::read_to_string(theme_dir().join("theme.json")).unwrap();
+    let base: serde_json::Value = serde_json::from_str(&src).unwrap();
+    for (i, bad) in [0.5, -0.1].iter().enumerate() {
+        let mut v = base.clone();
+        v["classic"]["pipInset"] = serde_json::json!(bad);
+        let dir = std::env::temp_dir().join(format!("gfdeck-pipinset-{i}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        copy_dir(&theme_dir(), &dir);
+        std::fs::write(
+            dir.join("theme.json"),
+            serde_json::to_string_pretty(&v).unwrap(),
+        )
+        .unwrap();
+        let err = match gf_deckart::Theme::load_dir(&dir) {
+            Ok(_) => panic!("pipInset {bad} 应被拒"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, gf_deckart::DeckError::ThemeInvalid(_)),
+            "pipInset {bad} 应报 ThemeInvalid，实际 {err}"
+        );
+    }
+}
+
+#[test]
+fn corner_suit_can_be_placed_right_of_the_rank() {
+    let face = Face::normal(Suit::Diamond, Rank::new(10).unwrap());
+
+    // 缺省 = 点数下方：compact 花色沿用素材里的 slot 坐标（x 36，y 112）
+    let def = suit_groups(&render_face(&theme(), face, None).unwrap());
+    assert_eq!(def[0].0, 36.0, "缺省不重排时花色留在 slot 原坐标");
+
+    // 配成右侧：花色贴到点数右缘之外，纵向与点数居中
+    let right = theme_variant("placement-right", |json| {
+        json.replace(
+            "\"cornerScale\": 2.2,",
+            "\"cornerScale\": 2.2,\n  \"cornerSuitPlacement\": \"right\",",
+        )
+    });
+    let svg = gf_deckart::render_face_opts(
+        &right,
+        face,
+        gf_deckart::FaceOptions {
+            level: None,
+            corner_scale: 2.2,
+        },
+    )
+    .unwrap();
+    let groups = suit_groups(&svg);
+    let (sx, sy, ss) = groups[0];
+    let rank_scale = 0.42 * 2.2;
+    let rank_right = 30.0 + 100.0 * rank_scale;
+    let rank_top = 34.0;
+    let rank_bottom = rank_top + 140.0 * rank_scale;
+    assert!(sx >= rank_right + 9.0, "花色应排在点数右侧：{sx} vs {rank_right}");
+    assert!(sy > rank_top && sy + 100.0 * ss < rank_bottom, "花色应落在点数的高度范围内");
+    let suit_center = sy + 50.0 * ss;
+    let rank_center = rank_top + 70.0 * rank_scale;
+    assert!(
+        (suit_center - rank_center).abs() < 1.0,
+        "右侧摆放应纵向居中：花色中心 {suit_center} vs 点数中心 {rank_center}"
+    );
+
+    // classic：同样配成右侧，花阵要让开花色，不能压上去
+    let classic_right = theme_variant("placement-right-classic", |json| {
+        json.replace("\"layout\": \"compact\"", "\"layout\": \"classic\"")
+            .replace(
+                "\"cornerScale\": 2.2,",
+                "\"cornerScale\": 2.2,\n  \"cornerSuitPlacement\": \"right\",",
+            )
+    });
+    for corner in [1.0, 1.8, 2.4] {
+        let svg = gf_deckart::render_face_opts(
+            &classic_right,
+            face,
+            gf_deckart::FaceOptions {
+                level: None,
+                corner_scale: corner,
+            },
+        )
+        .unwrap();
+        let groups = suit_groups(&svg);
+        let pips = &groups[..10];
+        let (csx, _, css) = groups[10];
+        let suit_right = csx + 100.0 * css;
+        let pip_left = pips.iter().map(|p| p.0).fold(f64::MAX, f64::min);
+        assert!(
+            pip_left >= suit_right,
+            "{corner}x 花阵左缘 {pip_left} 压到了右侧花色（右缘 {suit_right}）"
+        );
+    }
+}
+
+#[test]
+fn corner_suit_placement_rejects_unknown_value() {
+    let src = std::fs::read_to_string(theme_dir().join("theme.json")).unwrap();
+    let mut v: serde_json::Value = serde_json::from_str(&src).unwrap();
+    for bad in ["left", "above"] {
+        v["cornerSuitPlacement"] = serde_json::json!(bad);
+        let err = gf_deckart::ThemeMeta::parse(&serde_json::to_string(&v).unwrap())
+            .err()
+            .unwrap_or_else(|| panic!("{bad} 应被拒"));
+        assert!(
+            matches!(err, gf_deckart::DeckError::ThemeInvalid(_)),
+            "{bad} 应报 ThemeInvalid，实际 {err}"
+        );
+    }
+}
+

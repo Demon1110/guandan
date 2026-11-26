@@ -147,6 +147,11 @@ fn default_preview_level() -> Option<u8> {
     Some(2)
 }
 
+/// 花阵安全边距缺省值：牌面四周留 10% 的空白
+fn default_pip_inset() -> f64 {
+    0.10
+}
+
 /// `layout = classic` 的花阵规格。坐标全部归一化到 0..1（相对牌面宽高），
 /// 便于同一套表复用到不同 canvas 尺寸。
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -158,6 +163,11 @@ pub struct ClassicSpec {
     pub pip_scale: f64,
     /// A 用一个大符号，缩放独立
     pub ace_scale: f64,
+    /// 花阵安全边距（归一化，占牌宽/高比例）。点位会被压进这块内边距之内，
+    /// 保证花阵四周留白；角标放大后还会自动再往里让，避免点数压住花阵。
+    /// 缺省 0.10。
+    #[serde(default = "default_pip_inset")]
+    pub pip_inset: f64,
     /// 2..10 的花阵点位（归一化中心坐标），key 为点数标签
     #[serde(default)]
     pub pip_positions: std::collections::BTreeMap<String, Vec<[f64; 2]>>,
@@ -254,6 +264,24 @@ pub enum Layout {
     Classic,
 }
 
+/// 角标花色相对点数的摆放：点数**下方**（传统扑克）还是点数**右侧**。
+/// 缺省 `below`；角标放大后渲染层会按这个方向重排，保证花色不会被点数压住。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CornerSuitPlacement {
+    Below,
+    Right,
+}
+
+impl CornerSuitPlacement {
+    pub fn name(self) -> &'static str {
+        match self {
+            CornerSuitPlacement::Below => "below",
+            CornerSuitPlacement::Right => "right",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThemeMeta {
@@ -268,10 +296,13 @@ pub struct ThemeMeta {
     /// 缺省跟布局走：`compact` = 左上 + 右下，`classic` = 四角都有。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub corners: Option<Vec<CornerPos>>,
-    /// 主题默认角标倍率（可选）：1.0 = 素材原样，2.2 = 220%。缺省即 1.0。
+    /// 角标倍率（可选）：1.0 = 素材原样，2.2 = 220%。缺省即 1.0。
     /// 客户端滑块没被手动调过时用它；`gfdeck render/render-all` 没给 `--corner` 时也用它。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub corner_scale: Option<f64>,
+    /// 角标花色摆在点数下方还是右侧（可选，缺省 `below`）。两种布局共用。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corner_suit_placement: Option<CornerSuitPlacement>,
     pub layers: Layers,
     pub badges: Badges,
     pub slots: Slots,
@@ -306,6 +337,12 @@ impl ThemeMeta {
                 Layout::Classic => CornerPos::ALL.to_vec(),
             },
         }
+    }
+
+    /// 角标花色摆哪：主题没写就是点数下方（传统扑克口径）。
+    pub fn corner_suit_placement(&self) -> CornerSuitPlacement {
+        self.corner_suit_placement
+            .unwrap_or(CornerSuitPlacement::Below)
     }
 
     /// 引用到的全部素材相对路径（去重、保持声明顺序）。
@@ -593,6 +630,12 @@ fn validate_classic(spec: &ClassicSpec) -> Result<(), DeckError> {
         return Err(DeckError::ThemeInvalid(
             "classic.pipScale/aceScale 必须为正".into(),
         ));
+    }
+    if !(0.0..=0.35).contains(&spec.pip_inset) {
+        return Err(DeckError::ThemeInvalid(format!(
+            "classic.pipInset 必须归一化到 0..0.35，实际 {}",
+            spec.pip_inset
+        )));
     }
     if let Some(style) = &spec.court_style {
         if !matches!(style.as_str(), "monogram" | "figure") {
