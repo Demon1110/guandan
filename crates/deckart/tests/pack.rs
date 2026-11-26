@@ -263,6 +263,29 @@ fn path_traversal_is_rejected() {
 }
 
 #[test]
+fn pack_preserves_declared_corner_scale() {
+    // theme.json 是「重新序列化」进包的（不是原样字节），默认角标不能在路上丢掉
+    let dir = theme_dir();
+    let out = tmp("corner").with_extension("gfdeck");
+    let (key, key_id) = builtin_key();
+    pack_dir(
+        &dir,
+        &out,
+        &PackOptions {
+            key: &key,
+            key_id: &key_id,
+            signing_key: None,
+        },
+    )
+    .unwrap();
+    let direct = Theme::load_dir(&dir).unwrap();
+    let from_pack = open(&out, &key, None).unwrap();
+    assert!(direct.has_corner_scale());
+    assert!(from_pack.has_corner_scale(), "包内必须保留 cornerScale");
+    assert!((from_pack.corner_scale() - direct.corner_scale()).abs() < 1e-9);
+}
+
+#[test]
 fn pack_theme_accepts_loaded_theme() {
     // 包 → 内存主题 → 再打包，指纹与条目数必须一致（用于「换密钥重发」场景）
     let dir = theme_dir();

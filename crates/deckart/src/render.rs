@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use crate::card::{Face, Rank, Suit};
 use crate::error::DeckError;
-use crate::theme::{Layout, Theme};
+use crate::theme::{CornerPos, Layout, Theme};
 
 /// 本局级牌状态。只认服务端下发的 `levelRank`，客户端不自行推断。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -216,16 +216,26 @@ fn render_normal_compact(
     }
 
     // L2 花色：角标 + 中央 + 右下镜像（角标区）
+    let suit_art = Fragment {
+        inner: &suit_inner,
+        width: suit_frag.width,
+        height: suit_frag.height,
+    };
+    let rank_art = Fragment {
+        inner: &rank_inner,
+        width: rank_frag.width,
+        height: rank_frag.height,
+    };
+    let corners = meta.corner_positions();
     writeln!(out, "<g id=\"L2-suit\">").ok();
-    writeln!(
-        out,
-        "<g transform=\"translate({} {}) scale({})\">{}</g>",
-        num(suit_slot.x),
-        num(suit_slot.y),
-        num(suit_slot.scale),
-        suit_inner
-    )
-    .ok();
+    // 右下角标有自己的镜像组（与点数成对），先跳过，最后单独写
+    for corner in corners
+        .iter()
+        .copied()
+        .filter(|c| *c != CornerPos::BottomRight)
+    {
+        place(out, &suit_art, suit_slot, corner, w, h);
+    }
     writeln!(
         out,
         "<g transform=\"translate({} {}) scale({})\">{}</g>",
@@ -237,39 +247,25 @@ fn render_normal_compact(
     .ok();
     writeln!(out, "</g>").ok();
 
-    // L3 点数：左上角标 + 右下镜像
+    // L3 点数：按 corners 配置逐个角出，左上正写、其余旋转 180°
     writeln!(out, "<g id=\"L3-rank\">").ok();
-    writeln!(
-        out,
-        "<g transform=\"translate({} {}) scale({})\">{}</g>",
-        num(slot.x),
-        num(slot.y),
-        num(slot.scale),
-        rank_inner
-    )
-    .ok();
-    // 右下镜像：把素材原点平移到 (W-x, H-y) 再旋转 180°
-    writeln!(
-        out,
-        "<g transform=\"translate({} {}) rotate(180) scale({})\">{}</g>",
-        num(w - slot.x),
-        num(h - slot.y),
-        num(slot.scale),
-        rank_inner
-    )
-    .ok();
+    for corner in corners.iter().copied() {
+        place(out, &rank_art, slot, corner, w, h);
+    }
     writeln!(out, "</g>").ok();
 
     // 右下镜像的角标花色（与点数一起构成对称角标）
-    writeln!(
-        out,
-        "<g id=\"L2-suit-mirror\" transform=\"translate({} {}) rotate(180) scale({})\">{}</g>",
-        num(w - suit_slot.x),
-        num(h - suit_slot.y),
-        num(suit_slot.scale),
-        suit_inner
-    )
-    .ok();
+    if corners.contains(&CornerPos::BottomRight) {
+        writeln!(
+            out,
+            "<g id=\"L2-suit-mirror\" transform=\"translate({} {}) rotate(180) scale({})\">{}</g>",
+            num(w - suit_slot.x),
+            num(h - suit_slot.y),
+            num(suit_slot.scale),
+            suit_inner
+        )
+        .ok();
+    }
     Ok(())
 }
 
@@ -349,12 +345,8 @@ fn render_normal_classic(
         width: suit_frag.width,
         height: suit_frag.height,
     };
-    for corner in [
-        Corner::TopLeft,
-        Corner::TopRight,
-        Corner::BottomLeft,
-        Corner::BottomRight,
-    ] {
+    let corners = meta.corner_positions();
+    for corner in corners.iter().copied() {
         place(out, &suit_art, corner_suit, corner, cw, ch);
     }
     writeln!(out, "</g>").ok();
@@ -368,24 +360,11 @@ fn render_normal_classic(
         width: rank_frag.width,
         height: rank_frag.height,
     };
-    for corner in [
-        Corner::TopLeft,
-        Corner::TopRight,
-        Corner::BottomLeft,
-        Corner::BottomRight,
-    ] {
+    for corner in corners.iter().copied() {
         place(out, &rank_art, corner_rank, corner, cw, ch);
     }
     writeln!(out, "</g>").ok();
     Ok(())
-}
-
-#[derive(Clone, Copy)]
-enum Corner {
-    TopLeft,
-    TopRight,
-    BottomLeft,
-    BottomRight,
 }
 
 /// 四角摆放：除左上外全部旋转 180°，让字头/花尖朝向牌心（标准扑克排布）。
@@ -393,7 +372,7 @@ fn place(
     out: &mut String,
     art: &Fragment<'_>,
     slot: crate::theme::Slot,
-    corner: Corner,
+    corner: CornerPos,
     cw: f64,
     ch: f64,
 ) {
@@ -401,10 +380,10 @@ fn place(
     let frag_w = art.width;
     let frag_h = art.height;
     let (tx, ty, rotated) = match corner {
-        Corner::TopLeft => (slot.x, slot.y, false),
-        Corner::TopRight => (cw - slot.x, slot.y + frag_h * s, true),
-        Corner::BottomLeft => (slot.x + frag_w * s, ch - slot.y, true),
-        Corner::BottomRight => (cw - slot.x, ch - slot.y, true),
+        CornerPos::TopLeft => (slot.x, slot.y, false),
+        CornerPos::TopRight => (cw - slot.x, slot.y + frag_h * s, true),
+        CornerPos::BottomLeft => (slot.x + frag_w * s, ch - slot.y, true),
+        CornerPos::BottomRight => (cw - slot.x, ch - slot.y, true),
     };
     if rotated {
         writeln!(

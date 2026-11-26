@@ -8,6 +8,11 @@ use serde::{Deserialize, Serialize};
 use crate::card::{Rank, Suit};
 use crate::error::DeckError;
 
+/// 主题可声明的默认角标倍率区间，和客户端滑块 100%–300% 对齐。
+/// （渲染层的 `CORNER_SCALE_MIN/MAX` 更宽，是为了让 CLI 能试 0.6 这种极端值。）
+pub const THEME_CORNER_MIN: f64 = 1.0;
+pub const THEME_CORNER_MAX: f64 = 3.0;
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Canvas {
@@ -212,6 +217,34 @@ pub struct Badges {
     pub wild: String,
 }
 
+/// 角标位置。`compact` 与 `classic` 共用这一套名字，`corners` 里写哪个就在哪个角出点数+花色。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CornerPos {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+impl CornerPos {
+    pub const ALL: [CornerPos; 4] = [
+        CornerPos::TopLeft,
+        CornerPos::TopRight,
+        CornerPos::BottomLeft,
+        CornerPos::BottomRight,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            CornerPos::TopLeft => "topLeft",
+            CornerPos::TopRight => "topRight",
+            CornerPos::BottomLeft => "bottomLeft",
+            CornerPos::BottomRight => "bottomRight",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Layout {
@@ -231,6 +264,14 @@ pub struct ThemeMeta {
     pub canvas: Canvas,
     pub palette: Palette,
     pub layout: Layout,
+    /// 角标位置（可选）：`["topLeft","bottomRight"]` 这类写法，空数组 = 一个角标都不画。
+    /// 缺省跟布局走：`compact` = 左上 + 右下，`classic` = 四角都有。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corners: Option<Vec<CornerPos>>,
+    /// 主题默认角标倍率（可选）：1.0 = 素材原样，2.2 = 220%。缺省即 1.0。
+    /// 客户端滑块没被手动调过时用它；`gfdeck render/render-all` 没给 `--corner` 时也用它。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corner_scale: Option<f64>,
     pub layers: Layers,
     pub badges: Badges,
     pub slots: Slots,
@@ -249,6 +290,22 @@ impl ThemeMeta {
     pub fn parse(json: &str) -> Result<ThemeMeta, DeckError> {
         serde_json::from_str(json)
             .map_err(|e| DeckError::ThemeInvalid(format!("theme.json 解析失败: {e}")))
+    }
+
+    /// 实际要画哪几个角的角标：`corners` 显式给了就用它，否则按布局给默认。
+    /// 顺序固定按 `CornerPos::ALL`，保证 PNG/快照可复现。
+    pub fn corner_positions(&self) -> Vec<CornerPos> {
+        match &self.corners {
+            Some(list) => CornerPos::ALL
+                .iter()
+                .copied()
+                .filter(|c| list.contains(c))
+                .collect(),
+            None => match self.layout {
+                Layout::Compact => vec![CornerPos::TopLeft, CornerPos::BottomRight],
+                Layout::Classic => CornerPos::ALL.to_vec(),
+            },
+        }
     }
 
     /// 引用到的全部素材相对路径（去重、保持声明顺序）。
@@ -345,6 +402,16 @@ impl Theme {
         &self.origin
     }
 
+    /// 主题声明的默认角标倍率；没声明时按素材原样（1.0）。
+    pub fn corner_scale(&self) -> f64 {
+        self.meta.corner_scale.unwrap_or(1.0)
+    }
+
+    /// 是否在 `theme.json` 里显式声明了默认角标（客户端据此决定要不要覆盖自己的兜底值）。
+    pub fn has_corner_scale(&self) -> bool {
+        self.meta.corner_scale.is_some()
+    }
+
     /// 主题指纹：`defaults@1`，写进 SVG 注释与缓存键。
     pub fn fingerprint(&self) -> String {
         format!("{}@{}", self.meta.id, self.meta.version)
@@ -399,6 +466,28 @@ fn validate(meta: &ThemeMeta, assets: &HashMap<String, String>) -> Result<(), De
     }
     if !meta.palette.red.starts_with('#') || !meta.palette.black.starts_with('#') {
         return Err(DeckError::ThemeInvalid("palette 颜色需为 #RRGGBB".into()));
+    }
+    if let Some(scale) = meta.corner_scale {
+        if !scale.is_finite() || !(THEME_CORNER_MIN..=THEME_CORNER_MAX).contains(&scale) {
+            return Err(DeckError::ThemeInvalid(format!(
+                "cornerScale 越界（合法 {THEME_CORNER_MIN}..={THEME_CORNER_MAX}，即 100%–300%）"
+            )));
+        }
+    }
+    if let Some(list) = &meta.corners {
+        if list.len() > CornerPos::ALL.len() {
+            return Err(DeckError::ThemeInvalid(
+                "corners 最多 4 项（topLeft/topRight/bottomLeft/bottomRight）".into(),
+            ));
+        }
+        for (i, c) in list.iter().enumerate() {
+            if list[i + 1..].contains(c) {
+                return Err(DeckError::ThemeInvalid(format!(
+                    "corners 里 {} 重复了",
+                    c.name()
+                )));
+            }
+        }
     }
     match &meta.layers.ranks {
         RankSource::Vector { files } if files.len() != 13 => {

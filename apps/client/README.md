@@ -61,12 +61,16 @@ http://127.0.0.1:8123/index.html?seed=0x51EDA101&seat=2&level=1
 ## 主题牌面（`.gfdeck` 运行时合成）
 
 主题包 `themes/defaults.gfdeck`（签名版）由 wasm 现场解密 + 验签 + 逐张合成 SVG，**包里不存任何预览图**。
+`defaults.gfdeck` 怎么生成、怎么重打、怎么校验，命令都在 `crates/deckart/README.md` 第 8 节（`render-all` 出 54 面 → `pack` 签名 → `verify`）。换包不用重编 wasm。
 
 - URL 开关：`?theme=1` 用主题牌面（不填 `hand` 时默认走横排 `fan`）、`?hand=fan|cols` 手动指定手牌排布、
   `?corner=240` 覆盖角标字号（截图/联调给死值，优先于 `localStorage`）、`?debug=1` 挂 `window.__gd`。
 - 加载失败（包损坏 / 签名不符 / 缺素材）一律退回 DOM 字卡，牌桌不阻塞，日志会写原因。
 - **角标字号**：`faceOptions.corner_scale` 是 deckart 的渲染参数（详见 `crates/deckart/README.md` 14.6）。
   拖设置里的滑块会 `theme.cache.clear()` 并重渲染手牌；wasm 单张 0.02ms，几十张也不掉帧。
+- **默认值来自主题包**：`theme.json` 里可选 `cornerScale`（1.0–3.0，即 100%–300%），`defaults` 声明了 2.2。
+  优先级是 `?corner=` / `localStorage`（手动调过）> 主题 `cornerScale` > 客户端兜底 220；
+  采用了主题默认时日志会写一条「角标字号采用主题默认：220%（theme.json cornerScale=2.2）」（详见 deckart README 14.7）。
 - **不做整图放大裁切**：早先版本把 100×140 的牌按 350% 放大、只露左上角，主题的底板圆角、描边、
   中央花阵全被裁掉，看着就是一张白底字卡。现在整张牌 **1:1 显示**，只把角标那一区在牌面内部放大。
 - **横排紧叠**：桌面 100×140、`margin-left:-44px`（每张露 56px），每行最多 14 张、27 张折 2 行；
@@ -105,7 +109,7 @@ IndexedDB 库 `guandan-m1`：
 | `gf_room_plan` | 当前行动座位的一手牌推荐拆分（`recommend`，纯只读、不进 `stateHash`）：`{"ok":true,"seat":…,"score":…,"singleCount":…,"groups":[{"patternId":…,"cards":[…]}]}`；bot 决策与「组牌建议」共用这一份，散张不在 `groups` 里、由房间按「手牌 − 各组」补齐 |
 | `gf_room_info` | 桌面公开信息（不进座位视图、不影响 `stateHash`）：相位、行动座位、连续过牌数、双方级牌、打级队、各家手牌张数与已锁定名次 |
 | `gf_theme_load(pack_ptr, pack_len, pub_ptr, pub_len)` | 载入并校验主题包，一次返回元信息 + 预览四张 |
-| `gf_theme_card(code_ptr, code_len, level_rank, corner_pct)` | 单张牌面，`level_rank` 是 `Rank` 编号（1=A…13=K，0 = 无级牌态），`corner_pct` 是角标字号百分比（0/100 = 原样） |
+| `gf_theme_card(code_ptr, code_len, level_rank, corner_pct)` | 单张牌面，`level_rank` 是 `Rank` 编号（1=A…13=K，0 = 无级牌态），`corner_pct` 是角标字号百分比（`0` = 用主题 `cornerScale`，`100` = 素材原样） |
 | `gf_theme_preview / gf_theme_back / gf_theme_unload` | 预览四张 / 牌背 / 卸载（换主题前先卸） |
 
 ## 无头回归

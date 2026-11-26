@@ -12,6 +12,7 @@
     "wild": "#D32F2F"
   },
   "layout": "compact",
+  "cornerScale": 2.2,
   "layers": {
     "base": "base.svg",
     "suits": {

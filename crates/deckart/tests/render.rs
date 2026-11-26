@@ -18,6 +18,32 @@ fn level(v: u8) -> Option<LevelState> {
     Some(LevelState::new(Rank::new(v).unwrap()))
 }
 
+/// 复制一份主题目录出来改 `theme.json`，用来验各种配置分支（素材 23 个文件很小）。
+fn theme_variant(tag: &str, patch: impl Fn(String) -> String) -> Theme {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("gfdeck-{tag}-{stamp}"));
+    copy_dir(&theme_dir(), &dir);
+    let json = patch(std::fs::read_to_string(dir.join("theme.json")).unwrap());
+    std::fs::write(dir.join("theme.json"), json).unwrap();
+    Theme::load_dir(&dir).expect("变体主题应能加载")
+}
+
+fn copy_dir(src: &std::path::Path, dst: &std::path::Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for entry in std::fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let to = dst.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir(&entry.path(), &to);
+        } else {
+            std::fs::copy(entry.path(), to).unwrap();
+        }
+    }
+}
+
 #[test]
 fn renders_all_54_faces_and_back() {
     let theme = theme();
@@ -539,6 +565,120 @@ fn corner_scale_survives_classic_layout() {
     let rank_base = layer_scale(&base, "<g id=\"L3-rank\">");
     let rank_big = layer_scale(&big, "<g id=\"L3-rank\">");
     assert!((rank_big / rank_base - 2.0).abs() < 1e-6, "四角点数应为 2 倍");
+}
+
+#[test]
+fn theme_declares_default_corner_scale() {
+    // 客户端滑块没被手动调过时读它；CLI 不给 --corner 时也读它
+    let t = theme();
+    assert!(t.has_corner_scale(), "默认主题应声明 cornerScale 作为默认角标");
+    assert!((t.corner_scale() - 2.2).abs() < 1e-9, "默认应声明 220%");
+}
+
+#[test]
+fn theme_corner_scale_is_optional_and_bounded() {
+    let src = std::fs::read_to_string(theme_dir().join("theme.json")).unwrap();
+    let mut base: serde_json::Value = serde_json::from_str(&src).unwrap();
+
+    // 省略 → 主题不给意见，按素材原样（1.0）
+    let obj = base.as_object_mut().unwrap();
+    assert!(obj.remove("cornerScale").is_some(), "默认主题应声明 cornerScale");
+    let meta = gf_deckart::ThemeMeta::parse(&serde_json::to_string(&base).unwrap()).unwrap();
+    assert_eq!(meta.corner_scale, None, "cornerScale 可省");
+
+    // 越界 / 负数 / NaN 在加载期就拒（和客户端滑块 100%–300% 同一口径）
+    for bad in [3.5_f64, 0.5, -2.0] {
+        let mut v = base.clone();
+        v["cornerScale"] = serde_json::json!(bad);
+        let meta = gf_deckart::ThemeMeta::parse(&serde_json::to_string(&v).unwrap()).unwrap();
+        let err = gf_deckart::Theme::from_parts(meta, std::collections::HashMap::new(), "test")
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            matches!(err, gf_deckart::DeckError::ThemeInvalid(_)) && msg.contains("cornerScale"),
+            "cornerScale={bad} 应在加载期被拒，实际 {msg}"
+        );
+    }
+
+    // 边界 1.0 / 3.0 可用（加载期不拦，交给渲染层）
+    for ok in [gf_deckart::THEME_CORNER_MIN, gf_deckart::THEME_CORNER_MAX] {
+        let mut v = base.clone();
+        v["cornerScale"] = serde_json::json!(ok);
+        let meta = gf_deckart::ThemeMeta::parse(&serde_json::to_string(&v).unwrap()).unwrap();
+        assert_eq!(meta.corner_scale, Some(ok));
+    }
+}
+
+#[test]
+fn corners_config_limits_marks_in_both_layouts() {
+    // 默认 compact：只有左上 + 右下（2 个角标 = 2 处 rotate(180)：右下点数与花色）
+    let face = Face::normal(Suit::Diamond, Rank::new(10).unwrap());
+    let svg = render_face(&theme(), face, None).unwrap();
+    assert_eq!(svg.matches("rotate(180)").count(), 2, "compact 默认两角");
+
+    // compact 只留左上：一处 rotate 都不该有
+    let only_tl = theme_variant("corners-tl", |json| {
+        json.replace(
+            "\"cornerScale\": 2.2,",
+            "\"cornerScale\": 2.2,\n  \"corners\": [\"topLeft\"],",
+        )
+    });
+    let svg = render_face(&only_tl, face, None).unwrap();
+    assert_eq!(svg.matches("rotate(180)").count(), 0, "只留左上就没有镜像角标");
+    assert!(svg.contains("<g id=\"L3-rank\">"));
+
+    // classic 默认四角：花色 3 处 + 点数 3 处旋转（左上不转）
+    let classic = theme_variant("corners-classic", |json| {
+        json.replace("\"layout\": \"compact\"", "\"layout\": \"classic\"")
+    });
+    let svg = render_face(&classic, face, None).unwrap();
+    assert_eq!(svg.matches("rotate(180)").count(), 6, "classic 默认四角");
+
+    // classic 只要左上 + 右下：旋转只剩 2 处
+    let two = theme_variant("corners-classic-two", |json| {
+        json.replace("\"layout\": \"compact\"", "\"layout\": \"classic\"")
+            .replace(
+                "\"cornerScale\": 2.2,",
+                "\"cornerScale\": 2.2,\n  \"corners\": [\"topLeft\", \"bottomRight\"],",
+            )
+    });
+    let svg = render_face(&two, face, None).unwrap();
+    assert_eq!(svg.matches("rotate(180)").count(), 2, "classic 收成两角");
+    // 花阵不受影响：10 的点位仍在
+    assert!(svg.contains("<g id=\"L2-suit\">"));
+}
+
+#[test]
+fn corners_config_is_validated() {
+    let src = std::fs::read_to_string(theme_dir().join("theme.json")).unwrap();
+    let base: serde_json::Value = serde_json::from_str(&src).unwrap();
+
+    // 重复 / 超过 4 项 → 加载期报错；未知名字由 serde 直接拒
+    for bad in [
+        serde_json::json!(["topLeft", "topLeft"]),
+        serde_json::json!(["topLeft", "topRight", "bottomLeft", "bottomRight", "topLeft"]),
+        serde_json::json!(["left"]),
+    ] {
+        let mut v = base.clone();
+        v["corners"] = bad.clone();
+        let err = match gf_deckart::ThemeMeta::parse(&serde_json::to_string(&v).unwrap()) {
+            Ok(meta) => {
+                gf_deckart::Theme::from_parts(meta, std::collections::HashMap::new(), "test")
+                    .unwrap_err()
+            }
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, gf_deckart::DeckError::ThemeInvalid(_)),
+            "{bad} 应被拒，实际 {err}"
+        );
+    }
+
+    // 空数组合法（= 不要任何角标），但要点数/花阵还在
+    let mut v = base;
+    v["corners"] = serde_json::json!([]);
+    let meta = gf_deckart::ThemeMeta::parse(&serde_json::to_string(&v).unwrap()).unwrap();
+    assert!(meta.corner_positions().is_empty());
 }
 
 #[test]

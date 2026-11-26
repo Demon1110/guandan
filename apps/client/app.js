@@ -235,7 +235,8 @@ const theme = {
    *  `cornerPct` 是角标字号百分比，由 deckart 在牌面内部放大点数与花色（不是整张图放大）。 */
   svg(id, levelRank, cornerPct = state.cornerPct) {
     if (!this.loaded) return null;
-    const pct = clampCornerPct(cornerPct);
+    // 0 = 主题声明的默认倍率（由 deckart 在牌面内部换算），其余走客户端的合法区间
+    const pct = cornerPct === 0 ? 0 : clampCornerPct(cornerPct);
     const key = `${id}@${levelRank ?? '-'}@${pct}`;
     if (this.cache.has(key)) return this.cache.get(key);
     const code = new TextEncoder().encode(faceCode(id));
@@ -360,7 +361,10 @@ const state = {
   handStyle: 'cols',
   // 角标字号（百分比）：牌面内部放大点数与花色，100 = 主题原样。
   // 手牌横排时每张只露一条边，靠它把点数顶到能读的大小；设置面板可调。
+  // 220 只是主题包没声明 `cornerScale` 时的兜底值，包里有就按包的来（见 startGame）。
   cornerPct: 220,
+  // 滑块/URL 有没有被用户显式指定过；没指定时才允许主题包的默认值覆盖上面那个兜底
+  cornerPinned: false,
 };
 
 /** 角标字号的合法区间（和 deckart 的 CORNER_SCALE_MIN/MAX 对齐，单位百分比）。 */
@@ -405,7 +409,9 @@ function seedFromQuery() {
   state.handStyle = handParam === 'fan' || (handParam === null && state.themeSkin) ? 'fan' : 'cols';
   // ?corner=260 覆盖角标字号（好处是截图/联调能给死值，不受本机 localStorage 影响）
   const cornerParam = q.get('corner');
-  state.cornerPct = clampCornerPct(cornerParam ?? localStorage.getItem('guandan-corner-pct') ?? state.cornerPct);
+  const storedCorner = localStorage.getItem('guandan-corner-pct');
+  state.cornerPinned = cornerParam !== null || storedCorner !== null;
+  state.cornerPct = clampCornerPct(cornerParam ?? storedCorner ?? state.cornerPct);
   syncCornerControl();
   return true;
 }
@@ -1115,7 +1121,16 @@ async function startGame() {
   state.phase = 'play';
   el('log').innerHTML = '';
   // 牌面主题：包损坏 / 签名不符时只回退字卡，不影响开局（日志清空后再载入，避免提示被清掉）
-  if (state.themeSkin) await theme.load();
+  if (state.themeSkin) {
+    await theme.load();
+    // 主题包可以在 theme.json 里声明默认角标倍率（cornerScale，1.0–3.0）。
+    // 优先级：?corner= / localStorage（用户手动调过）> 主题包默认 > state.cornerPct 的兜底值。
+    if (theme.loaded && !state.cornerPinned && theme.meta.cornerScale != null) {
+      state.cornerPct = clampCornerPct(theme.meta.cornerScale * 100);
+      syncCornerControl();
+      log(`角标字号采用主题默认：${state.cornerPct}%（theme.json cornerScale=${theme.meta.cornerScale}）`);
+    }
+  }
 
   const saved = await loadMatch(state.db, state.matchId);
   const acts = await loadActions(state.db, state.matchId);
@@ -1251,6 +1266,7 @@ el('open-settings').onclick = () => el('settings').classList.remove('hidden');
 // 角标字号：拖一下就地重算牌面（wasm 单张 0.015ms，一手 27 张也不到 1ms）
 el('set-corner').oninput = (e) => {
   state.cornerPct = clampCornerPct(e.target.value);
+  state.cornerPinned = true;
   el('set-corner-val').textContent = `${state.cornerPct}%`;
   localStorage.setItem('guandan-corner-pct', String(state.cornerPct));
   if (state.themeSkin) theme.cache.clear();

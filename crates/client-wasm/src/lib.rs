@@ -78,6 +78,15 @@ fn json_str(s: &str) -> String {
     o
 }
 
+/// 数值输出：整数不带小数点，其余保留 2 位（`2.2` → `2.20`），避免浮点尾巴漏给 JS。
+fn num_json(v: f64) -> String {
+    if (v - v.round()).abs() < 1e-9 {
+        format!("{}", v.round() as i64)
+    } else {
+        format!("{v:.2}")
+    }
+}
+
 /// 拆种子：`(hi << 32) | lo`，与宿主 `gf_room_seed` 约定一致。
 fn join_seed(hi: u32, lo: u32) -> u64 {
     ((hi as u64) << 32) | lo as u64
@@ -680,8 +689,9 @@ fn theme_err(e: impl std::fmt::Debug) -> *mut u8 {
 }
 
 /// 加载 `.gfdeck` 主题包。`pub_len` 为 32 时验签，为 0 时跳过（开发期未签名包）。
-/// 返回 `{"ok":true,"themeId","version","name","license","layout","bytes","preview":[...]}`，
-/// 其中 `preview` 是 `[{"code","svg"}]`，省掉客户端再调一次 `gf_theme_preview`。
+/// 返回 `{"ok":true,"themeId","version","name","license","layout","cornerScale","bytes","preview":[...]}`，
+/// 其中 `cornerScale` 是主题声明的默认角标倍率（`null` = 主题没声明，由宿主自己兜底），
+/// `preview` 是 `[{"code","svg"}]`，省掉客户端再调一次 `gf_theme_preview`。
 #[no_mangle]
 pub unsafe extern "C" fn gf_theme_load(
     pack_ptr: *const u8,
@@ -729,11 +739,14 @@ pub unsafe extern "C" fn gf_theme_load(
         Err(e) => return theme_err(e),
     };
     out(format!(
-        "{{\"ok\":true,\"themeId\":{},\"version\":{},\"name\":{},\"license\":{},\"layout\":\"{layout}\",\"bytes\":{},\"levelRank\":{},\"faces\":[{}],\"preview\":[{}]}}",
+        "{{\"ok\":true,\"themeId\":{},\"version\":{},\"name\":{},\"license\":{},\"layout\":\"{layout}\",\"cornerScale\":{},\"bytes\":{},\"levelRank\":{},\"faces\":[{}],\"preview\":[{}]}}",
         json_str(&meta.id),
         meta.version,
         json_str(&meta.name),
         json_str(&meta.license),
+        meta.corner_scale
+            .map(num_json)
+            .unwrap_or_else(|| "null".to_string()),
         pack.len(),
         level.map(|l| l.level_rank.value()).unwrap_or(0),
         codes.join(","),
@@ -758,7 +771,7 @@ pub extern "C" fn gf_theme_preview() -> *mut u8 {
 }
 
 /// 单张牌面。`level_rank` 传 0 表示「不带级牌态」（主题选择页看纯牌面时用）；
-/// `corner_pct` 是角标字号百分比（100 = 主题原样，0 也按 100 处理）。
+/// `corner_pct` 是角标字号百分比（100 = 素材原样，`0` = 用主题声明的默认倍率）。
 /// 返回 `{"ok":true,"code","svg"}`。缓存键建议 `(themeId, themeVersion, code, levelRank, cornerPct)`。
 #[no_mangle]
 pub unsafe extern "C" fn gf_theme_card(
@@ -791,8 +804,8 @@ pub unsafe extern "C" fn gf_theme_card(
         face,
         gf_deckart::FaceOptions {
             level,
-            corner_scale: if corner_pct == 0 || corner_pct == 100 {
-                1.0
+            corner_scale: if corner_pct == 0 {
+                t.corner_scale()
             } else {
                 f64::from(corner_pct) / 100.0
             },

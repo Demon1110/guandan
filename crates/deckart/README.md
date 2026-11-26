@@ -65,6 +65,8 @@ L1 底面模板（裁圆角） → L2 花色符号 → L3 点数/角标 → L4 �
 
 两种布局共用同一套 23 个素材与同一套图层 id，只换 `layout` 与花阵配置即可切换。
 
+两个布局的**角标位置都可改**：`theme.json` 写 `"corners": ["topLeft", "bottomRight"]` 就只画这两个角（详见 14.8）；不写时 `compact` 默认左上+右下、`classic` 默认四角。
+
 ### 素材固有尺寸与坐标规范
 
 交付牌面 SVG 时**画布固定 500×700（5:7）**，所有子素材的固有尺寸与放置规则如下（新增主题照此产出，代码只认 `theme.json`）：
@@ -82,7 +84,7 @@ L1 底面模板（裁圆角） → L2 花色符号 → L3 点数/角标 → L4 �
 
 放置语义（`theme.json` 的 `slots`）：`x/y` 是**素材左上角**，实际尺寸 = 固有宽高 × `scale`。
 例：`centerSuit = {x:155, y:242, scale:1.9}` → 100×100 放大到 190px，左上角落在 (155,242)，即中心 (250,337)。
-`classic` 的四角用同一语义，额外自动旋转：右上 `translate(W-x, y+h·s)`、左下 `translate(x+w·s, H-y)`、右下 `translate(W-x, H-y)`，三者统一 `rotate(180)` 让字头朝牌心。
+`classic` 的四角用同一语义，额外自动旋转：右上 `translate(W-x, y+h·s)`、左下 `translate(x+w·s, H-y)`、右下 `translate(W-x, H-y)`，三者统一 `rotate(180)` 让字头朝牌心。要少画几个角就用 `corners` 过滤（14.8），位置公式不变。
 
 > 改素材尺寸必须同步本表与 `theme.json`；只改配色/形状则不用动配置。
 
@@ -191,6 +193,8 @@ themes/
   "canvas": { "width": 500, "height": 700, "cornerRadius": 36 },
   "palette": { "red": "#C62828", "black": "#1B1B1B", "paper": "#FFFFFF", "level": "#E53935", "wild": "#D32F2F" },
   "layout": "compact",
+  "cornerScale": 2.2,
+  "corners": ["topLeft", "bottomRight"],
   "layers": {
     "base": "base.svg",
     "suits": { "spade": "suits/spade.svg", … },
@@ -210,7 +214,7 @@ themes/
   "classic": { "cornerRank": {…}, "cornerSuit": {…}, "pipScale": 0.60, "aceScale": 1.70, "courtStyle": "monogram", "pipPositions": {…} }
 }
 ```
-`textLayer`、`preview` 与 `classic` 都是可选块（缺省用默认值/关闭），完整字段含义见第 3 节的尺寸规范、花阵规范与文本层说明，`preview` 见第 14 节。
+`textLayer`、`preview`、`cornerScale`、`corners` 与 `classic` 都是可选块（缺省用默认值/关闭），完整字段含义见第 3 节的尺寸规范、花阵规范与文本层说明，`preview` 见第 14 节，`cornerScale` 见 14.6/14.7，`corners` 见 14.8。
 `version` 是主题版本号，用来让客户端缓存失效：加了文本层与 classic 配置后 defaults 已从 1 升到 2。
 
 `ranks.kind = "atlas"` 时改为 `{ "kind": "atlas", "image": "ranks.png", "index": "ranks.json" }`，`index` 给每字形的 `{x,y,w,h,advance}`，兼容后续位图字库。
@@ -268,21 +272,135 @@ themes/
 
 ---
 
-## 8. CLI（草案）
+## 8. CLI：从素材目录到客户端主题包（可直接复制）
+
+命令都在**仓库根目录**执行，`gfdeck` 是 `crates/deckart` 的二进制，统一用 `cargo run -p gf-deckart --bin gfdeck --` 调起。
+
+两个 feature 先说清楚（见 `crates/deckart/Cargo.toml`）：
+
+| feature | 作用 | 什么时候要开 |
+| --- | --- | --- |
+| `pack-write` | 打包 / 签名 / 解包，`gfdeck` 这个 bin 本身也靠它才编得出来 | **默认开**，不用显式给 |
+| `png` | SVG → PNG（resvg + tiny-skia + 系统字体） | 只有要转 PNG 时才加 `--features png` |
+
+> 只在 `crates/deckart` 里跑不需要别的环境变量。如果命令是从整个 workspace 编过去的、报找不到 `protoc`，那是别的 crate（protocol）在编，补一个 `$env:PROTOC` 指到本机 protoc 即可。
+
+### 8.1 出 54 张牌面（+ 牌背）
 
 ```powershell
-gfdeck render --theme themes/defaults --face H8 --level 8 -o out/H8.svg
-gfdeck render --theme themes/defaults --face H8 --level 8 --corner 240 -o out/H8-big.svg   # 角标放大 2.4 倍
-gfdeck render-all --theme themes/defaults --level 8 -o out/          # 54 张 + 牌背
-gfdeck render-all --theme themes/defaults --corner 240 -o out-big/    # 大字角标整包
-gfdeck png out/H8.svg --scale 2 -o out/H8@2x.png
-gfdeck pack   themes/defaults -o themes/defaults.gfdeck --encrypt --key-file k.bin
-gfdeck unpack themes/defaults.gfdeck -o /tmp/decoded --key-file k.bin
-gfdeck verify themes/defaults.gfdeck                                 # 摘要 + 签名 + schema 校验
-gfdeck info   themes/defaults.gfdeck                                 # themeId/version/条目/许可
+# 54 面 + 牌背，一次全出；--level 决定哪一档打级牌高亮（2..A，或 none 表示不出级牌层）
+cargo run -p gf-deckart --bin gfdeck -- render-all --theme themes/defaults --level 2 -o target/faces
 ```
 
-`render-all` 产 55 个文件（54 面 + 1 牌背），并写 `manifest.json`（face → 文件 → sha256，另记 `cornerScale`）。
+角标倍率不写 `--corner` 时**用 `theme.json` 里声明的 `cornerScale`**（defaults 声明了 2.2，也就是 220%），想按素材原样出图就显式 `--corner 100`。
+
+产物：`target/faces/` 下 **55 个文件**（54 面 `S2…CA` + `JOKER-S`/`JOKER-B`，加 1 张 `BACK.svg`），外加 `manifest.json`：
+
+```json
+{
+  "themeId": "defaults", "themeVersion": 2, "level": "2", "cornerScale": 2.20,
+  "layout": "Compact",
+  "faces": [{ "code": "S2", "file": "S2.svg", "sha256": "…" }, …],
+  "back": { "file": "BACK.svg", "sha256": "…" }
+}
+```
+
+`manifest.json` 里的 sha256 是给「素材换版/灰产换皮」做逐张比对的，客户端不用它；`cornerScale` 记的是这一批出图实际用的倍率（`2.20` = 220%）。
+
+要换字号就加 `--corner`，整包 54 张一起改（压过主题默认）：
+
+```powershell
+cargo run -p gf-deckart --bin gfdeck -- render-all --theme themes/defaults --corner 240 -o target/faces-big
+cargo run -p gf-deckart --bin gfdeck -- render-all --theme themes/defaults --corner 100 -o target/faces-plain
+```
+
+### 8.2 单张调试 / 转 PNG
+
+```powershell
+# 单张：--face 用牌面编码（S2 / H10 / CA / JOKER-B），--level 可省，--corner 用百分比
+cargo run -p gf-deckart --bin gfdeck -- render --theme themes/defaults --face H8 --level 8 -o target/H8.svg
+cargo run -p gf-deckart --bin gfdeck -- render --theme themes/defaults --face H8 --level 8 --corner 240 -o target/H8-big.svg
+
+# SVG → PNG（要 --features png；--scale 2 = 1000×1400，文本层「级牌」靠系统字体渲染）
+cargo run -p gf-deckart --bin gfdeck --features png -- png target/H8.svg --scale 2 -o target/H8@2x.png
+```
+
+### 8.3 打包成 `.gfdeck`（客户端只认这个）
+
+```powershell
+cargo run -p gf-deckart --bin gfdeck -- pack themes/defaults `
+  -o apps/client/themes/defaults.gfdeck `
+  --key-id builtin-v1 `
+  --sign-key 1111111111111111111111111111111111111111111111111111111111111111 `
+  --pub-key-out target/pub.hex
+```
+
+参数含义：
+
+| 参数 | 说明 |
+| --- | --- |
+| `<theme-dir>` | 主题目录（`theme.json` + `assets/` 里那 23 个素材），位置参数放第一个 |
+| `-o` | 输出包路径；父目录不存在会自动建 |
+| `--key-file` | 对称加密密钥：32 字节二进制，或 64 位 hex 文本。**不给就用内置密钥**（keyId 自动为 `builtin-v1`） |
+| `--key-id` | 密钥标识，写进包头，客户端按它选密钥；换密钥必须换 id |
+| `--sign-key` | Ed25519 私钥种子（64 位 hex），给了就签名；不给则包可读但不防篡改 |
+| `--pub-key-out` | 把对应公钥（hex）落盘，`verify` / 客户端别处要用；不给就打印到 stdout |
+
+**注意**：`pack` 总是加密（没有 `--encrypt` 开关，加密是这个格式本身的一部分）；包里存的是 `theme.json` 的副本 + 23 个素材，**不存预览图**（预览由客户端现场合成，见 14.1）。
+
+发布到客户端只需要这两步，**不用重编 wasm**：
+
+1. 把 `defaults.gfdeck` 放进 `apps/client/themes/`；
+2. `apps/client/app.js` 里的 `THEME_PUBKEY` 换成 `--pub-key-out` 打出来的公钥（换签钥才需要；沿用内置密钥就不用动）。
+
+刷新页面即生效（浏览器缓存里旧的包要先强刷一次），牌桌读的是包里那份 `theme.json`，**改了源目录的 `theme.json` 必须重新 `pack`**，否则客户端看到的还是旧副本。
+
+### 8.4 校验 / 查看 / 解包
+
+```powershell
+# 只看包头：themeId@version、license、条目数、字节数、是否加密/签名、keyId
+cargo run -p gf-deckart --bin gfdeck -- info apps/client/themes/defaults.gfdeck
+
+# 完整校验：逐条解密 + 比对 sha256 + 验签 + 54 面能渲染
+$pub = (Get-Content target/pub.hex).Trim()
+cargo run -p gf-deckart --bin gfdeck -- verify apps/client/themes/defaults.gfdeck --verify-key $pub
+
+# 解包回目录（签名包必须给 --verify-key，否则直接 DK-PACK-SIGNATURE；输出目录不能已存在）
+cargo run -p gf-deckart --bin gfdeck -- unpack apps/client/themes/defaults.gfdeck -o target/unpacked --verify-key $pub
+```
+
+错误码都印在 stderr，脚本里可直接判：`DK-PACK-SIGNATURE`（签名不符 / 换钥 / 被改一字节）、`DK-PACK-DECRYPT`（密钥不对）、`DK-PACK-EXISTS`（`unpack` 的输出目录已存在，**不覆盖**，先删再解）、`DK-ASSET-MISSING`（少素材）、`DK-THEME-INVALID`（`theme.json` 不合 schema）、`DK-FACE-INVALID`（牌面编码或 `--corner` 越界）。
+
+`pack` 的输出文件可以直接覆盖（每次加密用的 nonce 随机，同样输入打出来的字节不完全一致，但解密后的内容一致）；`unpack` 反过来，输出目录存在就拒绝。
+
+### 8.5 一条命令跑完全程
+
+```powershell
+# 产物统一落在 target/theme-build/：faces（SVG）、faces-big（大字角标）、defaults.gfdeck、pub.hex
+cargo run -p gf-deckart --bin gfdeck --features png -- render-all --theme themes/defaults --level 2 -o target/theme-build/faces
+cargo run -p gf-deckart --bin gfdeck --features png -- render-all --theme themes/defaults --level 2 --corner 240 -o target/theme-build/faces-big
+cargo run -p gf-deckart --bin gfdeck --features png -- pack themes/defaults -o target/theme-build/defaults.gfdeck --key-id builtin-v1 --sign-key 1111111111111111111111111111111111111111111111111111111111111111 --pub-key-out target/theme-build/pub.hex
+cargo run -p gf-deckart --bin gfdeck --features png -- verify target/theme-build/defaults.gfdeck --verify-key (Get-Content target/theme-build/pub.hex).Trim()
+```
+
+### 8.6 实测（2026-11-26，Windows + PowerShell 7）
+
+```text
+render-all --level 2             → 55 张（54 面 + 牌背）+ manifest.json，角标 220%（主题默认）
+render-all --corner 100          → 同样 55 张，角标 100%（素材原样）
+render H8 --level 8              → 2799 字节（主题默认 220%）
+render H8 --level 8 --corner 100 → 2789 字节（含文本层「级牌」）
+render H8 --level 8 --corner 240 → 2799 字节
+png H8.svg --scale 2             → 151,767 字节（1000×1400）
+png H8@240.svg --scale 2         → 164,395 字节
+pack --key-id builtin-v1 --sign-key <0x11×32> → 24 条目 / 17,288 字节，加密=true、签名=true
+公钥                               d04ab232…c9778737
+info                             → defaults@2，license=CC0-1.0，24 条目，加密=true，签名=true，keyId=builtin-v1
+verify --verify-key <pub>        → 校验通过：defaults@2，24 条目，54 面可渲染，角标 220%（主题默认）
+unpack --verify-key <pub>        → 还原 24 个文件（theme.json + 23 素材），可直接 Theme::load_dir
+```
+
+（`apps/client/themes/defaults.gfdeck` 已按上面命令重打过：17,288 字节，包里有 `preview` 块和 `cornerScale: 2.2`。）
 
 ---
 
@@ -296,6 +414,7 @@ gfdeck info   themes/defaults.gfdeck                                 # themeId/v
 | 包往返 | `pack → unpack → render` 产出与直接读目录逐字节一致 |
 | 预览一致 | `preview` 配置生效（默认四张 2 全带级牌、`levelRank=null` 不出 `L4`、非法 faces/越界点数加载期报错）；wasm 端输出与 `gfdeck render` 逐字节一致 |
 | 角标倍率 | 1.0 与旧入口逐字节一致；0.6~3.0 内点数与角标花色同步放大、花色重排到点数下方、底面层不动；越界报 `DK-FACE-INVALID` |
+| 默认角标 | `theme.json` 的 `cornerScale` 可选（缺省 1.0）、1.0~3.0 外报 `DK-THEME-INVALID`；打包往返不丢；CLI 不给 `--corner` 时用它，`--corner` 压过它 |
 | 坏包 | 截断/改一字节/换 themeId/签名不符/路径穿越 全部拒绝并给明确错误码 |
 | 性能 | 单张合成 P99 < 1 ms（native），55 张 < 20 ms；包加载（含解密）< 10 ms |
 | 覆盖率 | 并入 workspace 后按现行门禁（行 ≥90% + 区域 ≥90%） |
@@ -357,31 +476,35 @@ crates/deckart/
 
 - `card`：牌面语义类型，编码 `H8` / `S10` / `JOKER-B` / `JOKER-S`
 - `theme`：目录加载 + schema 校验（id 规则、13 字形、路径穿越、外链/字体/位图禁用）
-- `render`：四层合成、级牌与逢人配判定、固定图层 id 与 `data-*` 属性；`compact` 与 `classic` 两种布局；可选文本层（`L4t-level-label`）；`FaceOptions.corner_scale` 角标字号倍率（0.6..=3.0，见 14.6）
+- `render`：四层合成、级牌与逢人配判定、固定图层 id 与 `data-*` 属性；`compact` 与 `classic` 两种布局；可选文本层（`L4t-level-label`）；`FaceOptions.corner_scale` 角标字号倍率（0.6..=3.0，见 14.6）；`theme.json` 的 `cornerScale` 给主题默认（1.0..=3.0，缺省 1.0，见 14.7）
 - `pack`：`.gfdeck` 打包 / 解密 / 签名 / 摘要校验 / 边界校验，`open()` 可直接在内存里用主题；`open_bytes()` / `info_from_bytes()` 走纯字节入口（wasm 没有文件系统）
 - `preview`：`theme.json` 的 `preview` 配置 + `render_preview()`，主题选择界面与牌桌共用同一条渲染路径
 - `png`：SVG → PNG（`--features png`，不进 wasm）
 - `gfdeck` CLI：`render` / `render-all` / `pack` / `unpack` / `info` / `verify` / `png`（`render`、`render-all` 支持 `--corner <pct>`）
 
-### 测试（35 个单测 + 1 个 doctest，全绿）
+### 测试（38 个单测 + 1 个 doctest，全绿）
 
 ```powershell
 cd crates\deckart
-cargo test                 # 5 lib + 12 pack + 18 render + 1 doctest
+cargo test                 # 5 lib + 13 pack + 20 render + 1 doctest
 cargo test --features png  # 额外可用 PNG 子命令
 ```
 
-覆盖：54 面编码唯一且闭合、级牌只在匹配点数命中、红桃级牌必须同时有 level + wild 两层、王永不级牌、无级牌态不出徽章、输出不得含外链/字体/位图、渲染确定性；文本层三态矩阵（`both` 两层都在、`badge-only` 无 text、`text-only` 无素材层、非级牌三种模式都不出 L4、关闭后退化为素材层、`text-only` 缺 label 报错而 `badge-only` 缺 label 合法）、classic 花阵数量（7 → 7 花阵 + 4 角标、A → 1 + 4）、classic 缺花阵规格即报错；角标倍率（1.0 与旧入口逐字节一致、2.4 倍时点数与花色同步放大且花色重排、classic 四角同样生效、越界拒绝）；包往返逐字节一致、错钥拒绝、改一字节即失败、签名必须匹配公钥、无密钥可读 header、截断/非包拒绝、缺素材与路径穿越在加载期就报错。
+覆盖：54 面编码唯一且闭合、级牌只在匹配点数命中、红桃级牌必须同时有 level + wild 两层、王永不级牌、无级牌态不出徽章、输出不得含外链/字体/位图、渲染确定性；文本层三态矩阵（`both` 两层都在、`badge-only` 无 text、`text-only` 无素材层、非级牌三种模式都不出 L4、关闭后退化为素材层、`text-only` 缺 label 报错而 `badge-only` 缺 label 合法）、classic 花阵数量（7 → 7 花阵 + 4 角标、A → 1 + 4）、classic 缺花阵规格即报错；角标倍率（1.0 与旧入口逐字节一致、2.4 倍时点数与花色同步放大且花色重排、classic 四角同样生效、越界拒绝）；主题默认角标（声明 2.2 读得出、字段可省、1.0~3.0 外加载期拒绝、打包往返不丢）；包往返逐字节一致、错钥拒绝、改一字节即失败、签名必须匹配公钥、无密钥可读 header、截断/非包拒绝、缺素材与路径穿越在加载期就报错。
 
 ### 实测（2026-11-26）
+
+下面按命令简写记录结果（实际调用形如 `cargo run -p gf-deckart --bin gfdeck -- render-all …`，完整命令见第 8 节）：
 
 ```powershell
 gfdeck render-all --theme themes/defaults --level 8 -o target/deckout
   → 55 张（54 面 + 牌背）、manifest.json 6507 字节、单张 766~2789 字节（带文本层的级牌最大）
+     （角标走主题默认 220%；要看素材原样加 --corner 100）
 gfdeck pack themes/defaults -o defaults.gfdeck --sign-key <hex32>
-  → 24 条目（theme.json 2492B + 23 素材）、17137 字节、加密 + 签名、keyId=builtin-v1
+  → 24 条目（theme.json 5136B 的 pretty 序列化 + 23 素材）、17288 字节、加密 + 签名、keyId=builtin-v1
+     （上一版是 17,137 字节、包里没有 `preview` 块与 `cornerScale`；加 `preview` 后 17,266，再加 `cornerScale: 2.2` 是 17,288）
 gfdeck info   → defaults@2，license=CC0-1.0，加密=true，签名=true
-gfdeck verify --verify-key <pub>  → 校验通过：defaults@2、24 条目、54 面可渲染
+gfdeck verify --verify-key <pub>  → 校验通过：defaults@2、24 条目、54 面可渲染、角标 220%（主题默认）
 gfdeck verify（不给公钥）        → [DK-PACK-SIGNATURE] 拒绝
 gfdeck unpack                    → 还原 24 个文件，可直接 Theme::load_dir
 gfdeck png H8.svg --scale 2      → 151767 字节（1000×1400），「级牌」二字正常光栅化
@@ -453,9 +576,9 @@ gfdeck png target/preview/C2.svg -o cover-c2.png --scale 2
 
 | 方法 | 入参 | 出参 |
 | --- | --- | --- |
-| `gf_theme_load(pack_ptr, pack_len, pub_ptr, pub_len)` | 包字节 + 公钥 32B（`pub_len = 0` 跳过验签） | `{ok, themeId, version, name, license, layout, bytes, levelRank, faces, preview:[{code,svg}]}` |
+| `gf_theme_load(pack_ptr, pack_len, pub_ptr, pub_len)` | 包字节 + 公钥 32B（`pub_len = 0` 跳过验签） | `{ok, themeId, version, name, license, layout, cornerScale, bytes, levelRank, faces, preview:[{code,svg}]}` |
 | `gf_theme_preview()` | — | `{ok, cards:[{code,svg}]}` |
-| `gf_theme_card(code_ptr, code_len, level_rank, corner_pct)` | 牌面编码 + 级牌点（`0` = 无级牌态）+ 角标字号百分比（`0`/`100` = 原样） | `{ok, code, svg}` |
+| `gf_theme_card(code_ptr, code_len, level_rank, corner_pct)` | 牌面编码 + 级牌点（`0` = 无级牌态）+ 角标字号百分比（`0` = 用主题 `cornerScale`，`100` = 素材原样） | `{ok, code, svg}` |
 | `gf_theme_back()` | — | `{ok, svg}` |
 | `gf_theme_unload()` | — | `1` |
 
@@ -470,6 +593,8 @@ const meta = JSON.parse(readStr(ex.gf_theme_load(ptr, packBytes.length, pubPtr, 
 
 // 2) 上桌逐张取（缓存键 (themeId, themeVersion, code, levelRank, cornerPct)）
 const card = JSON.parse(readStr(ex.gf_theme_card(codePtr, 2, levelRank, 240)));
+// 主题说了算就传 0（用 theme.json 的 cornerScale）；传 100 才是素材原样
+const themed = JSON.parse(readStr(ex.gf_theme_card(codePtr, 2, levelRank, 0)));
 ```
 
 要点：
@@ -531,7 +656,7 @@ pub fn render_face(theme, face, level)     -> Result<String, DeckError>;  // 保
 
 - 倍率越界（`< 0.6`、`> 3.0`、`NaN`）→ `DeckError::FaceInvalid("corner_scale 越界（合法 0.6..=3.0）")`，不吃掉一张牌；
 - `corner_scale = 1.0` 与旧入口 `render_face` **逐字节一致**（测试 `corner_scale_one_is_byte_identical_to_plain_render` 卡住）；
-- 只影响渲染，**不进主题包**：`theme.json` 里那套 `slots.corner_*` 仍是主题作者定的基准值，客户端倍数覆盖在它之上。
+- 倍率本身不改主题素材：`slots.corner_*` 仍是主题作者定的基准值，倍数叠加在它之上。主题想给一个**默认值**，写在 `theme.json` 的 `cornerScale` 里（见 14.7）。
 
 测试（`crates/deckart/tests/render.rs`，新增 4 条）：
 
@@ -541,3 +666,32 @@ pub fn render_face(theme, face, level)     -> Result<String, DeckError>;  // 保
 | `corner_scale_enlarges_corner_and_reflows_suit` | L3/L2 首处 scale 都乘到 2.4；角标花色 y 下移 > 60 单位；底面层前 200 字节不动 |
 | `corner_scale_survives_classic_layout` | `layout = classic` 四角点数同样乘倍率 |
 | `corner_scale_rejects_out_of_range` | 0.1 / 0.0 / -1.0 / 4.0 / NaN 全部拒绝；0.6 与 3.0 边界可用 |
+
+### 14.7 主题包里的默认角标（`theme.json` 的 `cornerScale`，2026-11-26）
+
+字号可调之后，缺省用多少成了主题自己的事：横排叠放的主题需要 220%，按整张牌欣赏的主题希望 100%。所以这个默认值**放在主题包里**，而不是写死在客户端。
+
+```json
+{ "id": "defaults", "version": 2, "layout": "compact", "cornerScale": 2.2, … }
+```
+
+| 项 | 规则 |
+| --- | --- |
+| 类型 | 数值倍率（`2.2` = 220%），**不是** `"220"` 或 `"220%"` |
+| 可选 | 缺省即 1.0（素材原样）；`pack` 重新序列化 `theme.json` 时会原样带走 |
+| 合法区间 | `1.0..=3.0`（与客户端滑块 100%–300% 同一口径），越界在**加载期**报 `DK-THEME-INVALID`（`cornerScale 越界（合法 1..=3，即 100%–300%）`），不会拖到渲染时才炸 |
+| 优先级 | 客户端 `?corner=` / localStorage（用户手动调过）> 主题 `cornerScale` > 客户端兜底 220 |
+| CLI | `gfdeck render/render-all` 不给 `--corner` 时用它（`manifest.json` 的 `cornerScale` 记实际值，打印带「（主题默认）」后缀）；`--corner` 一律压过它 |
+| wasm | `gf_theme_load` 的返回值多一个 `cornerScale`（`null` = 主题没声明）；`gf_theme_card` 的 `corner_pct` 传 `0` = 用主题默认 |
+| 预览 | 主题墙预览（`render_preview`）固定按 1.0 出图，不跟 `cornerScale`——预览是「素材长什么样」，牌桌才是「怎么叠」 |
+
+`defaults` 现在声明 `2.2`，所以客户端不传 `?corner` 也是 220%，与加这个字段之前完全一致；`render-all` 不给 `--corner` 也出 220% 的图，要看原样请显式 `--corner 100`。
+
+相关测试（`tests/render.rs` 2 条 + `tests/pack.rs` 1 条）：
+
+| 用例 | 判据 |
+| --- | --- |
+| `theme_declares_default_corner_scale` | defaults 声明了 2.2，`Theme::corner_scale()` 读得出来 |
+| `theme_corner_scale_is_optional_and_bounded` | 删掉字段 → `None`；3.5 / 0.5 / -2.0 在加载期报 `DK-THEME-INVALID`；1.0 与 3.0 可用 |
+| `pack_preserves_declared_corner_scale` | 打包会重新序列化 `theme.json`，`cornerScale` 不能在路上丢 |
+

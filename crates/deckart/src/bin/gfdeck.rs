@@ -51,14 +51,19 @@ fn run() -> Result<(), DeckError> {
 fn print_usage() {
     println!(
         "gfdeck {}\n\
-         子命令：\n\
-         \x20 render      --theme <dir> --face <H8|JOKER-B> [--level <A|2..K>] [--corner 260] -o <file>\n\
-         \x20 render-all  --theme <dir> [--level <rank>] [--corner <pct>] -o <dir>\n\
-         \x20 pack        <theme-dir> -o <file.gfdeck> [--key-file <f>] [--key-id <id>] [--sign-key <hex32>]\n\
+         出图：\n\
+         \x20 render      --theme <dir> --face <H8|JOKER-B> [--level <A|2..K|none>] [--corner <pct>] -o <file>\n\
+         \x20 render-all  --theme <dir> [--level <rank|none>] [--corner <pct>] -o <dir>     # 54 面 + 牌背 + manifest.json\n\
+         \x20 png         <file.svg> -o <file.png> [--scale 2]                             （需 --features png）\n\
+         打包：\n\
+         \x20 pack        <theme-dir> -o <file.gfdeck> [--key-file <f>] [--key-id <id>] [--sign-key <hex32>] [--pub-key-out <f>]\n\
          \x20 unpack      <file.gfdeck> -o <dir> [--key-file <f>] [--verify-key <hex64>]\n\
          \x20 info        <file.gfdeck>\n\
          \x20 verify      <file.gfdeck> [--key-file <f>] [--verify-key <hex64>]\n\
-         \x20 png         <file.svg> -o <file.png> [--scale 2]   （需 --features png）",
+         参数速记：--corner 角标字号百分比（不写就用 theme.json 的 cornerScale，再没有就是 100；\n\
+         \x20        可给范围 60~300）；\n\
+         \x20        --key-file 对称密钥（32B 二进制或 64 位 hex，缺省用内置 builtin-v1）；\n\
+         \x20        --sign-key Ed25519 私钥种子（hex），给了才签名；--pub-key-out 落盘对应公钥。",
         gf_deckart::VERSION
     );
 }
@@ -86,17 +91,43 @@ fn parse_level(args: &[String]) -> Result<Option<LevelState>, DeckError> {
     }
 }
 
-/// 角标字号，按百分比给（100 = 主题原样，260 = 2.6 倍）。缺省 100。
-fn parse_corner(args: &[String]) -> Result<f64, DeckError> {
+/// 角标字号，按百分比给（100 = 主题原样，260 = 2.6 倍）。不给返回 None，交由主题默认决定。
+fn parse_corner(args: &[String]) -> Result<Option<f64>, DeckError> {
     match opt(args, "--corner") {
-        None => Ok(1.0),
+        None => Ok(None),
         Some(v) => {
             let pct: f64 = v
                 .trim_end_matches('%')
                 .parse()
                 .map_err(|_| DeckError::FaceInvalid(format!("--corner 无效: {v}")))?;
-            Ok(pct / 100.0)
+            let scale = pct / 100.0;
+            if !scale.is_finite() || !(gf_deckart::CORNER_SCALE_MIN..=gf_deckart::CORNER_SCALE_MAX).contains(&scale) {
+                return Err(DeckError::FaceInvalid(format!(
+                    "--corner 越界（合法 {:.0}%..={:.0}%）",
+                    gf_deckart::CORNER_SCALE_MIN * 100.0,
+                    gf_deckart::CORNER_SCALE_MAX * 100.0
+                )));
+            }
+            Ok(Some(scale))
         }
+    }
+}
+
+/// 实际生效的角标倍率：命令行给了就压过主题；没给就用主题 `cornerScale`（再没有就是 1.0）。
+/// 返回值第二项标记「这个值是主题声明的」，只用于打印提示。
+fn resolve_corner(args: &[String], theme: &Theme) -> Result<(f64, bool), DeckError> {
+    match parse_corner(args)? {
+        Some(v) => Ok((v, false)),
+        None => Ok((theme.corner_scale(), theme.has_corner_scale())),
+    }
+}
+
+/// `角标 240%`，主题默认来的加一句后缀。
+fn corner_note(scale: f64, from_theme: bool) -> String {
+    if from_theme {
+        format!("，角标 {:.0}%（主题默认）", scale * 100.0)
+    } else {
+        format!("，角标 {:.0}%", scale * 100.0)
     }
 }
 
@@ -104,7 +135,7 @@ fn cmd_render(args: &[String]) -> Result<(), DeckError> {
     let theme = Theme::load_dir(Path::new(&require(args, "--theme")?))?;
     let face = Face::parse(&require(args, "--face")?)?;
     let level = parse_level(args)?;
-    let corner = parse_corner(args)?;
+    let (corner, from_theme) = resolve_corner(args, &theme)?;
     let out = PathBuf::from(require(args, "-o")?);
     if let Some(parent) = out.parent() {
         if !parent.as_os_str().is_empty() {
@@ -121,12 +152,12 @@ fn cmd_render(args: &[String]) -> Result<(), DeckError> {
     )?;
     std::fs::write(&out, &svg)?;
     println!(
-        "{} → {}（{} 字节，级别 {}，角标 {:.0}%）",
+        "{} → {}（{} 字节，级别 {}{}）",
         face.code(),
         out.display(),
         svg.len(),
         level.map(|l| l.level_rank.label()).unwrap_or("none"),
-        corner * 100.0
+        corner_note(corner, from_theme)
     );
     Ok(())
 }
@@ -134,7 +165,7 @@ fn cmd_render(args: &[String]) -> Result<(), DeckError> {
 fn cmd_render_all(args: &[String]) -> Result<(), DeckError> {
     let theme = Theme::load_dir(Path::new(&require(args, "--theme")?))?;
     let level = parse_level(args)?;
-    let corner = parse_corner(args)?;
+    let (corner, from_theme) = resolve_corner(args, &theme)?;
     let out_dir = PathBuf::from(require(args, "-o")?);
     std::fs::create_dir_all(&out_dir)?;
 
@@ -156,21 +187,31 @@ fn cmd_render_all(args: &[String]) -> Result<(), DeckError> {
     let back_svg = gf_deckart::render_back(&theme)?;
     std::fs::write(out_dir.join("BACK.svg"), &back_svg)?;
 
+    // 这批图实际画了哪几个角（`theme.json` 的 corners 配过就按配的，没配按布局默认）
+    let corners = theme
+        .meta()
+        .corner_positions()
+        .iter()
+        .map(|c| format!("\"{}\"", c.name()))
+        .collect::<Vec<_>>()
+        .join(", ");
+
     let manifest = format!(
-        "{{\n  \"themeId\": \"{}\",\n  \"themeVersion\": {},\n  \"level\": \"{}\",\n  \"cornerScale\": {},\n  \"layout\": \"{:?}\",\n  \"faces\": [\n{}\n  ],\n  \"back\": {{\"file\": \"BACK.svg\", \"sha256\": \"{}\"}}\n}}\n",
+        "{{\n  \"themeId\": \"{}\",\n  \"themeVersion\": {},\n  \"level\": \"{}\",\n  \"cornerScale\": {},\n  \"layout\": \"{:?}\",\n  \"corners\": [{}],\n  \"faces\": [\n{}\n  ],\n  \"back\": {{\"file\": \"BACK.svg\", \"sha256\": \"{}\"}}\n}}\n",
         theme.meta().id,
         theme.meta().version,
         level.map(|l| l.level_rank.label()).unwrap_or("none"),
         num_json(corner),
         theme.meta().layout,
+        corners,
         manifest_faces.join(",\n"),
         hex(&Sha256::digest(back_svg.as_bytes()))
     );
     std::fs::write(out_dir.join("manifest.json"), manifest)?;
     println!(
-        "55 张（54 面 + 牌背）已写入 {}，角标 {:.0}%，manifest.json 已生成",
+        "55 张（54 面 + 牌背）已写入 {}{}，manifest.json 已生成",
         out_dir.display(),
-        corner * 100.0
+        corner_note(corner, from_theme)
     );
     Ok(())
 }
@@ -346,11 +387,12 @@ fn cmd_verify(args: &[String]) -> Result<(), DeckError> {
     // open() 会逐条解密并比对 sha256；签名在 flags 含签名时强制校验
     let theme = gf_deckart::pack::open(&pack, &key, vk.as_ref())?;
     println!(
-        "校验通过：{}@{}，{} 条目，{} 面可渲染，加密={}，签名={}",
+        "校验通过：{}@{}，{} 条目，{} 面可渲染{}，加密={}，签名={}",
         info.theme_id,
         info.theme_version,
         info.entries,
         gf_deckart::render_all(&theme, None)?.len(),
+        corner_note(theme.corner_scale(), theme.has_corner_scale()),
         info.encrypted,
         info.signed
     );
