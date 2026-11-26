@@ -1544,4 +1544,130 @@ pub(crate) mod legacy_ref {
         }
         out
     }
+
+    /// 参照实现的直测：`recognize_legacy` / `enumerate_legacy` 只被差分用例经
+    /// `enumerate_legacy` 间接调用，空牌 / 重复牌 / 全百搭等入口在这里补齐。
+    #[cfg(test)]
+    mod legacy_tests {
+        use super::super::*;
+        use super::{enumerate_legacy, recognize_legacy};
+        use crate::ruleset::parse::from_yaml;
+
+        const CLASSIC: &str = include_str!("../tests/fixtures/guandan-classic/ruleset.yaml");
+
+        fn setup() -> (RuleSetBody, RankContext) {
+            let r = from_yaml(CLASSIC).expect("classic 夹具解析失败");
+            // classic 的 levelTable.initial = "2" → 级牌下标 0，用于走合成序。
+            let ctx = RankContext::new(&r, Some(0));
+            (r, ctx)
+        }
+
+        fn c(r: &RuleSetBody, rank: usize, suit: usize, copy: u8) -> u16 {
+            card_id(r, rank, suit, copy)
+        }
+
+        #[test]
+        fn recognize_legacy_covers_every_shape() {
+            let (r, ctx) = setup();
+
+            // 空牌集 / 重复牌 id：入口两条早退。
+            assert!(recognize_legacy(&r, &ctx, &[]).is_none());
+            let dup = c(&r, 3, 0, 1);
+            assert!(recognize_legacy(&r, &ctx, &[dup, dup]).is_none());
+
+            // 单张（普通点数 / 小王 / 大王）。
+            assert!(recognize_legacy(&r, &ctx, &[c(&r, 3, 0, 0)]).is_some());
+            assert!(recognize_legacy(&r, &ctx, &[joker_id(&r, false, 0)]).is_some());
+            assert!(recognize_legacy(&r, &ctx, &[joker_id(&r, true, 0)]).is_some());
+
+            // 对 / 三张。
+            let pair: Vec<u16> = (0..2).map(|s| c(&r, 4, s, 0)).collect();
+            assert!(recognize_legacy(&r, &ctx, &pair).is_some());
+            let triple: Vec<u16> = (0..3).map(|s| c(&r, 5, s, 0)).collect();
+            assert!(recognize_legacy(&r, &ctx, &triple).is_some());
+
+            // 炸弹 4 张 / 5 张（同点跨副本）。
+            let bomb4: Vec<u16> = (0..4).map(|s| c(&r, 6, s, 0)).collect();
+            assert!(recognize_legacy(&r, &ctx, &bomb4).is_some());
+            let bomb5: Vec<u16> = vec![
+                c(&r, 6, 0, 0),
+                c(&r, 6, 0, 1),
+                c(&r, 6, 1, 0),
+                c(&r, 6, 2, 0),
+                c(&r, 6, 3, 0),
+            ];
+            assert!(recognize_legacy(&r, &ctx, &bomb5).is_some());
+
+            // 顺子 3-7（跨花色）、同花顺 ♠3-7。
+            let straight: Vec<u16> = (1..=5).map(|rank| c(&r, rank, 2, 0)).collect();
+            assert!(recognize_legacy(&r, &ctx, &straight).is_some());
+            let flush: Vec<u16> = (1..=5).map(|rank| c(&r, rank, 0, 0)).collect();
+            assert!(recognize_legacy(&r, &ctx, &flush).is_some());
+
+            // 三连对（8/9/10 各一对）、钢板（K/A 各三张）。
+            let mut plate: Vec<u16> = Vec::new();
+            for rank in [7usize, 8, 9] {
+                plate.push(c(&r, rank, 0, 0));
+                plate.push(c(&r, rank, 1, 0));
+            }
+            assert!(recognize_legacy(&r, &ctx, &plate).is_some());
+            let mut steel: Vec<u16> = Vec::new();
+            for rank in [11usize, 12] {
+                for suit in 0..3 {
+                    steel.push(c(&r, rank, suit, 0));
+                }
+            }
+            assert!(recognize_legacy(&r, &ctx, &steel).is_some());
+
+            // 三带二：3 张 6 + 一对 7。
+            let mut tp: Vec<u16> = (0..3).map(|s| c(&r, 5, s, 0)).collect();
+            tp.push(c(&r, 6, 0, 0));
+            tp.push(c(&r, 6, 1, 0));
+            assert!(recognize_legacy(&r, &ctx, &tp).is_some());
+
+            // 王炸（2 小 2 大）。
+            let jb = vec![
+                joker_id(&r, false, 0),
+                joker_id(&r, false, 1),
+                joker_id(&r, true, 0),
+                joker_id(&r, true, 1),
+            ];
+            assert!(recognize_legacy(&r, &ctx, &jb).is_some());
+
+            // 全百搭（红桃级牌两张）：走 recognize_all_wildcard 分支。
+            let wilds: Vec<u16> = (0..2).map(|copy| c(&r, 0, 1, copy)).collect();
+            assert!(recognize_legacy(&r, &ctx, &wilds).is_some());
+
+            // 不成型（两个不同点数）。
+            assert!(recognize_legacy(&r, &ctx, &[c(&r, 3, 0, 0), c(&r, 7, 1, 0)]).is_none());
+        }
+
+        #[test]
+        fn enumerate_legacy_covers_all_pattern_families() {
+            let (r, ctx) = setup();
+            // 一手同时含：单张/对/三张/炸弹/顺子/同花顺/连对/钢板/三带二/百搭。
+            let mut hand: Vec<u16> = Vec::new();
+            hand.push(c(&r, 12, 3, 0)); // 单张 A♣
+            hand.extend((0..2).map(|s| c(&r, 4, s, 0))); // 对 5
+            hand.extend((0..3).map(|s| c(&r, 7, s, 0))); // 三张 8
+            hand.extend((0..4).map(|s| c(&r, 9, s, 0))); // 炸弹 10
+            hand.extend((1..=5).map(|rank| c(&r, rank, 1, 0))); // 顺子/同花顺候选
+            for rank in [0usize, 1, 2] {
+                hand.push(c(&r, rank, 2, 0));
+                hand.push(c(&r, rank, 3, 0));
+            }
+            for rank in [10usize, 11] {
+                for suit in 0..3 {
+                    hand.push(c(&r, rank, suit, 0));
+                }
+            }
+            hand.push(c(&r, 0, 1, 0)); // 百搭
+            let recs = enumerate_legacy(&r, &ctx, &hand);
+            assert!(!recs.is_empty(), "参照枚举应产出候选");
+
+            // 全百搭手牌：走独立早退分支。
+            let wilds: Vec<u16> = (0..2).map(|copy| c(&r, 0, 1, copy)).collect();
+            assert!(!enumerate_legacy(&r, &ctx, &wilds).is_empty());
+        }
+    }
 }
