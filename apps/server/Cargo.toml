@@ -1,0 +1,32 @@
+[package]
+name = "gf-server"
+version = "0.1.0"
+edition = "2021"
+description = "掼蛋联机服务端：axum + tokio，复用 gf-table-runtime 房间，protobuf over WebSocket"
+
+# 独立 workspace：服务端依赖树（axum/tokio）不并入根 workspace 的测试与覆盖率统计
+# （与 apps/shell-desktop/src-tauri 同一处理方式）。
+[workspace]
+
+[lib]
+name = "gf_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gf-server"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
+prost = "0.13"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures-util = "0.3"
+
+gf-engine = { path = "../../crates/engine" }
+gf-protocol = { path = "../../crates/protocol" }
+gf-table-runtime = { path = "../../crates/table-runtime" }
+
+[dev-dependencies]
+tokio-tungstenite = "0.29"
