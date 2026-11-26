@@ -6,7 +6,7 @@
 
 说明：
 - 这 6 张是“插画层”，颜色写死（红/金/米白/深红），不参与牌面墨色替换；
-- 大小王左侧的竖排 JOKER 文字用 Arial Bold 抽路径后旋转 90°，字号由 joker_text(52, …) 控制；
+- 大小王左侧的竖排 JOKER 文字用 Arial Bold 抽路径后转成竖排（从上往下读，不镜像），字号由 joker_text(52, …) 控制；
 - 所有浮点保留两位小数、去掉多余的 0，避免 SVG 里出现一长串小数。
 
 依赖字体：C:\\Windows\\Fonts\\arialbd.ttf（Arial Bold）。
@@ -152,11 +152,19 @@ JOKER_D, JOKER_BOX = joker_text_path()
 
 
 def joker_text(cap, right, top, color):
+    """左侧竖排 JOKER：从上往下读，字头朝右，整体右边缘贴 right、上边缘贴 top。
+
+    字形坐标是 y 向上的，先 scale(s, -s) 翻正，再 rotate(90) 转成竖排（顺时针）；
+    最后按包围盒平移，让首字母 J 落在 top、整列贴住 right，字不会被镜像。
+    """
     x0, y0, x1, y1 = JOKER_BOX
     s = cap / (y1 - y0)
+    # 旋转后：x = s*gy + e，y = s*gx + f
+    e = right - cap - s * y0
+    f = top - s * x0
     return (
-        f'<g transform="translate({right} {top}) rotate(90) scale({s:.6f}) '
-        f'translate({-x0:.1f} {-y0:.1f})" fill="{color}">'
+        f'<g transform="translate({e:.3f} {f:.3f}) '
+        f'rotate(90) scale({s:.6f} {-s:.6f})" fill="{color}">'
         f'<path d="{JOKER_D}"/></g>'
     )
 
