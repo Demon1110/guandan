@@ -3,7 +3,7 @@
 把「一套素材」按 `{suit, rank, levelRank}` 动态合成 54 张牌面（52 张 + 大小王）+ 牌背，输出 SVG（默认），必要时转 PNG。
 主题以目录区分，可打包成带加密防护的 `.gfdeck` 素材包分发。
 
-**已实现并通过 26 个测试**（状态与用法见第 13 节；决策见第 12 节）。
+**已实现并通过 28 个测试**（状态与用法见第 13 节；决策见第 12 节）。
 
 ---
 
@@ -113,19 +113,32 @@ L1 底面模板（裁圆角） → L2 花色符号 → L3 点数/角标 → L4 �
 
 ### 可选文本层（`textLayer`）
 
-`badges/level.svg` 的胶囊只画形状（左侧三条白色小三角作图标），「级牌」二字由文本层叠加，开关在 `theme.json`：
+`badges.level` 与文本层是两个独立的东西：前者是素材（描边/胶囊/图标），后者是字。`textLayer.badge` 决定谁出场，三选一：
 
 ```json
 "textLayer": {
   "enabled": true,
+  "badge": "both",
   "fontFamily": "'Microsoft YaHei', 'PingFang SC', 'Noto Sans SC', sans-serif",
   "levelLabel": { "text": "级牌", "x": 404, "y": 58, "size": 28, "color": "#FFFFFF", "anchor": "middle" }
 }
 ```
 
-- `enabled: false` 或整块省略 → 输出零 `<text>`，纯图形、零字体依赖（素材本身始终不依赖字体）；
-- 开启后只在**级牌**上多一层 `<g id="L4t-level-label">`，嵌入的是纯文本（做 XML 转义，不解析任何标记）；
-- 转 PNG 时会加载系统字体（`fontdb::Database::load_system_fonts`），系统没有中文字体时该层退化成空白，牌面其余部分不受影响；
+| `textLayer` | `enabled` | `badge` | `L4-level` 素材层 | `L4t-level-label` 文字层 | 适用场景 |
+| --- | --- | --- | --- | --- | --- |
+| 缺省 | — | — | 画 | 不画 | 纯图形、零字体依赖 |
+| 有 | `false` | 任意（含 text-only） | 画 | 不画 | 临时关掉文字，行为回到旧版 |
+| 有 | `true` | `badge-only` | 画 | 不画 | 素材里已经画了「级牌」字形的主题 |
+| 有 | `true` | `both`（默认） | 画 | 画 | 胶囊由素材给、字由文本层补（defaults） |
+| 有 | `true` | `text-only` | **不画** | 画 | 主题自带上色底板/描边，只需要补字 |
+
+几点约束与坑：
+
+- `enabled` 是总开关：关掉时无论 `badge` 填什么，都退回「只画素材」，不会出现「级牌完全没标记」的空档；
+- `badge = both` / `text-only` 且 `enabled` 时必须给 `levelLabel`（否则加载期 `DK-THEME-INVALID`）；`badge-only` 时 `levelLabel` 可省，写了也会照常校验；
+- `text-only` 只读文本层，**不再画 `badges.level`（连同它的描边和胶囊）**。defaults 的 `levelLabel` 是白色字、位置固定在胶囊里，单独用会变成白底白字——真要用 `text-only`，主题必须自己提供底板（或把 `color` 改成与纸面对比的深色）；
+- 逢人配徽章 `L4b-wild` 是独立层，三种模式都照常出现，不受 `badge` 影响；
+- 文字层嵌入的是纯文本（XML 转义，不解析任何标记）；转 PNG 时加载系统字体（`fontdb::load_system_fonts`），系统缺中文字体则该层退化成空白，牌面其余部分不受影响；
 - Web/WebView 直接渲染 SVG 时由系统字体兜底，不引入 `@font-face`、不外链字体文件。
 
 ### 牌背（当前形态）
@@ -192,7 +205,7 @@ themes/
     "centerSuit": { "x": 155, "y": 242, "scale": 1.90 },
     "wildBadge": { "x": 26, "y": 560, "scale": 0.60 }
   },
-  "textLayer": { "enabled": true, "fontFamily": "…", "levelLabel": { "text": "级牌", "x": 404, "y": 58, "size": 28, "color": "#FFFFFF", "anchor": "middle" } },
+  "textLayer": { "enabled": true, "badge": "both", "fontFamily": "…", "levelLabel": { "text": "级牌", "x": 404, "y": 58, "size": 28, "color": "#FFFFFF", "anchor": "middle" } },
   "classic": { "cornerRank": {…}, "cornerSuit": {…}, "pipScale": 0.60, "aceScale": 1.70, "courtStyle": "monogram", "pipPositions": {…} }
 }
 ```
@@ -326,7 +339,7 @@ crates/deckart/
 | 2 | defaults 素材 | **自绘纯矢量**：23 个文件全为手写 SVG，零外部字体、零位图依赖 |
 | 3 | workspace | **并入根 members**，同时 `scripts/coverage.ps1` 排除本 crate，不拉低引擎覆盖率分母 |
 | 4 | 布局 | **compact**：左上角标（点数 + 花色竖排）+ 中央大花色 + 右下镜像角标 |
-| 5 | 文本层 | **可选层，`theme.json` 开关**：defaults 开启（级牌胶囊写「级牌」二字），关闭即回到零 `<text>` 的纯图形；素材本身始终不依赖字体 |
+| 5 | 文本层 | **可选层，`theme.json` 开关**：`enabled` 总开关 + `badge` 三态（`both` 素材与文字叠加 / `badge-only` 只画素材 / `text-only` 只画文字），关掉即回到零 `<text>` 的纯图形；素材本身始终不依赖字体 |
 | 6 | `classic` 规范 | **现在定死**：画布 500×700、8 类子素材固有尺寸表、slot 左上角锚点语义、花阵归一化点位表（数量必须等于点数）；字段全进 `theme.json`，代码不硬编码 |
 | 7 | 牌背 | **保持现状**：整幅 `back.svg` 直接铺满，后续主题给复杂前后背景时只换素材 |
 
@@ -343,15 +356,15 @@ crates/deckart/
 - `png`：SVG → PNG（`--features png`，不进 wasm）
 - `gfdeck` CLI：`render` / `render-all` / `pack` / `unpack` / `info` / `verify` / `png`
 
-### 测试（25 个单测 + 1 个 doctest，全绿）
+### 测试（27 个单测 + 1 个 doctest，全绿）
 
 ```powershell
 cd crates\deckart
-cargo test                 # 5 lib + 9 render + 11 pack + 1 doctest
+cargo test                 # 5 lib + 11 render + 11 pack + 1 doctest
 cargo test --features png  # 额外可用 PNG 子命令
 ```
 
-覆盖：54 面编码唯一且闭合、级牌只在匹配点数命中、红桃级牌必须同时有 level + wild 两层、王永不级牌、无级牌态不出徽章、输出不得含外链/字体/位图、渲染确定性；文本层开关（关掉后零 `<text>`、开着时只在级牌出现）、classic 花阵数量（7 → 7 花阵 + 4 角标、A → 1 + 4）、classic 缺花阵规格即报错；包往返逐字节一致、错钥拒绝、改一字节即失败、签名必须匹配公钥、无密钥可读 header、截断/非包拒绝、缺素材与路径穿越在加载期就报错。
+覆盖：54 面编码唯一且闭合、级牌只在匹配点数命中、红桃级牌必须同时有 level + wild 两层、王永不级牌、无级牌态不出徽章、输出不得含外链/字体/位图、渲染确定性；文本层三态矩阵（`both` 两层都在、`badge-only` 无 text、`text-only` 无素材层、非级牌三种模式都不出 L4、关闭后退化为素材层、`text-only` 缺 label 报错而 `badge-only` 缺 label 合法）、classic 花阵数量（7 → 7 花阵 + 4 角标、A → 1 + 4）、classic 缺花阵规格即报错；包往返逐字节一致、错钥拒绝、改一字节即失败、签名必须匹配公钥、无密钥可读 header、截断/非包拒绝、缺素材与路径穿越在加载期就报错。
 
 ### 实测（2026-11-26）
 

@@ -34,7 +34,7 @@ pub mod png;
 pub use card::{all_faces, Face, Rank, Suit};
 pub use error::DeckError;
 pub use render::{render_all, render_back, render_face, LevelState, RenderedFace};
-pub use theme::{ClassicSpec, LabelText, Layout, TextLayer, Theme, ThemeMeta};
+pub use theme::{BadgeMode, ClassicSpec, LabelText, Layout, TextLayer, Theme, ThemeMeta};
 
 /// crate 版本，写进生成的 SVG 注释里便于追溯。
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

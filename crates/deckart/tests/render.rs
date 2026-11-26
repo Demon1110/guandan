@@ -2,7 +2,9 @@
 
 use std::path::PathBuf;
 
-use gf_deckart::{render_all, render_back, render_face, Face, LevelState, Rank, Suit, Theme};
+use gf_deckart::{
+    render_all, render_back, render_face, BadgeMode, Face, LevelState, Rank, Suit, Theme,
+};
 
 fn theme_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../themes/defaults")
@@ -92,12 +94,9 @@ fn jokers_never_switch_on_level() {
 #[test]
 fn output_is_self_contained() {
     let theme = theme();
-    let text_on = theme
-        .meta()
-        .text_layer
-        .as_ref()
-        .map(|t| t.enabled)
-        .unwrap_or(false);
+    let text = theme.meta().text_layer.as_ref();
+    let expect_badge = text.map(|t| t.draws_badge()).unwrap_or(true);
+    let expect_label = text.map(|t| t.draws_label()).unwrap_or(false);
     for f in render_all(&theme, level(8)).unwrap() {
         let occurrences = f.svg.matches("http").count();
         assert_eq!(
@@ -106,22 +105,25 @@ fn output_is_self_contained() {
             f.code
         );
         assert!(!f.svg.contains("<image"), "{} 不得内嵌位图", f.code);
-        // 可选文本层：开启时只在级牌上出现 <text>，关闭时必须完全没有
-        if text_on {
-            let is_level = f.svg.contains("data-leveled=\"true\"");
-            assert_eq!(
-                f.svg.contains("<text"),
-                is_level,
-                "{} 的文本层应与级牌标记同步",
-                f.code
-            );
+        let is_level = f.svg.contains("data-leveled=\"true\"");
+        assert_eq!(
+            f.svg.contains("<g id=\"L4-level\">"),
+            is_level && expect_badge,
+            "{} 的素材层应与 badge 模式一致",
+            f.code
+        );
+        assert_eq!(
+            f.svg.contains("<text"),
+            is_level && expect_label,
+            "{} 的文本层应与 badge 模式一致",
+            f.code
+        );
+        if expect_label {
             assert!(
                 !f.svg.contains("font-family=\"\"") && !f.svg.contains("&#"),
                 "{} 文本层字段不得为空或转义异常",
                 f.code
             );
-        } else {
-            assert!(!f.svg.contains("<text"), "{} 不得依赖字体渲染", f.code);
         }
         // 无论开关如何，都不得引用外部字体文件
         assert!(
@@ -132,21 +134,130 @@ fn output_is_self_contained() {
     }
 }
 
-#[test]
-fn text_layer_can_be_switched_off() {
-    let mut meta = theme().meta().clone();
-    meta.text_layer = None;
+/// 以 defaults 素材派生一个只改 textLayer 的主题变体。
+fn variant_label_mode(mode: Option<BadgeMode>) -> Theme {
     let src = theme();
+    let mut meta = src.meta().clone();
+    match mode {
+        None => meta.text_layer = None,
+        Some(m) => {
+            meta.text_layer.as_mut().unwrap().badge = m;
+            meta.text_layer.as_mut().unwrap().enabled = true;
+        }
+    }
     let assets: std::collections::HashMap<String, String> = meta
         .asset_paths()
         .iter()
         .map(|p| (p.clone(), src.asset(p).to_string()))
         .collect();
-    let theme = Theme::from_parts(meta, assets, "test:no-text").unwrap();
+    Theme::from_parts(meta, assets, "test:badge-mode").unwrap()
+}
+
+#[test]
+fn badge_modes_pick_layers() {
     let h8 = Face::normal(Suit::Heart, Rank::new(8).unwrap());
-    let svg = render_face(&theme, h8, level(8)).unwrap();
+    let h9 = Face::normal(Suit::Heart, Rank::new(9).unwrap());
+
+    // both：素材 + 文字
+    let both = render_face(&variant_label_mode(Some(BadgeMode::Both)), h8, level(8)).unwrap();
+    assert!(both.contains("<g id=\"L4-level\">"));
+    assert!(both.contains("<g id=\"L4t-level-label\">"));
+    assert!(
+        both.contains("<g id=\"L4b-wild\""),
+        "逢人配层不受 badge 模式影响"
+    );
+
+    // badge-only：只有素材
+    let badge_only = render_face(
+        &variant_label_mode(Some(BadgeMode::BadgeOnly)),
+        h8,
+        level(8),
+    )
+    .unwrap();
+    assert!(badge_only.contains("<g id=\"L4-level\">"));
+    assert!(!badge_only.contains("<text"));
+
+    // text-only：只有文字，不读素材层
+    let text_only =
+        render_face(&variant_label_mode(Some(BadgeMode::TextOnly)), h8, level(8)).unwrap();
+    assert!(!text_only.contains("<g id=\"L4-level\">"));
+    assert!(text_only.contains("<g id=\"L4t-level-label\">"));
+    assert!(text_only.contains("级牌"));
+
+    // 非级牌：三种模式都不出 L4 任何一层
+    for mode in [
+        None,
+        Some(BadgeMode::Both),
+        Some(BadgeMode::BadgeOnly),
+        Some(BadgeMode::TextOnly),
+    ] {
+        let svg = render_face(&variant_label_mode(mode), h9, level(8)).unwrap();
+        assert!(
+            !svg.contains("<g id=\"L4-level\">"),
+            "{mode:?} 非级牌不应有素材层"
+        );
+        assert!(!svg.contains("<text"), "{mode:?} 非级牌不应有文字");
+    }
+}
+
+#[test]
+fn text_only_requires_label() {
+    let src = theme();
+    let mut meta = src.meta().clone();
+    meta.text_layer.as_mut().unwrap().badge = BadgeMode::TextOnly;
+    meta.text_layer.as_mut().unwrap().level_label = None;
+    let assets: std::collections::HashMap<String, String> = meta
+        .asset_paths()
+        .iter()
+        .map(|p| (p.clone(), src.asset(p).to_string()))
+        .collect();
+    let err = Theme::from_parts(meta, assets, "test:text-only-bad").unwrap_err();
+    assert_eq!(err.code(), "DK-THEME-INVALID");
+
+    // badge-only 时缺 label 合法（文字本就不出场）
+    let mut meta = src.meta().clone();
+    meta.text_layer.as_mut().unwrap().badge = BadgeMode::BadgeOnly;
+    meta.text_layer.as_mut().unwrap().level_label = None;
+    let assets: std::collections::HashMap<String, String> = meta
+        .asset_paths()
+        .iter()
+        .map(|p| (p.clone(), src.asset(p).to_string()))
+        .collect();
+    Theme::from_parts(meta, assets, "test:badge-only-ok").expect("badge-only 缺 label 应合法");
+}
+
+#[test]
+fn text_layer_can_be_switched_off() {
+    let src = theme();
+    let h8 = Face::normal(Suit::Heart, Rank::new(8).unwrap());
+
+    let mut meta = src.meta().clone();
+    meta.text_layer = None;
+    let assets: std::collections::HashMap<String, String> = meta
+        .asset_paths()
+        .iter()
+        .map(|p| (p.clone(), src.asset(p).to_string()))
+        .collect();
+    let no_text = Theme::from_parts(meta, assets, "test:no-text").unwrap();
+    let svg = render_face(&no_text, h8, level(8)).unwrap();
     assert!(svg.contains("<g id=\"L4-level\">"), "徽章仍在");
     assert!(!svg.contains("<text"), "关掉文本层后不应再有 text");
+
+    // 整体关闭时即便 badge=text-only 也退回「只画素材」，不能变成什么都不画
+    let mut meta = src.meta().clone();
+    let t = meta.text_layer.as_mut().unwrap();
+    t.enabled = false;
+    t.badge = BadgeMode::TextOnly;
+    t.level_label = None;
+    let assets: std::collections::HashMap<String, String> = meta
+        .asset_paths()
+        .iter()
+        .map(|p| (p.clone(), src.asset(p).to_string()))
+        .collect();
+    let off_textonly = Theme::from_parts(meta, assets, "test:off-textonly").unwrap();
+    let svg = render_face(&off_textonly, h8, level(8)).unwrap();
+    assert!(svg.contains("<g id=\"L4-level\">"), "关闭后应退化为素材层");
+    assert!(!svg.contains("<text"));
 }
 
 #[test]

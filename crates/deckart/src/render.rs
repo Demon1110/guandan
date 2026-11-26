@@ -74,28 +74,37 @@ pub fn render_face(
     }
 
     // L4 级牌徽章（通用一套，不随点数变）
+    // 三选一由 textLayer.badge 决定：both（默认）/ badge-only / text-only
     if is_level {
-        let rel = &meta.badges.level;
-        let badge = fragment(rel, theme.asset(rel))?;
-        out.push_str("<g id=\"L4-level\">");
-        out.push_str(badge.inner);
-        out.push_str("</g>\n");
+        let text = meta.text_layer.as_ref();
+        let draw_badge = text.map(|t| t.draws_badge()).unwrap_or(true);
+        let draw_label = text.map(|t| t.draws_label()).unwrap_or(false);
 
-        // L4t 可选文本层：theme.json 的 textLayer.enabled 开关控制
-        if let Some(text) = meta.text_layer.as_ref().filter(|t| t.enabled) {
-            if let Some(label) = text.level_label.as_ref() {
-                writeln!(
-                    out,
-                    "<g id=\"L4t-level-label\"><text x=\"{}\" y=\"{}\" font-family=\"{}\" font-size=\"{}\" fill=\"{}\" text-anchor=\"{}\">{}</text></g>",
-                    num(label.x),
-                    num(label.y),
-                    escape(&text.font_family),
-                    num(label.size),
-                    label.color,
-                    label.anchor,
-                    escape(&label.text)
-                )
-                .ok();
+        if draw_badge {
+            let rel = &meta.badges.level;
+            let badge = fragment(rel, theme.asset(rel))?;
+            out.push_str("<g id=\"L4-level\">");
+            out.push_str(badge.inner);
+            out.push_str("</g>\n");
+        }
+
+        // L4t 文本层：textLayer.enabled + badge 模式共同决定是否出场
+        if draw_label {
+            if let Some(t) = text {
+                if let Some(label) = t.level_label.as_ref() {
+                    writeln!(
+                        out,
+                        "<g id=\"L4t-level-label\"><text x=\"{}\" y=\"{}\" font-family=\"{}\" font-size=\"{}\" fill=\"{}\" text-anchor=\"{}\">{}</text></g>",
+                        num(label.x),
+                        num(label.y),
+                        escape(&t.font_family),
+                        num(label.size),
+                        label.color,
+                        label.anchor,
+                        escape(&label.text)
+                    )
+                    .ok();
+                }
             }
         }
     }

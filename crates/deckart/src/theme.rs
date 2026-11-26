@@ -49,11 +49,41 @@ pub struct Slots {
 pub struct TextLayer {
     #[serde(default)]
     pub enabled: bool,
+    /// 与 `badges.level` 素材的三选一关系：`both`（默认，素材 + 文字叠加）/
+    /// `badge-only`（只画素材）/ `text-only`（只画文字，不画素材层）
+    #[serde(default)]
+    pub badge: BadgeMode,
     #[serde(default = "default_font_family")]
     pub font_family: String,
-    /// 级牌胶囊上的文字；`enabled` 时必须存在
+    /// 级牌胶囊上的文字；`badge = both|text-only` 且 `enabled` 时必须存在
     #[serde(default)]
     pub level_label: Option<LabelText>,
+}
+
+/// 级牌标记的两种素材谁出场。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum BadgeMode {
+    /// 只画 `badges.level`（描边/胶囊/图标），不写字 —— 适合素材自带「级牌」字形的主题
+    BadgeOnly,
+    /// 素材与文本层同时出场（默认）
+    #[default]
+    Both,
+    /// 只画文本层，完全不读 `badges.level` —— 适合自带描边/底板、只需补字的主题
+    TextOnly,
+}
+
+impl TextLayer {
+    /// 是否画 `badges.level` 素材层。
+    /// 文本层整体关闭（`enabled = false`）时退回旧行为：只画素材，不读 `text-only`。
+    pub fn draws_badge(&self) -> bool {
+        !self.enabled || self.badge != BadgeMode::TextOnly
+    }
+
+    /// 是否画文字层（需要 `enabled`，且 badge-only 时不画）。
+    pub fn draws_label(&self) -> bool {
+        self.enabled && self.badge != BadgeMode::BadgeOnly
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -356,29 +386,39 @@ fn validate(meta: &ThemeMeta, assets: &HashMap<String, String>) -> Result<(), De
         validate_classic(spec)?;
     }
     if let Some(text) = &meta.text_layer {
-        if text.enabled {
+        if text.enabled && text.badge != BadgeMode::BadgeOnly {
             let label = text.level_label.as_ref().ok_or_else(|| {
-                DeckError::ThemeInvalid("textLayer.enabled 时必须提供 levelLabel".into())
+                DeckError::ThemeInvalid(
+                    "textLayer.enabled 且 badge=both|text-only 时必须提供 levelLabel".into(),
+                )
             })?;
-            if label.text.trim().is_empty() {
-                return Err(DeckError::ThemeInvalid("levelLabel.text 不能为空".into()));
-            }
-            if !(0.0..=200.0).contains(&label.size) || label.size <= 0.0 {
-                return Err(DeckError::ThemeInvalid(
-                    "levelLabel.size 需在 1..=200".into(),
-                ));
-            }
-            if !label.color.starts_with('#') {
-                return Err(DeckError::ThemeInvalid(
-                    "levelLabel.color 需为 #RRGGBB".into(),
-                ));
-            }
-            if !matches!(label.anchor.as_str(), "start" | "middle" | "end") {
-                return Err(DeckError::ThemeInvalid(
-                    "levelLabel.anchor 只允许 start/middle/end".into(),
-                ));
-            }
+            validate_label(label)?;
+        } else if let Some(label) = &text.level_label {
+            // badge-only 时文字不参与渲染，但给了就照样校验，避免留坏配置
+            validate_label(label)?;
         }
+    }
+    Ok(())
+}
+
+fn validate_label(label: &LabelText) -> Result<(), DeckError> {
+    if label.text.trim().is_empty() {
+        return Err(DeckError::ThemeInvalid("levelLabel.text 不能为空".into()));
+    }
+    if !(0.0..=200.0).contains(&label.size) || label.size <= 0.0 {
+        return Err(DeckError::ThemeInvalid(
+            "levelLabel.size 需在 1..=200".into(),
+        ));
+    }
+    if !label.color.starts_with('#') {
+        return Err(DeckError::ThemeInvalid(
+            "levelLabel.color 需为 #RRGGBB".into(),
+        ));
+    }
+    if !matches!(label.anchor.as_str(), "start" | "middle" | "end") {
+        return Err(DeckError::ThemeInvalid(
+            "levelLabel.anchor 只允许 start/middle/end".into(),
+        ));
     }
     Ok(())
 }

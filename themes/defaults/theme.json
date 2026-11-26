@@ -33,6 +33,7 @@
   },
   "textLayer": {
     "enabled": true,
+    "badge": "both",
     "fontFamily": "'Microsoft YaHei', 'PingFang SC', 'Noto Sans SC', sans-serif",
     "levelLabel": { "text": "级牌", "x": 404, "y": 58, "size": 28, "color": "#FFFFFF", "anchor": "middle" }
   },
