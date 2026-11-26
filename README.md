@@ -321,7 +321,7 @@ guandan/
 | --- | --- | --- |
 | M0 | ✅ 已收口 | 契约锁定、双端 `stateHash` 一致、断线恢复原型、非法 RuleSet 反证、空转与包体实测 |
 | M1 | ✅ 已收口 | 牌型全表、枚举路径重构、结算两批、进贡/还贡/抗贡、跨局携带、快照 wire、组牌推荐、房间主干（含计时/托管/断线恢复/再来一局）、AI-L0/L1/L2（跟牌/留牌/记牌/队友配合）、Web 端（牌桌/大厅/结算/设置）+ IndexedDB 续局、校验器 L2–L4、CI 双产物 gate、性能与容量 gate（353.3µs / 3,952–7,904 房间）、接风与进贡后手牌刷新专项；覆盖率门禁按 **行 ≥90% 且区域 ≥90%**（实测行 92.23% / 区域 91.61%，函数 89.95%，分支 85.05% 作观测项），口径与缺口见 `docs/assets/m1-coverage-baseline.md` |
-| M2 | 🟡 进行中 | 已落地：`apps/server` 联机骨架（入座/开局/动作/结算）、传输帧头（`gf_protocol::wire`）、快照 `roundNo` 补齐、增量重连（`ReconnectBuffer` → `RoomDelta`，跨局/结算落快照重置）、房间码与匹配队列（内存态）；待做：账号与短信、PG/Redis 落库、第 24 周联机内测、桌面壳三端产物、回放只读观战 |
+| M2 | 🟡 进行中 | 已落地：`apps/server` 联机骨架（入座/开局/动作/结算）、传输帧头（`gf_protocol::wire`）、快照 `roundNo` 补齐、增量重连（`ReconnectBuffer` → `RoomDelta`，跨局/结算落快照重置）、房间码与匹配队列（内存态）、手机号账号与短信验证码（测试白名单 + 座位绑定）；待做：PG/Redis 落库、第 24 周联机内测、桌面壳三端产物、回放只读观战 |
 | M3 / M4 | 未开始 | 见 `docs/开发计划.md` |
 
 **M1 目前的硬账**
@@ -360,11 +360,11 @@ guandan/
 cd apps/server
 cargo run --bin gf-server
 
-# 测试（17 条单测 + 6 条房间闭环 + 6 条大厅 HTTP + 2 条 WS 冒烟）
+# 测试（24 条单测 + 6 条房间闭环 + 6 条大厅 HTTP + 6 条账号 HTTP + 2 条 WS 冒烟）
 cargo test
 ```
 
-环境变量：`GF_BIND`、`GF_MIN_CLIENT_VERSION`（空串表示不校验）、`GF_TICK_MS`（默认 50）、`GF_NEXT_DEAL_MS`（结算后自动续局间隔，默认 5000）、`GF_HEARTBEAT_TIMEOUT_MS`（默认 30000）、`GF_ROOM_CODE_TTL_MS`（房间码有效期，默认 24h）、`GF_MATCH_TIMEOUT_MS`（匹配等待上限，默认 30s）。
+环境变量：`GF_BIND`、`GF_MIN_CLIENT_VERSION`（空串表示不校验）、`GF_TICK_MS`（默认 50）、`GF_NEXT_DEAL_MS`（结算后自动续局间隔，默认 5000）、`GF_HEARTBEAT_TIMEOUT_MS`（默认 30000）、`GF_ROOM_CODE_TTL_MS`（房间码有效期，默认 24h）、`GF_MATCH_TIMEOUT_MS`（匹配等待上限，默认 30s）、`GF_AUTH_SALT` / `GF_JWT_SECRET`（手机号哈希盐与 token 签名密钥，默认值是开发串、启动会告警）、`GF_SMS_TEST_WHITELIST` / `GF_SMS_TEST_CODE`（短信未报备前的测试白名单与固定码）、`GF_REQUIRE_AUTH`（强制玩家侧接口与 WS 带 token）。
 
 **接口**
 
@@ -377,7 +377,11 @@ cargo test
 | `POST /api/match/queue` | 入队，body `{gameId, mode}` → `{ticketId}`（满四人即成房） |
 | `GET /api/match/queue/{ticketId}` | 轮询 `{state: waiting\|matched\|timeout, matchId?}` |
 | `DELETE /api/match/queue/{ticketId}` | 退队 `{ok}` |
-| `GET /ws` | 牌桌 WS；首次 `match_id` 进房即建房（本机联调期） |
+| `POST /api/auth/sms` | 发验证码 `{phone}` → `{requestId, cooldownSec}`；超 60s/10 次日限回 429 `RATE_LIMITED` |
+| `POST /api/auth/login` | `{phone, code, clientVersion}` → `{token, refreshToken, expiresIn}`；版本不足 426、码错 401 |
+| `POST /api/auth/refresh` | `{refreshToken}` → `{token, refreshToken, expiresIn}`；旧 refresh 即刻作废 |
+| `GET /api/profile` | `Authorization: Bearer` → `{playerId, nickname, phoneTail4, stats}` |
+| `GET /ws` | 牌桌 WS；`?token=` 可选（`GF_REQUIRE_AUTH` 时必填） |
 
 **传输帧头**（`gf_protocol::wire`，§4.1 D5「固定自研」的传输层实现，不是 §5.9 消息契约）
 
@@ -395,8 +399,9 @@ S→C 11 JoinAck | 12 RoomSnapshot | 13 RoomDelta | 14 ActionAck | 15 PhaseChang
 - 断线：WS 断开/30s 无消息即记 `Offline`，房间按宽限托管；重连优先补发 `RoomDelta` 增量（水位在 200 条缓冲内且未跨局、未落在结算空窗期），末尾附 `snapshotReset=false` 快照；其余情形只发 `snapshotReset=true` 全量快照。
 - 服务端自证：`RoomHost::state_hash()` 与 `replay_hash()` 必须相等，四座位整局用例已锁。
 - 大厅：房间码 6 位（去易混字符、大小写不敏感、24h 有效）、凭码预占座位（`reserve()`，60s TTL）；匹配队列按 `(gameId, mode)` FIFO 分池，满四人撮合成同一场次，v1 不推 WS 匹配事件。
+- 账号：手机号 + 短信验证码登录；手机号只存 `HMAC-SHA256(盐, 号)` + 尾号 4 位；access 是 15 分钟 HS256 JWT，refresh 30 天单端轮换；短信通道未批前 `GF_SMS_TEST_WHITELIST` 走固定测试码；带 token 的预占与入座把座位绑定到玩家，重连校验同一玩家。
 
-**本切片明确没做**（按开发计划 §3 M2 顺序）：账号与短信、PG/Redis 落库、回放导出与观战、桌面壳三端产物、第 24 周联机内测。
+**本切片明确没做**（按开发计划 §3 M2 顺序）：PG/Redis 落库、回放导出与观战、桌面壳三端产物、第 24 周联机内测。
 
 **三个待裁口径**（代码里留了 TODO 常量）
 

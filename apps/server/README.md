@@ -14,13 +14,25 @@ cargo clippy --all-targets -- -D warnings
 
 手工探针：先起服务，再 `cargo run --example ws_probe`，会发一条 `JoinRoom` 并打印收到的帧类型。
 
+关键环境变量（全部有开发默认值，生产必须覆盖前两项）：
+
+| 变量 | 作用 |
+| --- | --- |
+| `GF_AUTH_SALT` / `GF_JWT_SECRET` | 手机号哈希盐、token 签名密钥（默认值是写死的开发串，启动会告警） |
+| `GF_SMS_TEST_WHITELIST` | 逗号分隔的手机号；短信模板未批前用固定测试码走通登录 |
+| `GF_SMS_TEST_CODE` | 白名单固定验证码，默认 `123456` |
+| `GF_REQUIRE_AUTH` | `1`/`true` 时玩家侧接口与 WS 都必须带 access token |
+| `GF_ROOM_CODE_TTL_MS` / `GF_MATCH_TIMEOUT_MS` | 房间码有效期 / 匹配等待上限 |
+
 ## 分层
 
 | 文件 | 负责 | 不负责 |
 | --- | --- | --- |
-| `src/lib.rs` | HTTP 路由、WS 会话（入座/收帧/断线记账） | 任何规则判定 |
+| `src/lib.rs` | HTTP 路由、WS 会话（鉴权/入座/收帧/断线记账） | 任何规则判定 |
 | `src/host.rs` | 一张桌的权威 `Room` + 每座位下行通道 + 20Hz 主循环 | 账号、匹配、落库 |
 | `src/events.rs` | 前后状态差分 → §5.9 下行帧（`RoomDelta` / `SettleResult` / `RoomSnapshot`） | 事件语义的新增裁定 |
+| `src/lobby.rs` | 房间码、票号、匹配队列（内存态） | 房间托管、规则 |
+| `src/auth.rs` | 手机号规范化/哈希、验证码、access/refresh token、玩家档案（内存态） | 短信通道报备、PG 落库 |
 | `src/config.rs` | 环境变量、`minClientVersion` 比较 | 规则集加载（由 room 锁定） |
 
 判定链路只有一条：`WS → RoomHost::submit → gf-table-runtime::Room::submit → gf-engine`。
@@ -57,6 +69,20 @@ cargo clippy --all-targets -- -D warnings
 - 入座前调用 `RoomHost::reserve()` 预占座位（60s TTL），`POST /api/room/join` 拿到的 `seat`
   在随后 WS `JOIN` 里兑现；座位被占时按最小空闲座位重新预占。
 
+## 账号接口（手机号 + 短信）
+
+| 方法 | 路径 | 入参 / 出参 |
+| --- | --- | --- |
+| `POST` | `/api/auth/sms` | `{phone}` → `{requestId, cooldownSec}`；同号 60s/次、10 次/日，超限 `429 RATE_LIMITED` + `retryAfterMs` |
+| `POST` | `/api/auth/login` | `{phone, code, clientVersion}` → `{token, refreshToken, expiresIn, playerId}`；`clientVersion` 低于下限 `426 CLIENT_TOO_OLD`，码错/超期 `401 AUTH_INVALID` |
+| `POST` | `/api/auth/refresh` | `{refreshToken}` → `{token, refreshToken, expiresIn}`；旧 refresh 即刻作废（单端轮换） |
+| `GET` | `/api/profile` | 需 `Authorization: Bearer <token>` → `{playerId, nickname, phoneTail4, stats}`；`stats` 在 PG 切片前恒为空表 |
+
+- access 是 HS256 JWT（15 分钟），refresh 是 32 字节随机串（30 天），库里只存其 SHA-256。
+- 手机号规范化后取 `HMAC-SHA256(server_salt, phone)` 与尾号 4 位入库（`player_profile` 字段位），原文只在发码链路内存里出现。
+- 短信通道未报备前，`GF_SMS_TEST_WHITELIST` 里的号用固定测试码直通（不发短信）；白名单为空时该口子关闭。
+- 带 token 入座会把座位绑定到玩家；重连回座位时校验同一玩家，HTTP 预占也按玩家 ID 绑定（见下节）。
+
 ## 已知取舍（都在代码里有注释）
 
 - **重连两条路径**：水位仍在 200 条环形缓冲内、且没跨局、没落在结算空窗期 → 逐条补发
@@ -72,6 +98,12 @@ cargo clippy --all-targets -- -D warnings
   个入队者带着前面的票成房，等价于「有人进队才撮一次」。
 - **预留座位不校验身份**：`RoomHost::reserve` 只按座位号兑现，谁先连上谁坐；
   账号切片接 token 后收紧。
+- **预留座位绑定玩家**：带 token 时预占与入座都记 `player_id`，别人拿同一座位号也抢不走；
+  不带 token（`GF_REQUIRE_AUTH` 关闭）退化为匿名预留，仅按座位号兑现。
+- **账号是内存态**：验证码表、refresh 表、玩家档案都在进程内，重启即失效；PG 切片替换存储，
+  HTTP 契约与 `player_profile` 字段位不变。
+- **refresh 只存哈希**：库里（现在是内存）存 `sha256(refresh)`，泄库也拿不到可用凭据；
+  但每账号只允许一条活跃 refresh，多端会互相顶掉（§5.15「不允许多端并行刷新」的直译）。
 - **未接持久化**：房间状态只在内存，进程重启即丢；PG/Redis 在 M2 后段接入。
 
 ## 错误码怎么落
@@ -86,6 +118,7 @@ cargo clippy --all-targets -- -D warnings
 | `seat_seq` 低于该座位水位 | `STALE_SEQ` |
 | 非行动座位提交 / 不在出牌阶段 / 场次已终止 | `TOO_LATE` |
 | 引擎拒绝（误点非法牌型） | **`ILLEGAL_ACTION`（占位，表内无对应码）** |
+| 发码过频/超日限 | `RATE_LIMITED`（429，附 `retryAfterMs`） |
 | 大厅入参不合规（未知房码/票号/游戏/模式/座位数） | `RS_SCHEMA_INVALID` + `detail`（见 `M2-GAP-05`） |
 
 最后两条是设计缺口：`M2-GAP-proto-04`（`ActionAck.reason` 要求取自 §5.7 全表，但"玩家误点
