@@ -206,6 +206,15 @@ const room = {
     if (!ex.gf_room_can_play) return null;
     return withCards(cards, (ptr, len) => JSON.parse(cstr(ex.gf_room_can_play(ptr, len))));
   },
+  // 一手牌的推荐拆分（`recommend`）：bot 出牌与「组牌建议」共用；旧产物没有该导出时返回 null。
+  plan() {
+    if (!ex.gf_room_plan) return null;
+    try {
+      return JSON.parse(cstr(ex.gf_room_plan()));
+    } catch {
+      return null;
+    }
+  },
 };
 
 // ---------- 页面状态 ----------
@@ -632,39 +641,34 @@ function arrangeSelection() {
   flash(`${patternName(pid)} 已理到${SPECIAL_PATTERN(pid) ? '最左' : '最右'}一列${beat}`);
 }
 
-// 「组牌建议」：按合法集给每种牌型各挑一手，炸弹/同花进左列、其它进右列，各最多 4 组。
+// 「组牌建议」：直接用 recommend 的最优整手拆分铺开——炸弹/同花顺进左列、其余进右列，
+// 这样点一组就是整组出，不用自己拼牌。
 function arrangeSuggest() {
   if (state.waitingSeat !== state.humanSeat) {
     flash('轮到你时才能看组牌建议');
     return;
   }
-  const plays = currentLegal().filter((a) => !a.pass && a.cards?.length && a.patternId);
-  const byPattern = new Map();
-  for (const a of plays) if (!byPattern.has(a.patternId)) byPattern.set(a.patternId, a);
-  const groups = [...byPattern.values()];
-  const special = groups.filter((a) => SPECIAL_PATTERN(a.patternId));
-  const normal = groups.filter((a) => !SPECIAL_PATTERN(a.patternId));
-  const used = new Set();
-  const take = (list, layout, limit) => {
-    const out = [];
-    for (const a of list) {
-      if (out.length >= limit) break;
-      if (a.cards.some((id) => used.has(id))) continue;
-      a.cards.forEach((id) => used.add(id));
-      out.push({
-        cards: a.cards.slice(),
-        patternId: a.patternId,
-        layout,
-        suit: a.patternId.startsWith('straight-flush') ? suitIndexOf(a.cards[0]) : null,
-      });
-    }
-    return out;
-  };
-  state.arranged = [...take(special, 'left', 4), ...take(normal, 'right', 4)];
+  const plan = room.plan();
+  if (!plan || !Array.isArray(plan.groups) || plan.groups.length === 0) {
+    flash('暂时拿不到组牌建议（本次拆分没有可出的组）');
+    return;
+  }
+  const groups = plan.groups
+    .filter((g) => g.cards?.length)
+    .map((g) => ({
+      cards: g.cards.slice(),
+      patternId: g.patternId ?? '',
+      layout: SPECIAL_PATTERN(g.patternId) ? 'left' : 'right',
+      suit: g.patternId?.startsWith('straight-flush') ? suitIndexOf(g.cards[0]) : null,
+    }));
+  state.arranged = groups;
+  state.flushCursor = {};
   state.selected.clear();
   renderHand();
   renderActions();
-  flash(state.arranged.length === 0 ? '暂时没有可出的牌型' : `组牌建议：${state.arranged.length} 组（左=炸弹/同花，右=其它）`);
+  const left = groups.filter((g) => g.layout === 'left').length;
+  const right = groups.length - left;
+  flash(`组牌建议（最优拆分）：${groups.length} 组 · 左 ${left} / 右 ${right}`);
 }
 
 // 「回复理牌」：选中的牌正好是某一组时只恢复那一组；否则恢复全部理牌。

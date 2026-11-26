@@ -12,7 +12,7 @@
 //! 不构成信息隔离泄漏（§3.3）。
 
 use gf_engine::contract::Action;
-use gf_table_runtime::{BotContext, BotPolicy};
+use gf_table_runtime::{BotContext, BotPolicy, HandPlan};
 
 use crate::l0::L0Bot;
 use crate::l1::choose;
@@ -27,7 +27,7 @@ impl BotPolicy for L2Bot {
     }
 
     fn decide_with_legal(&self, view_bytes: &[u8], seat: u8, legal: &[Action]) -> Action {
-        choose(view_bytes, seat, legal, &BotContext::default(), true)
+        choose(view_bytes, seat, legal, &BotContext::default(), true, None)
     }
 
     fn decide_with_ctx(
@@ -37,6 +37,17 @@ impl BotPolicy for L2Bot {
         legal: &[Action],
         ctx: &BotContext,
     ) -> Action {
-        choose(view_bytes, seat, legal, ctx, true)
+        choose(view_bytes, seat, legal, ctx, true, None)
+    }
+
+    fn decide_with_plan(
+        &self,
+        view_bytes: &[u8],
+        seat: u8,
+        legal: &[Action],
+        ctx: &BotContext,
+        plan: Option<&HandPlan>,
+    ) -> Action {
+        choose(view_bytes, seat, legal, ctx, true, plan)
     }
 }

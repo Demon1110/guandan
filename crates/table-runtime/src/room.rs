@@ -62,6 +62,41 @@ pub struct BotContext {
     pub own_hand: usize,
 }
 
+/// 一手牌的「推荐拆分」：`recommend` 的对外形态，只含牌型与牌。
+///
+/// 与合法集一样由引擎按本座位手牌算出（纯只读、不进 `stateHash`），
+/// 组之间互不重叠、合起来正好是这手牌。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HandPlan {
+    pub groups: Vec<HandPlanGroup>,
+    /// 散张：没进任何组的牌（recommend 只把它们计入 `single_count`，不给牌 id，
+    /// 这里按「手牌减去各组」补齐），按牌力升序排好，bot 直接取第一张就是最小的。
+    pub singles: Vec<HandPlanCard>,
+    /// 拆分后剩余的单张数（散张）。
+    pub single_count: u8,
+    /// 跟单张时的兜底：上家出的是单张，且散张里存在压得过的那一张时给出最小的一张。
+    ///
+    /// 牌力比较放在这里做，是因为只有引擎知道当前局的合成牌力序（级牌提升、王最大）；
+    /// bot 自己按原始点数比会把级牌当小牌，出的手会被房间判非法。
+    pub follow_single: Option<u16>,
+}
+
+/// 推荐拆分里的一组。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HandPlanGroup {
+    pub pattern_id: String,
+    pub cards: Vec<u16>,
+    /// 组内最大牌力（引擎口径）：bot 用它决定「先走哪一组」。
+    pub power: u32,
+}
+
+/// 推荐拆分里的一张散张（带牌力，便于 bot 按引擎口径挑最小）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HandPlanCard {
+    pub card: u16,
+    pub power: u32,
+}
+
 /// 本地 bot 策略。**只给 view 字节与座位号**，不给 `State`（信息隔离，§3.3 约束 3）。
 pub trait BotPolicy {
     /// 按本座位视图决策；返回的动作由房间做合法性复核。
@@ -89,6 +124,23 @@ pub trait BotPolicy {
     ) -> Action {
         let _ = ctx;
         self.decide_with_legal(view_bytes, seat, legal)
+    }
+
+    /// 带「推荐拆分」的决策入口：bot 按 `recommend` 的最优手组牌出手，
+    /// 而不是把对子拆成单张零着打。
+    ///
+    /// `plan` 与合法集同源（本座位手牌 + 公开信息），纯只读。默认忽略它，
+    /// 回落到 [`BotPolicy::decide_with_ctx`]。
+    fn decide_with_plan(
+        &self,
+        view_bytes: &[u8],
+        seat: u8,
+        legal: &[Action],
+        ctx: &BotContext,
+        plan: Option<&HandPlan>,
+    ) -> Action {
+        let _ = plan;
+        self.decide_with_ctx(view_bytes, seat, legal, ctx)
     }
 }
 
@@ -531,14 +583,15 @@ impl Room {
                 deadline_ms: grace_deadline,
             });
         }
-        // ② bot → 用 view(seat) + 本座位合法集决策（不合法退化为合法首条）。
+        // ② bot → 用 view(seat) + 本座位合法集 + 推荐拆分决策（不合法退化为合法首条）。
         if self.players[idx] == PlayerKind::Bot {
             let view = self.view_bytes(seat)?;
             let legal = self.legal_normalized()?;
+            let plan = self.plan_for(seat);
             let action = match &self.bots[idx] {
                 Some(bot) => {
                     let ctx = self.bot_context(seat);
-                    bot.decide_with_ctx(&view, seat, &legal, &ctx)
+                    bot.decide_with_plan(&view, seat, &legal, &ctx, plan.as_ref())
                 }
                 // 没装实现也不能直接 `Pass`（领出态非法）：退到合法首条。
                 None => legal.first().cloned().unwrap_or(Action::Pass),
@@ -721,6 +774,62 @@ impl Room {
         Ok(legal.into_iter().map(normalize_action).collect())
     }
 
+    /// 本座位的一手牌推荐拆分（`recommend`，纯只读）：bot 的出牌规划与页面「组牌建议」共用。
+    fn plan_for(&self, seat: u8) -> Option<HandPlan> {
+        let state = self.state.as_ref()?;
+        let layout = self
+            .engine
+            .recommend(state, gf_engine::contract::Seat(seat))
+            .ok()?;
+        let hand = self.engine.hand_cards_of(state, seat)?;
+        let covered: Vec<u16> = layout
+            .groups
+            .iter()
+            .flat_map(|g| g.cards.iter().copied())
+            .collect();
+        // 散张按牌力升序：bot 领出时「散张 vs 组」一起比，取最小的那一手。
+        let mut singles: Vec<HandPlanCard> = hand
+            .into_iter()
+            .filter(|card| !covered.contains(card))
+            .map(|card| HandPlanCard {
+                card,
+                power: self.engine.card_power(state, card),
+            })
+            .collect();
+        singles.sort_unstable_by_key(|s| (s.power, s.card));
+        // 跟单张的兜底：上家是单张（且不是自己）时，散张里挑第一张压得过的。
+        let follow_single = match state.last_play.as_ref() {
+            Some(lp) if lp.cards.len() == 1 && lp.seat != seat => {
+                let last_power = self.engine.card_power(state, lp.cards[0]);
+                singles
+                    .iter()
+                    .find(|s| s.power > last_power)
+                    .map(|s| s.card)
+            }
+            _ => None,
+        };
+        Some(HandPlan {
+            single_count: layout.single_count,
+            groups: layout
+                .groups
+                .into_iter()
+                .map(|g| HandPlanGroup {
+                    power: g
+                        .cards
+                        .iter()
+                        .copied()
+                        .map(|c| self.engine.card_power(state, c))
+                        .max()
+                        .unwrap_or(0),
+                    pattern_id: g.pattern_id,
+                    cards: g.cards,
+                })
+                .collect(),
+            singles,
+            follow_single,
+        })
+    }
+
     fn bot_action(
         &mut self,
         idx: usize,
@@ -729,7 +838,16 @@ impl Room {
     ) -> Result<StepOutcome, RoomError> {
         let legal = self.legal_normalized()?;
         let candidate = normalize_action(action);
-        if legal.contains(&candidate) {
+        // bot 按推荐拆分出的组常常不在候选清单里（清单只给同型代表），
+        // 这里按引擎口径复核一次，能过就走正常路；过不了才退化成合法首条。
+        let acceptable = legal.contains(&candidate)
+            || self.state.as_ref().is_some_and(|state| match &candidate {
+                Action::Play { cards } => {
+                    matches!(self.engine.preview_play(state, cards), Ok((_, true)))
+                }
+                Action::Pass => false,
+            });
+        if acceptable {
             return self.apply_action(idx, candidate, now_ms, None);
         }
         // bot 决策不合法：退化为合法首条并记托管（`BotIllegal`）。

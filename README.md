@@ -326,7 +326,8 @@ guandan/
 - 单动作延迟：`guandan-classic` 领出态 `legal_actions` P99 **353.3µs（native）/ 359.7µs（wasm）< 1ms**，已过线；`apply` P99 4.2/4.9µs。
 - 容量：单核标度 native ≈494 / wasm ≈484 房间；整机折算（i7-13700KF，8P/16 物理核）≈ **3,952–7,904 房间**，已到 1500 整机线（口径见 `docs/assets/m1-bench-profile.md` §10；单核数只作标度，不得单独判过或判不过）。
 - `recommend`：1000 手随机 27 张冷调用 avg **315.4µs** / P99 **928µs**，未越 2ms 目标线。
-- 无人值守全流程：四 bot（AI-L2）两局 **196 动作**，终局 `stateHash` `342eca19…a593`，native 与 wasm 逐字节同解；Web 端每手动作落 IndexedDB，刷新/杀进程后按日志回放，哈希一致（无头 gate 190 条 / `2d07a63d…5220`）。
+- 无人值守全流程：四 bot（AI-L2）两局 **185 动作**，终局 `stateHash` `55728d55…ef5c0`，native 与 wasm 逐字节同解；Web 端每手动作落 IndexedDB，刷新/杀进程后按日志回放，哈希一致（无头 gate 242 条 / `17345104…7bd39`）。
+- bot 手组牌纪律：出牌按 `recommend` 的最优整手拆分走——领出取牌力最小的整组（散张同台比较），跟牌不拆组；`crates/ai/tests/bot_plan_discipline.rs` 在一整局里逐手核对，实测 **73 手 0 拆组 / 0 领出偏离 / 0 非法退化**。
 - 覆盖率：`scripts/coverage.ps1`（`cargo-llvm-cov` + nightly，排除 wasm 导出层与生成代码）实测 **行 86.01% / 分支 72.07%**，缺口清单见 `docs/assets/m1-coverage-baseline.md`。
 
 细节与实测账目见 `docs/assets/m1-bench-profile.md`。

@@ -134,16 +134,46 @@ function main() {
     now += 10_000;
   }
   // 第 2 局刚发完，先推进若干手，让存档停在一个「局中途」的现场（更贴近杀进程）。
+  // 人类座同样由 L2 代打：发牌可能把首出判给人类座，只 step 不代打的话第一步就停在
+  // Waiting，存档会落在「本局 0 手」的边界上，回放按日志最多到上一局，两边哈希必然不等。
   for (let i = 0; i < 40; i += 1) {
     const step = JSON.parse(cstr(exA, exA.gf_room_step(BigInt(now))));
     now += 1000;
-    if (step.kind !== 'applied') break;
-    archive.push({
-      roundNo: step.roundNo,
-      seat: step.seat,
-      pass: step.action.pass,
-      cards: step.action.cards ?? [],
-    });
+    if (step.kind === 'applied') {
+      archive.push({
+        roundNo: step.roundNo,
+        seat: step.seat,
+        pass: step.action.pass,
+        cards: step.action.cards ?? [],
+      });
+      continue;
+    }
+    if (step.kind === 'waiting') {
+      const action = JSON.parse(cstr(exA, exA.gf_l0_probe(step.seat)));
+      const out = JSON.parse(submit(exA, step.seat, action, now));
+      if (out.kind !== 'applied') throw new Error(`代打未生效：${JSON.stringify(out)}`);
+      archive.push({
+        roundNo: out.roundNo,
+        seat: out.seat,
+        pass: out.action.pass,
+        cards: out.action.cards ?? [],
+      });
+      continue;
+    }
+    if (step.kind === 'settled' || step.kind === 'matchEnd') {
+      const meta = JSON.parse(cstr(exA, exA.gf_room_meta()));
+      if (meta.records > archive.length) {
+        const last = JSON.parse(cstr(exA, exA.gf_room_last_record()));
+        archive.push({
+          roundNo: last.roundNo,
+          seat: last.seat,
+          pass: last.action.pass,
+          cards: last.action.cards ?? [],
+        });
+      }
+      break;
+    }
+    throw new Error(`未知 step 结果：${JSON.stringify(step)}`);
   }
   const savedHash = cstr(exA, exA.gf_room_hash());
   const savedMeta = JSON.parse(cstr(exA, exA.gf_room_meta()));

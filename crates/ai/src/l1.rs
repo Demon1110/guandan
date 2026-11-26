@@ -15,7 +15,7 @@
 use std::cmp::Reverse;
 
 use gf_engine::contract::Action;
-use gf_table_runtime::{BotContext, BotPolicy};
+use gf_table_runtime::{BotContext, BotPolicy, HandPlan};
 
 use crate::l0::L0Bot;
 use crate::shape::{
@@ -34,7 +34,7 @@ impl BotPolicy for L1Bot {
     }
 
     fn decide_with_legal(&self, view_bytes: &[u8], seat: u8, legal: &[Action]) -> Action {
-        choose(view_bytes, seat, legal, &BotContext::default(), false)
+        choose(view_bytes, seat, legal, &BotContext::default(), false, None)
     }
 
     fn decide_with_ctx(
@@ -44,17 +44,32 @@ impl BotPolicy for L1Bot {
         legal: &[Action],
         ctx: &BotContext,
     ) -> Action {
-        choose(view_bytes, seat, legal, ctx, false)
+        choose(view_bytes, seat, legal, ctx, false, None)
+    }
+
+    fn decide_with_plan(
+        &self,
+        view_bytes: &[u8],
+        seat: u8,
+        legal: &[Action],
+        ctx: &BotContext,
+        plan: Option<&HandPlan>,
+    ) -> Action {
+        choose(view_bytes, seat, legal, ctx, false, plan)
     }
 }
 
 /// L1/L2 共用的取舍逻辑。`memory = true` 时启用 L2 的记牌与炸弹时机（见 [`crate::L2Bot`]）。
+///
+/// `plan` 是 `recommend` 的整手拆分（房间按本座位手牌算好传进来）：
+/// 领出照它的最小组走，跟牌避开拆组的候选，保证「先走小牌、不拆对子」。
 pub(crate) fn choose(
     view: &[u8],
     seat: u8,
     legal: &[Action],
     ctx: &BotContext,
     memory: bool,
+    plan: Option<&HandPlan>,
 ) -> Action {
     let hand = view_scan::hand_cards(view);
     let hand_len = hand.len();
@@ -73,6 +88,10 @@ pub(crate) fn choose(
 
     let following = view_scan::is_following(view, seat);
     if !following {
+        // 领出照推荐拆分的最小组走：整组一次出完，牌力最小的先走。
+        if let Some(action) = plan.and_then(crate::plan::lead_from_plan) {
+            return action;
+        }
         return lead(&plays, view, &hand, memory);
     }
 
@@ -87,7 +106,7 @@ pub(crate) fn choose(
     let last_is_bomb = view_scan::last_play_pattern_id(view)
         .map(|id| id.starts_with("bomb") || id == "joker-bomb")
         .unwrap_or(false);
-    follow(&plays, view, &hand, &last_cards, last_is_bomb, memory)
+    follow(&plays, view, &hand, &last_cards, last_is_bomb, memory, plan)
 }
 
 /// 领出：优先多张牌型清手，同张数取牌力最小；炸弹留到最后。
@@ -122,7 +141,7 @@ fn lead(plays: &[&Action], view: &[u8], hand: &[u16], memory: bool) -> Action {
         .unwrap_or(Action::Pass)
 }
 
-/// 跟牌：同张数最小代价先压；必要时才动炸弹。
+/// 跟牌：同张数最小代价先压；必要时才动炸弹。有推荐拆分时只留「不拆组」的候选。
 fn follow(
     plays: &[&Action],
     view: &[u8],
@@ -130,39 +149,42 @@ fn follow(
     last_cards: &[u16],
     last_is_bomb: bool,
     memory: bool,
+    plan: Option<&HandPlan>,
 ) -> Action {
     let need = last_cards.len();
-    let same_shape = |a: &&Action| count_of(a) == need && !is_bomb_shape(a);
+    let candidates = same_shape(plays, need, plan);
 
     if !last_is_bomb {
-        // 普通牌型：同张数、非炸弹、牌力最小的一条。
-        if let Some(best) = plays
+        if let Some(best) = candidates
             .iter()
-            .filter(|a| same_shape(a))
+            .copied()
             .min_by_key(|a| (top_rank_of(a), cards_key_of(a)))
         {
             // 记牌档位：自己手牌不多时，若某条同型候选是「无人能压」的控制牌，先用它锁牌权。
             if memory && hand.len() <= 10 {
                 let discarded = view_scan::discard_cards(view);
-                if let Some(ctrl) = plays
+                if let Some(ctrl) = candidates
                     .iter()
-                    .filter(|a| same_shape(a) && is_controller(&discarded, hand, a))
+                    .copied()
+                    .filter(|a| is_controller(&discarded, hand, a))
                     .min_by_key(|a| (top_rank_of(a), cards_key_of(a)))
                 {
-                    return (*ctrl).clone();
+                    return ctrl.clone();
                 }
             }
-            return (*best).clone();
+            return best.clone();
         }
-    } else {
+        // 清单里全是拆组的候选（典型：对子被拆成单张）：改从散张里挑一张能压的。
+        if let Some(action) = plan.and_then(crate::plan::follow_single_from_plan) {
+            return action;
+        }
+    } else if let Some(best) = candidates
+        .iter()
+        .copied()
+        .min_by_key(|a| (top_rank_of(a), cards_key_of(a)))
+    {
         // 对手是炸弹：同张数的非炸弹只能是同花顺（5 张炸之上），先试它。
-        if let Some(best) = plays
-            .iter()
-            .filter(|a| same_shape(a))
-            .min_by_key(|a| (top_rank_of(a), cards_key_of(a)))
-        {
-            return (*best).clone();
-        }
+        return best.clone();
     }
 
     let last_top = last_cards.iter().copied().map(rank_of).max().unwrap_or(0);
@@ -188,4 +210,28 @@ fn follow(
         }
     }
     Action::Pass
+}
+
+/// 同张数的非炸弹候选；给了推荐拆分就优先留「整组出」的，全被拆组时退回全量。
+fn same_shape<'a>(plays: &[&'a Action], need: usize, plan: Option<&HandPlan>) -> Vec<&'a Action> {
+    let all: Vec<&Action> = plays
+        .iter()
+        .copied()
+        .filter(|a| count_of(a) == need && !is_bomb_shape(a))
+        .collect();
+    match plan {
+        Some(p) => {
+            let kept: Vec<&Action> = all
+                .iter()
+                .copied()
+                .filter(|a| !crate::plan::splits_plan(crate::plan::action_cards(a), p))
+                .collect();
+            if kept.is_empty() {
+                all
+            } else {
+                kept
+            }
+        }
+        None => all,
+    }
 }

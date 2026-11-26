@@ -951,6 +951,24 @@ impl M0Engine {
         out
     }
 
+    /// 本座位手牌（供房间层补推荐拆分的散张用；不进视图、不外发）。
+    pub fn hand_cards_of(&self, state: &State, seat: u8) -> Option<Vec<u16>> {
+        self.hand_cards(state, seat).cloned()
+    }
+
+    /// 单张牌的牌力（当前局合成牌力序，`levelInsert` 已生效，王最大）。
+    ///
+    /// bot 的「先走最小的」「散张压不压得上家」都按这个数比，而不是按原始点数猜：
+    /// 级牌被提升到 A 之后，用原始点数比会把级牌当成小牌。
+    pub fn card_power(&self, state: &State, card: u16) -> u32 {
+        let ctx = self.rank_context(state);
+        match self.card_rank_index(card) {
+            Some(ri) => ctx.rank_key(&self.ruleset, ri),
+            // 王不在 `deck.ranks` 里：小王小、大王大，统一排在所有基础牌之后。
+            None => 1_000 + u32::from(card),
+        }
+    }
+
     /// 预检一手牌：按 `apply` 的同口径判定「这组牌此刻能否作为 Play 提交」，不推进状态。
     ///
     /// 返回 `(patternId, 能否压过上家)`；不在手牌 / 结构不成型 / 压不过上家都返回错误。

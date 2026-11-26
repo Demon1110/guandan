@@ -20,7 +20,7 @@
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
 
-use gf_engine::contract::Action;
+use gf_engine::contract::{Action, Engine};
 use gf_table_runtime::{
     BotPolicy, PlayerKind, Room, RoomConfig, StepOutcome, DEFAULT_RULESET_VERSION,
 };
@@ -523,6 +523,48 @@ pub extern "C" fn gf_room_legal() -> *mut u8 {
         }
         Err(e) => err(e),
     }
+}
+
+/// 当前行动座位的一手牌「推荐拆分」（`recommend`，纯只读、不进 `stateHash`）。
+///
+/// 返回 `{"ok":true,"seat":2,"score":…,"singleCount":…,"groups":[{"patternId":…,"cards":[…]}]}`。
+/// bot 出牌规划与页面「组牌建议」共用同一份拆分：先走最小的组、不拆对子。
+#[no_mangle]
+pub extern "C" fn gf_room_plan() -> *mut u8 {
+    let Some(r) = room() else {
+        return err("no room");
+    };
+    let state = match r.state() {
+        Ok(s) => s,
+        Err(e) => return err(e),
+    };
+    let seat = state.turn_seat;
+    let layout = match r.engine().recommend(state, gf_engine::contract::Seat(seat)) {
+        Ok(l) => l,
+        Err(e) => return err(e),
+    };
+    let groups: Vec<String> = layout
+        .groups
+        .iter()
+        .map(|g| {
+            format!(
+                "{{\"patternId\":{},\"cards\":[{}]}}",
+                json_str(&g.pattern_id),
+                g.cards
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        })
+        .collect();
+    out(format!(
+        "{{\"ok\":true,\"seat\":{},\"score\":{},\"singleCount\":{},\"groups\":[{}]}}",
+        seat,
+        layout.score,
+        layout.single_count,
+        groups.join(",")
+    ))
 }
 
 /// 桌面公开信息（不进座位视图、不影响 `stateHash`）：相位、行动座位、连续过牌数、
