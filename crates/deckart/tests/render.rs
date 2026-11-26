@@ -311,6 +311,108 @@ fn classic_requires_pip_spec() {
 }
 
 #[test]
+fn preview_defaults_to_four_twos() {
+    // defaults/theme.json 显式配了 preview；把它清掉应当落到内置缺省
+    let src = theme();
+    let mut meta = src.meta().clone();
+    meta.preview = None;
+    let assets: std::collections::HashMap<String, String> = meta
+        .asset_paths()
+        .iter()
+        .map(|p| (p.clone(), src.asset(p).to_string()))
+        .collect();
+    let theme = Theme::from_parts(meta, assets, "test:preview-default").unwrap();
+
+    let out = gf_deckart::render_preview(&theme).unwrap();
+    let codes: Vec<&str> = out.iter().map(|r| r.code.as_str()).collect();
+    assert_eq!(codes, vec!["C2", "S2", "H2", "D2"], "默认四张 2、♣♠♥♦ 顺序");
+    for r in &out {
+        assert!(
+            r.svg.contains("data-leveled=\"true\""),
+            "{} 在 levelRank=2 下应为级牌",
+            r.code
+        );
+    }
+    let h2 = out.iter().find(|r| r.code == "H2").unwrap();
+    assert!(h2.svg.contains("<g id=\"L4b-wild\""), "红桃 2 应是逢人配");
+    let s2 = out.iter().find(|r| r.code == "S2").unwrap();
+    assert!(!s2.svg.contains("<g id=\"L4b-wild\""), "黑桃 2 不是逢人配");
+}
+
+#[test]
+fn preview_follows_theme_config() {
+    let src = theme();
+    let mut meta = src.meta().clone();
+    meta.preview = Some(gf_deckart::PreviewSpec {
+        faces: vec!["H8".into(), "S10".into()],
+        level_rank: Some(8),
+    });
+    let assets: std::collections::HashMap<String, String> = meta
+        .asset_paths()
+        .iter()
+        .map(|p| (p.clone(), src.asset(p).to_string()))
+        .collect();
+    let cfg_theme = Theme::from_parts(meta, assets, "test:preview-cfg").unwrap();
+
+    let out = gf_deckart::render_preview(&cfg_theme).unwrap();
+    assert_eq!(out.len(), 2);
+    assert!(
+        out[0].svg.contains("data-leveled=\"true\""),
+        "H8 应命中级牌"
+    );
+    assert!(
+        out[1].svg.contains("data-leveled=\"false\""),
+        "S10 不应是级牌"
+    );
+
+    // levelRank = null → 纯牌面
+    let src = theme();
+    let mut meta = src.meta().clone();
+    meta.preview = Some(gf_deckart::PreviewSpec {
+        faces: vec!["H8".into()],
+        level_rank: None,
+    });
+    let assets: std::collections::HashMap<String, String> = meta
+        .asset_paths()
+        .iter()
+        .map(|p| (p.clone(), src.asset(p).to_string()))
+        .collect();
+    let plain = Theme::from_parts(meta, assets, "test:preview-plain").unwrap();
+    let out = gf_deckart::render_preview(&plain).unwrap();
+    assert!(out[0].svg.contains("data-level=\"none\""));
+    assert!(!out[0].svg.contains("<g id=\"L4-level\">"));
+}
+
+#[test]
+fn preview_rejects_bad_config() {
+    let src = theme();
+    for bad in [
+        gf_deckart::PreviewSpec {
+            faces: vec!["ZZ".into()],
+            level_rank: Some(2),
+        },
+        gf_deckart::PreviewSpec {
+            faces: vec![],
+            level_rank: Some(2),
+        },
+        gf_deckart::PreviewSpec {
+            faces: vec!["C2".into()],
+            level_rank: Some(14),
+        },
+    ] {
+        let mut meta = src.meta().clone();
+        meta.preview = Some(bad);
+        let assets: std::collections::HashMap<String, String> = meta
+            .asset_paths()
+            .iter()
+            .map(|p| (p.clone(), src.asset(p).to_string()))
+            .collect();
+        let err = Theme::from_parts(meta, assets, "test:preview-bad").unwrap_err();
+        assert_eq!(err.code(), "DK-THEME-INVALID");
+    }
+}
+
+#[test]
 fn rendering_is_deterministic() {
     let theme = theme();
     let face = Face::normal(Suit::Club, Rank::new(13).unwrap());

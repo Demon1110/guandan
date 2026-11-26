@@ -215,7 +215,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a"
 dependencies = [
  "generic-array",
- "rand_core",
  "typenum",
 ]
 
@@ -299,7 +298,6 @@ checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
 dependencies = [
  "curve25519-dalek",
  "ed25519",
- "rand_core",
  "serde",
  "sha2",
  "subtle",
@@ -455,6 +453,7 @@ name = "gf-client-wasm"
 version = "0.1.0"
 dependencies = [
  "gf-ai",
+ "gf-deckart",
  "gf-engine",
  "gf-table-runtime",
 ]

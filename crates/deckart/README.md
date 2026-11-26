@@ -206,10 +206,11 @@ themes/
     "wildBadge": { "x": 26, "y": 560, "scale": 0.60 }
   },
   "textLayer": { "enabled": true, "badge": "both", "fontFamily": "…", "levelLabel": { "text": "级牌", "x": 404, "y": 58, "size": 28, "color": "#FFFFFF", "anchor": "middle" } },
+  "preview": { "faces": ["C2", "S2", "H2", "D2"], "levelRank": 2 },
   "classic": { "cornerRank": {…}, "cornerSuit": {…}, "pipScale": 0.60, "aceScale": 1.70, "courtStyle": "monogram", "pipPositions": {…} }
 }
 ```
-`textLayer` 与 `classic` 都是可选块（缺省用默认值/关闭），完整字段含义见第 3 节的尺寸规范、花阵规范与文本层说明。
+`textLayer`、`preview` 与 `classic` 都是可选块（缺省用默认值/关闭），完整字段含义见第 3 节的尺寸规范、花阵规范与文本层说明，`preview` 见第 14 节。
 `version` 是主题版本号，用来让客户端缓存失效：加了文本层与 classic 配置后 defaults 已从 1 升到 2。
 
 `ranks.kind = "atlas"` 时改为 `{ "kind": "atlas", "image": "ranks.png", "index": "ranks.json" }`，`index` 给每字形的 `{x,y,w,h,advance}`，兼容后续位图字库。
@@ -291,6 +292,7 @@ gfdeck info   themes/defaults.gfdeck                                 # themeId/v
 | 分层断言 | `data-level` / `data-wild` 与输入一致；王永远不是级牌；红桃级牌同时有 level + wild 两层 |
 | 快照 | `defaults` 主题 55 张 SVG 文本哈希固定（改素材必须显式更新快照） |
 | 包往返 | `pack → unpack → render` 产出与直接读目录逐字节一致 |
+| 预览一致 | `preview` 配置生效（默认四张 2 全带级牌、`levelRank=null` 不出 `L4`、非法 faces/越界点数加载期报错）；wasm 端输出与 `gfdeck render` 逐字节一致 |
 | 坏包 | 截断/改一字节/换 themeId/签名不符/路径穿越 全部拒绝并给明确错误码 |
 | 性能 | 单张合成 P99 < 1 ms（native），55 张 < 20 ms；包加载（含解密）< 10 ms |
 | 覆盖率 | 并入 workspace 后按现行门禁（行 ≥90% + 区域 ≥90%） |
@@ -323,8 +325,8 @@ crates/deckart/
 │   ├── error.rs      统一错误码 DK-*
 │   └── bin/gfdeck.rs CLI
 └── tests/
-    ├── render.rs     54 面 + 徽章 + 自包含性
-    └── pack.rs       往返 / 错钥 / 篡改 / 签名 / 坏包
+    ├── render.rs     54 面 + 徽章 + 自包含性 + 预览配置
+    └── pack.rs       往返 / 错钥 / 篡改 / 签名 / 坏包 / 字节入口
 ```
 
 主题源目录在仓库根：`themes/defaults/`（theme.json + 23 个素材）。
@@ -342,6 +344,7 @@ crates/deckart/
 | 5 | 文本层 | **可选层，`theme.json` 开关**：`enabled` 总开关 + `badge` 三态（`both` 素材与文字叠加 / `badge-only` 只画素材 / `text-only` 只画文字），关掉即回到零 `<text>` 的纯图形；素材本身始终不依赖字体 |
 | 6 | `classic` 规范 | **现在定死**：画布 500×700、8 类子素材固有尺寸表、slot 左上角锚点语义、花阵归一化点位表（数量必须等于点数）；字段全进 `theme.json`，代码不硬编码 |
 | 7 | 牌背 | **保持现状**：整幅 `back.svg` 直接铺满，后续主题给复杂前后背景时只换素材 |
+| 8 | 主题预览 | **客户端运行时生成，包里不存预览图**：`theme.json` 只声明渲染哪几张面（`preview`），SVG 由 `render_face` 现场产出，与牌桌同源；扇形叠放属 UI 层 |
 
 方案 A 的诚实边界：客户端必然持有解密能力，A 只能挡住「改后缀直接看素材」，挡不住逆向提取；Ed25519 签名解决的是「包被篡改」，与保密正交。接方案 B 时只换 `PackOptions.key_id` 与会话密钥，包格式不变。
 
@@ -352,15 +355,16 @@ crates/deckart/
 - `card`：牌面语义类型，编码 `H8` / `S10` / `JOKER-B` / `JOKER-S`
 - `theme`：目录加载 + schema 校验（id 规则、13 字形、路径穿越、外链/字体/位图禁用）
 - `render`：四层合成、级牌与逢人配判定、固定图层 id 与 `data-*` 属性；`compact` 与 `classic` 两种布局；可选文本层（`L4t-level-label`）
-- `pack`：`.gfdeck` 打包 / 解密 / 签名 / 摘要校验 / 边界校验，`open()` 可直接在内存里用主题
+- `pack`：`.gfdeck` 打包 / 解密 / 签名 / 摘要校验 / 边界校验，`open()` 可直接在内存里用主题；`open_bytes()` / `info_from_bytes()` 走纯字节入口（wasm 没有文件系统）
+- `preview`：`theme.json` 的 `preview` 配置 + `render_preview()`，主题选择界面与牌桌共用同一条渲染路径
 - `png`：SVG → PNG（`--features png`，不进 wasm）
 - `gfdeck` CLI：`render` / `render-all` / `pack` / `unpack` / `info` / `verify` / `png`
 
-### 测试（27 个单测 + 1 个 doctest，全绿）
+### 测试（31 个单测 + 1 个 doctest，全绿）
 
 ```powershell
 cd crates\deckart
-cargo test                 # 5 lib + 11 render + 11 pack + 1 doctest
+cargo test                 # 5 lib + 12 pack + 14 render + 1 doctest
 cargo test --features png  # 额外可用 PNG 子命令
 ```
 
@@ -390,3 +394,97 @@ gfdeck png H8.svg --scale 2      → 151767 字节（1000×1400），「级牌�
 4. 文本层开启时转 PNG 依赖系统字体：Windows/macOS 自带中文字体即可，最小化 Linux 镜像需补装 Noto Sans SC，否则「级牌」二字不显示（牌面其余层正常）。
 5. 未做单张渲染性能基准（第 9 节目标值待补测）。
 6. 牌背保持现状，无叠加层（按需求暂不扩展）。
+
+---
+
+## 14. 主题预览与客户端 wasm 绑定（2026-11-26）
+
+### 14.1 结论：预览不预存，客户端现场生成
+
+`.gfdeck` 里**只装 24 个条目**（`theme.json` + 23 个分层素材，实测量 17137 字节）。主题选择界面的「四张 2」由客户端在 wasm 里调 `render_face` 当场算出来，包里既不放整图也不放缩略图。理由：
+
+- 与牌桌**同一条渲染路径**，不会出现「预览里好看、上桌变形」这种两套实现漂移；
+- 主题作者只维护 23 个矢量素材，不用再交预览图，也不用为不同 DPI 出多套；
+- 包体不变大：四张预览本身就是 4 段 SVG 字符串，实测 2153~2721 字节/张。
+
+商店/列表页那种**封面图**（PNG、进后台接口）是另一条链路，用 CLI 出图即可，不进客户端包：
+
+```powershell
+gfdeck render-all --theme themes/defaults --level 2 -o target/preview
+gfdeck png target/preview/C2.svg -o cover-c2.png --scale 2
+```
+
+### 14.2 `theme.json` 的 `preview` 块
+
+```json
+"preview": { "faces": ["C2", "S2", "H2", "D2"], "levelRank": 2 }
+```
+
+| 字段 | 类型 | 缺省 | 说明 |
+| --- | --- | --- | --- |
+| `faces` | `string[1..=8]` | `["C2","S2","H2","D2"]` | 用牌面编码（`C2`/`S10`/`JOKER-B`）指定渲染哪几张，顺序即 UI 顺序 |
+| `levelRank` | `u8 \| null` | `2` | 预览时按这个点数当级牌；**显式写 `null`** 表示纯牌面 |
+
+约束与取向：
+
+- 缺省 `levelRank = 2`，四张 2 全是级牌，红桃 2 顺带是逢人配——一屏能同时看到「级牌胶囊 + 描边 + 逢人配徽章」三种标记，主题差异最明显；
+- 想展示「不带级牌态」的干净牌面就写 `"levelRank": null`，客户端会自动不带 `L4` 层；
+- 校验（加载期就报 `DK-THEME-INVALID`，不是等客户端渲染才炸）：`faces` 数量 1..=8、每项能 `Face::parse`、`levelRank` 落在 1..=13。
+
+### 14.3 扇形排布（UI 侧，不进主题包）
+
+主题卡里的那圈扇形是纯 CSS，和主题无关；四张牌各自独立、正立、按自己的坐标旋转，**不做合成大图**（合成会带来 DPR 与文字模糊，且缓存粒度变粗）。
+
+| 参数 | 值 |
+| --- | --- |
+| 单张尺寸 | 100 × 140 CSS px（5:7，与 canvas 同比例，直接 `<svg style="width:100px;height:140px">`） |
+| 水平步进 | `translateX` 0 / 58 / 116 / 174 px（露 58% 牌宽） |
+| 旋转 | `-14° / -5° / +5° / +14°` |
+| 旋转原点 | `transform-origin: 50% 120%`（绕牌底下方转，看起来像握在手里） |
+| 层级 | `z-index` 递增，后一张压前一张 |
+| 容器 | 约 430 × 150 px（含投影余量），`filter: drop-shadow(0 3px 6px …)` 代替合成阴影 |
+
+### 14.4 客户端可调的 wasm 方法（`crates/client-wasm`）
+
+`gf-client-wasm` 以 `default-features = false` 依赖本 crate：**`pack-write` 与 `rand` 不进 wasm**，只带解密 + 验签 + 渲染。新增五个导出，全部沿用既有约定（裸 `WebAssembly.instantiate`、零 import、出参 NUL 结尾 JSON + `gf_str_free`）。
+
+| 方法 | 入参 | 出参 |
+| --- | --- | --- |
+| `gf_theme_load(pack_ptr, pack_len, pub_ptr, pub_len)` | 包字节 + 公钥 32B（`pub_len = 0` 跳过验签） | `{ok, themeId, version, name, license, layout, bytes, levelRank, faces, preview:[{code,svg}]}` |
+| `gf_theme_preview()` | — | `{ok, cards:[{code,svg}]}` |
+| `gf_theme_card(code_ptr, code_len, level_rank)` | 牌面编码 + 级牌点（`0` = 无级牌态） | `{ok, code, svg}` |
+| `gf_theme_back()` | — | `{ok, svg}` |
+| `gf_theme_unload()` | — | `1` |
+
+`gf_theme_load` 一次就把预览四张一起返回，客户端不必再调 `preview`（省一次跨边界）；`gf_theme_card` 留给牌桌逐张取，级牌点由服务端下发，客户端不推断。失败统一 `{ok:false, error:"…"}`。
+
+```js
+// 1) 载入主题包（字节由 fetch/IndexedDB 得来）
+const ptr = ex.gf_alloc(packBytes.length);
+new Uint8Array(ex.memory.buffer, ptr, packBytes.length).set(packBytes);
+const meta = JSON.parse(readStr(ex.gf_theme_load(ptr, packBytes.length, pubPtr, 32)));
+// meta.preview → [{code:'C2', svg:'<svg …>'}, …]，直接插进主题卡的四个 <div>
+
+// 2) 上桌逐张取（缓存键 (themeId, themeVersion, code, levelRank)）
+const card = JSON.parse(readStr(ex.gf_theme_card(codePtr, 2, levelRank)));
+```
+
+要点：
+
+- 入参用 `gf_alloc` 写字节、`gf_mem_free` 归还；出参读 NUL 截止后 `gf_str_free`，与房间那套完全一致；
+- 公钥是 32 字节原始公钥（不是 PEM/hex 串），`0x11×32` 私钥对应的公钥为 `d04ab232…c9778737`；
+- **降级**：`gf_theme_load` 返回 `ok:false`（包损坏、签名不符、缺素材）时，客户端退回现有的 DOM/CSS + Unicode 花色卡片，牌桌不阻塞；
+- 换主题先 `gf_theme_unload()` 再 load，避免同时挂两份素材。
+
+### 14.5 实测（2026-11-26，Node 22 直跑 wasm，无 wasm-bindgen）
+
+```text
+wasm 体积   1,062,590 → 1,432,403 字节（+369,813 / +34.8%，含 aes-gcm + ed25519 + serde_json + deckart）
+load        7 ms（解密 + 验签 + 装配 + 预览四张）
+preview     0 ms（再算一次四张）
+单张 SVG    C2 2609 / S2 2606 / H2 2721 / D2 2153 字节，牌背 766 字节
+错误公钥      拒绝（PackSignature）
+逐字节一致    wasm 的 C2 与 `gfdeck render --face C2 --level 2` 输出 2609 字节完全相同
+```
+
+体积涨的主要是验签（`ed25519-dalek` + `curve25519`）与 `serde_json`；若要压回去，下一步接 `wasm-opt -Oz`（当前机器未装）。

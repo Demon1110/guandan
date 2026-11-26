@@ -37,6 +37,7 @@
     "fontFamily": "'Microsoft YaHei', 'PingFang SC', 'Noto Sans SC', sans-serif",
     "levelLabel": { "text": "级牌", "x": 404, "y": 58, "size": 28, "color": "#FFFFFF", "anchor": "middle" }
   },
+  "preview": { "faces": ["C2", "S2", "H2", "D2"], "levelRank": 2 },
   "classic": {
     "cornerRank": { "x": 34, "y": 30, "scale": 0.40 },
     "cornerSuit": { "x": 38, "y": 98, "scale": 0.30 },

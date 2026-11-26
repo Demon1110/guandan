@@ -49,6 +49,52 @@ fn pack_unpack_roundtrip_renders_identically() {
 }
 
 #[test]
+fn open_bytes_matches_open_from_path() {
+    // wasm 侧只有 `Uint8Array`，没有文件系统：`open_bytes` 必须与 `open(path)` 等价
+    let dir = theme_dir();
+    let out = tmp("bytes").with_extension("gfdeck");
+    let (key, key_id) = builtin_key();
+    pack_dir(
+        &dir,
+        &out,
+        &PackOptions {
+            key: &key,
+            key_id: &key_id,
+            signing_key: Some(&sign_key()),
+        },
+    )
+    .unwrap();
+
+    let vk = sign_key().verifying_key();
+    let bytes = std::fs::read(&out).unwrap();
+    let from_bytes = gf_deckart::pack::open_bytes(&bytes, &key, Some(&vk)).unwrap();
+    let from_path = open(&out, &key, Some(&vk)).unwrap();
+    assert_eq!(from_bytes.fingerprint(), from_path.fingerprint());
+    assert_eq!(
+        gf_deckart::pack::info_from_bytes(&bytes).unwrap().theme_id,
+        read_info(&out).unwrap().theme_id
+    );
+
+    // 公钥字节入口（wasm 宿主只会传真字节）
+    let pub_bytes = vk.to_bytes();
+    let restored_vk = gf_deckart::pack::verifying_key(&pub_bytes).unwrap();
+    assert_eq!(restored_vk, vk);
+    let wrong = gf_deckart::pack::verifying_key(&[0x22u8; 32]).unwrap();
+    assert!(
+        gf_deckart::pack::open_bytes(&bytes, &key, Some(&wrong)).is_err(),
+        "错误公钥必须拒签"
+    );
+
+    // 预览也走同一路径
+    let preview: Vec<String> = gf_deckart::render_preview(&from_bytes)
+        .unwrap()
+        .iter()
+        .map(|r| r.code.clone())
+        .collect();
+    assert_eq!(preview, vec!["C2", "S2", "H2", "D2"]);
+}
+
+#[test]
 fn unpack_restores_loadable_directory() {
     let dir = theme_dir();
     let out = tmp("unpack").with_extension("gfdeck");

@@ -644,3 +644,167 @@ pub extern "C" fn gf_l0_probe(seat: u8) -> *mut u8 {
     let action = bot.decide_with_ctx(&view, seat, &legal, &ctx);
     out(action_json(&action))
 }
+
+// ---------------- 牌面主题（gf-deckart 运行时合成） ----------------
+//
+// 客户端只拿 `.gfdeck` 字节（`Uint8Array`），在 wasm 里解密 + 组装主题，牌面 SVG 由
+// `gf-deckart` 现场生成，与 CLI `gfdeck render` 逐字节一致。三条导出：
+// - `gf_theme_load(pack, pub)`  加载主题包（公钥长度 0 = 跳过验签）
+// - `gf_theme_preview()`        取「主题选择界面」要的那几张（`theme.json` 的 `preview` 配）
+// - `gf_theme_card(code, level)` 取任意一张（牌桌用，`level` 由服务端下发）
+
+static DECK: Global<Option<gf_deckart::Theme>> = Global(UnsafeCell::new(None));
+
+fn deck() -> &'static mut Option<gf_deckart::Theme> {
+    unsafe { &mut *DECK.0.get() }
+}
+
+/// 把宿主传进来的字节块读成 slice；长度 0 视为空。
+fn bytes_at(ptr: *const u8, len: usize) -> &'static [u8] {
+    if ptr.is_null() || len == 0 {
+        return &[];
+    }
+    // SAFETY: 宿主负责保证 [ptr, ptr+len) 在本次调用内有效（通常来自 `gf_alloc` 或 JS 内存）。
+    unsafe { std::slice::from_raw_parts(ptr, len) }
+}
+
+fn card_json(code: &str, svg: &str) -> String {
+    format!("{{\"code\":{},\"svg\":{}}}", json_str(code), json_str(svg))
+}
+
+fn theme_err(e: impl std::fmt::Debug) -> *mut u8 {
+    out(format!(
+        "{{\"ok\":false,\"error\":{}}}",
+        json_str(&format!("{e:?}"))
+    ))
+}
+
+/// 加载 `.gfdeck` 主题包。`pub_len` 为 32 时验签，为 0 时跳过（开发期未签名包）。
+/// 返回 `{"ok":true,"themeId","version","name","license","layout","bytes","preview":[...]}`，
+/// 其中 `preview` 是 `[{"code","svg"}]`，省掉客户端再调一次 `gf_theme_preview`。
+#[no_mangle]
+pub unsafe extern "C" fn gf_theme_load(
+    pack_ptr: *const u8,
+    pack_len: usize,
+    pub_ptr: *const u8,
+    pub_len: usize,
+) -> *mut u8 {
+    let pack = bytes_at(pack_ptr, pack_len);
+    if pack.is_empty() {
+        return theme_err("empty pack");
+    }
+    let pubkey = if pub_len == 0 {
+        None
+    } else {
+        match gf_deckart::pack::verifying_key(bytes_at(pub_ptr, pub_len)) {
+            Ok(vk) => Some(vk),
+            Err(e) => return theme_err(e),
+        }
+    };
+    let (key, _kid) = gf_deckart::pack::builtin_key();
+    let theme = match gf_deckart::pack::open_bytes(pack, &key, pubkey.as_ref()) {
+        Ok(t) => t,
+        Err(e) => return theme_err(e),
+    };
+    *deck() = Some(theme);
+    let Some(t) = deck() else {
+        return theme_err("theme disappeared");
+    };
+    let meta = t.meta();
+    let layout = match meta.layout {
+        gf_deckart::Layout::Compact => "compact",
+        gf_deckart::Layout::Classic => "classic",
+    };
+    let (faces, level) = match t.preview() {
+        Ok(v) => v,
+        Err(e) => return theme_err(e),
+    };
+    let codes: Vec<String> = faces.iter().map(|f| json_str(&f.code())).collect();
+    let preview = match gf_deckart::render_preview(t) {
+        Ok(v) => v
+            .iter()
+            .map(|r| card_json(&r.code, &r.svg))
+            .collect::<Vec<_>>()
+            .join(","),
+        Err(e) => return theme_err(e),
+    };
+    out(format!(
+        "{{\"ok\":true,\"themeId\":{},\"version\":{},\"name\":{},\"license\":{},\"layout\":\"{layout}\",\"bytes\":{},\"levelRank\":{},\"faces\":[{}],\"preview\":[{}]}}",
+        json_str(&meta.id),
+        meta.version,
+        json_str(&meta.name),
+        json_str(&meta.license),
+        pack.len(),
+        level.map(|l| l.level_rank.value()).unwrap_or(0),
+        codes.join(","),
+        preview
+    ))
+}
+
+/// 主题选择界面的预览（`theme.json` 的 `preview.faces` / `preview.levelRank` 决定）。
+/// 返回 `{"ok":true,"cards":[{"code","svg"}...]}`。
+#[no_mangle]
+pub extern "C" fn gf_theme_preview() -> *mut u8 {
+    let Some(t) = deck() else {
+        return theme_err("no theme loaded");
+    };
+    match gf_deckart::render_preview(t) {
+        Ok(v) => {
+            let cards: Vec<String> = v.iter().map(|r| card_json(&r.code, &r.svg)).collect();
+            out(format!("{{\"ok\":true,\"cards\":[{}]}}", cards.join(",")))
+        }
+        Err(e) => theme_err(e),
+    }
+}
+
+/// 单张牌面。`level_rank` 传 0 表示「不带级牌态」（主题选择页看纯牌面时用）。
+/// 返回 `{"ok":true,"code","svg"}`。缓存键建议 `(themeId, themeVersion, code, levelRank)`。
+#[no_mangle]
+pub unsafe extern "C" fn gf_theme_card(
+    code_ptr: *const u8,
+    code_len: usize,
+    level_rank: u8,
+) -> *mut u8 {
+    let Some(t) = deck() else {
+        return theme_err("no theme loaded");
+    };
+    let code = match std::str::from_utf8(bytes_at(code_ptr, code_len)) {
+        Ok(s) => s,
+        Err(_) => return theme_err("code is not utf8"),
+    };
+    let face = match gf_deckart::Face::parse(code) {
+        Ok(f) => f,
+        Err(e) => return theme_err(e),
+    };
+    let level = if level_rank == 0 {
+        None
+    } else {
+        match gf_deckart::Rank::new(level_rank) {
+            Ok(r) => Some(gf_deckart::LevelState::new(r)),
+            Err(e) => return theme_err(e),
+        }
+    };
+    match gf_deckart::render_face(t, face, level) {
+        Ok(svg) => out(card_json(&face.code(), &svg)),
+        Err(e) => theme_err(e),
+    }
+}
+
+/// 牌背（跟级牌无关，一个主题只有一张）。返回 `{"ok":true,"svg"}`。
+#[no_mangle]
+pub extern "C" fn gf_theme_back() -> *mut u8 {
+    let Some(t) = deck() else {
+        return theme_err("no theme loaded");
+    };
+    match gf_deckart::render_back(t) {
+        Ok(svg) => out(format!("{{\"ok\":true,\"svg\":{}}}", json_str(&svg))),
+        Err(e) => theme_err(e),
+    }
+}
+
+/// 卸载当前主题（换主题前先断引用，避免同时挂两份素材）。
+#[no_mangle]
+pub extern "C" fn gf_theme_unload() -> u8 {
+    *deck() = None;
+    1
+}

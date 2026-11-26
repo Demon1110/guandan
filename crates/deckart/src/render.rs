@@ -495,6 +495,20 @@ fn escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// 主题选择界面的预览：按 `theme.json` 的 `preview` 配 1..=8 张面，
+/// 与牌桌共用 `render_face`，预览与实战不会漂移。
+pub fn render_preview(theme: &Theme) -> Result<Vec<RenderedFace>, DeckError> {
+    let (faces, level) = theme.preview()?;
+    let mut out = Vec::with_capacity(faces.len());
+    for face in faces {
+        out.push(RenderedFace {
+            code: face.code(),
+            svg: render_face(theme, face, level)?,
+        });
+    }
+    Ok(out)
+}
+
 /// 54 面 + 牌背（`render_all` 只出 54 面，牌背单独取）。
 pub fn render_all(
     theme: &Theme,

@@ -12,12 +12,16 @@
 //! ```
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
+#[cfg(feature = "pack-write")]
+use std::io::Write;
 use std::path::Path;
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+#[cfg(feature = "pack-write")]
+use ed25519_dalek::Signer;
+use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
+#[cfg(feature = "pack-write")]
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -100,13 +104,15 @@ pub struct PackInfo {
     pub bytes: u64,
 }
 
-/// 打包整个主题目录。
+/// 打包整个主题目录（只有 `pack-write` feature 下可用；客户端 wasm 不需要）。
+#[cfg(feature = "pack-write")]
 pub fn pack_dir(dir: &Path, out: &Path, opts: &PackOptions<'_>) -> Result<PackInfo, DeckError> {
     let theme = Theme::load_dir(dir)?;
     pack_theme(&theme, out, opts)
 }
 
 /// 打包一个已加载的主题（目录或包内解出的均可）。
+#[cfg(feature = "pack-write")]
 pub fn pack_theme(
     theme: &Theme,
     out: &Path,
@@ -201,18 +207,29 @@ pub fn pack_theme(
     })
 }
 
+/// 从 32 字节公钥构造验签器（wasm 宿主只有字节，没有 PEM）。
+pub fn verifying_key(bytes: &[u8]) -> Result<VerifyingKey, DeckError> {
+    let arr: [u8; 32] = bytes.try_into().map_err(|_| DeckError::PackSignature)?;
+    VerifyingKey::from_bytes(&arr).map_err(|_| DeckError::PackSignature)
+}
+
 /// 只读 header，不需要密钥。
 pub fn read_info(pack: &Path) -> Result<PackInfo, DeckError> {
-    let (header, _payload, flags, _sig, total) = read_container(pack)?;
+    info_from_bytes(&std::fs::read(pack)?)
+}
+
+/// 只读 header，不需要密钥（字节来源，供 wasm 用）。
+pub fn info_from_bytes(bytes: &[u8]) -> Result<PackInfo, DeckError> {
+    let c = parse_container(bytes)?;
     Ok(PackInfo {
-        theme_id: header.theme_id,
-        theme_version: header.theme_version,
-        license: header.license,
-        key_id: header.key_id,
-        entries: header.entries.len(),
-        encrypted: flags & FLAG_ENCRYPTED != 0,
-        signed: flags & FLAG_SIGNED != 0,
-        bytes: total,
+        theme_id: c.header.theme_id,
+        theme_version: c.header.theme_version,
+        license: c.header.license,
+        key_id: c.header.key_id,
+        entries: c.header.entries.len(),
+        encrypted: c.flags & FLAG_ENCRYPTED != 0,
+        signed: c.flags & FLAG_SIGNED != 0,
+        bytes: c.total,
     })
 }
 
@@ -222,21 +239,30 @@ pub fn open(
     key: &[u8; 32],
     verify_key: Option<&VerifyingKey>,
 ) -> Result<Theme, DeckError> {
-    let (header, payload, flags, sig, _total) = read_container(pack)?;
-    if flags & FLAG_SIGNED != 0 {
+    open_bytes(&std::fs::read(pack)?, key, verify_key)
+}
+
+/// 解密并组装主题（字节来源，不落盘）。wasm 侧从这里进。
+pub fn open_bytes(
+    bytes: &[u8],
+    key: &[u8; 32],
+    verify_key: Option<&VerifyingKey>,
+) -> Result<Theme, DeckError> {
+    let c = parse_container(bytes)?;
+    if c.flags & FLAG_SIGNED != 0 {
         let Some(vk) = verify_key else {
             return Err(DeckError::PackSignature);
         };
-        let Some(sig_bytes) = sig else {
+        let Some(sig_bytes) = c.sig else {
             return Err(DeckError::PackCorrupt("缺签名".into()));
         };
-        let mut signed = Vec::with_capacity(payload.len() + 1);
-        signed.extend_from_slice(header_json_bytes(pack)?.as_slice());
-        signed.extend_from_slice(payload.as_slice());
+        let mut signed = Vec::with_capacity(c.header_json.len() + c.payload.len() + 1);
+        signed.extend_from_slice(&c.header_json);
+        signed.extend_from_slice(&c.payload);
         vk.verify_strict(&signed, &Signature::from_bytes(&sig_bytes))
             .map_err(|_| DeckError::PackSignature)?;
     }
-    let plain = decrypt_entries(&header, payload, flags, key)?;
+    let plain = decrypt_entries(&c.header, c.payload, c.flags, key)?;
     let assets: HashMap<String, String> = plain
         .iter()
         .filter(|(n, _)| n != "theme.json")
@@ -248,7 +274,10 @@ pub fn open(
         .map(|(_, b)| String::from_utf8_lossy(b).to_string())
         .ok_or_else(|| DeckError::PackCorrupt("缺少 theme.json".into()))?;
     let meta = ThemeMeta::parse(&theme_json)?;
-    let origin = format!("{}（{}）", pack.display(), header.key_id);
+    let origin = format!(
+        "gfdeck:{}@{}（{}）",
+        c.header.theme_id, c.header.theme_version, c.header.key_id
+    );
     Theme::from_parts(meta, assets, origin)
 }
 
@@ -279,23 +308,18 @@ pub fn unpack(
     Ok(info)
 }
 
-fn header_json_bytes(pack: &Path) -> Result<Vec<u8>, DeckError> {
-    let mut f = std::fs::File::open(pack)?;
-    let mut head = [0u8; 12];
-    f.read_exact(&mut head)?;
-    if head[0..4] != MAGIC {
-        return Err(DeckError::PackCorrupt("magic 不符".into()));
-    }
-    let header_len = u32::from_le_bytes([head[8], head[9], head[10], head[11]]) as usize;
-    let mut json = vec![0u8; header_len];
-    f.read_exact(&mut json)?;
-    Ok(json)
+/// 容器解析结果。
+struct Container {
+    header: PackHeader,
+    header_json: Vec<u8>,
+    payload: Vec<u8>,
+    flags: u16,
+    sig: Option<[u8; SIG_LEN]>,
+    total: u64,
 }
 
-type Container = (PackHeader, Vec<u8>, u16, Option<[u8; SIG_LEN]>, u64);
-
-fn read_container(pack: &Path) -> Result<Container, DeckError> {
-    let bytes = std::fs::read(pack)?;
+/// 纯内存解析 `.gfdeck` 容器（不读文件，wasm 可以直接喂字节）。
+fn parse_container(bytes: &[u8]) -> Result<Container, DeckError> {
     if bytes.len() < 12 {
         return Err(DeckError::PackCorrupt("文件过短".into()));
     }
@@ -314,7 +338,8 @@ fn read_container(pack: &Path) -> Result<Container, DeckError> {
     if header_end > bytes.len() {
         return Err(DeckError::PackCorrupt("header 越界".into()));
     }
-    let header: PackHeader = serde_json::from_slice(&bytes[12..header_end])
+    let header_json = bytes[12..header_end].to_vec();
+    let header: PackHeader = serde_json::from_slice(&header_json)
         .map_err(|e| DeckError::PackCorrupt(format!("header 解析失败: {e}")))?;
     let payload_end = if flags & FLAG_SIGNED != 0 {
         bytes
@@ -350,7 +375,14 @@ fn read_container(pack: &Path) -> Result<Container, DeckError> {
             )));
         }
     }
-    Ok((header, payload, flags, sig, bytes.len() as u64))
+    Ok(Container {
+        header,
+        header_json,
+        payload,
+        flags,
+        sig,
+        total: bytes.len() as u64,
+    })
 }
 
 fn decrypt_entries(

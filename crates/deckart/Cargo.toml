@@ -11,7 +11,9 @@ publish = false
 # 覆盖率口径里本 crate 被排除，见 scripts/coverage.ps1 与 docs/assets/m1-coverage-baseline.md。
 
 [features]
-default = []
+default = ["pack-write"]
+# 打包/签名（需要 RNG；wasm32-unknown-unknown 上 getrandom 不可用，客户端只读包）
+pack-write = ["dep:rand"]
 # SVG → PNG（resvg + tiny-skia，仅 CLI / 服务端预览；不要开进 wasm）
 png = ["dep:resvg", "dep:tiny-skia", "dep:fontdb"]
 
@@ -19,10 +21,12 @@ png = ["dep:resvg", "dep:tiny-skia", "dep:fontdb"]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-aes-gcm = "0.10"
+# 不要 default features：默认会拉 getrandom（wasm32 上编不过，我们只用显式 nonce）
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
 sha2 = "0.10"
-ed25519-dalek = { version = "2", features = ["rand_core"] }
-rand = "0.8"
+# 只做验签/从字节恢复密钥，不需要 rand_core 生成密钥
+ed25519-dalek = { version = "2" }
+rand = { version = "0.8", optional = true }
 resvg = { version = "0.45", optional = true, default-features = false, features = ["text"] }
 tiny-skia = { version = "0.11", optional = true, features = ["png-format"] }
 # 与 resvg 共用的字体库：打开 `fs` 才能 load_system_fonts（文本层转 PNG 时找系统字体）
@@ -31,4 +35,4 @@ fontdb = { version = "0.23", optional = true, features = ["fs"] }
 [[bin]]
 name = "gfdeck"
 path = "src/bin/gfdeck.rs"
-required-features = []
+required-features = ["pack-write"]

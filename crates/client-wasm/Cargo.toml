@@ -10,5 +10,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 gf-ai = { path = "../ai" }
+gf-deckart = { path = "../deckart", default-features = false }
 gf-engine = { path = "../engine" }
 gf-table-runtime = { path = "../table-runtime" }

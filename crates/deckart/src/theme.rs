@@ -108,6 +108,40 @@ fn default_anchor() -> String {
     "middle".to_string()
 }
 
+/// 主题选择界面里的「四张 2」预览：只定义**渲染哪几张面**，不存任何图片。
+/// 与牌桌走同一个 `render_face`，所以预览永远不会和实战不一致。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewSpec {
+    /// 面编码列表（`C2`/`S2`/`H8`/`JOKER-B`…），默认四张 2、按 ♣♠♥♦ 排列
+    #[serde(default = "default_preview_faces")]
+    pub faces: Vec<String>,
+    /// 预览时当作级牌的点数（`1..=13`）；显式写 `null` 表示纯牌面。
+    /// 缺省为 2 —— 四张全变级牌，红桃 2 同时变逢人配，一屏看全三种标记。
+    #[serde(default = "default_preview_level")]
+    pub level_rank: Option<u8>,
+}
+
+impl Default for PreviewSpec {
+    fn default() -> PreviewSpec {
+        PreviewSpec {
+            faces: default_preview_faces(),
+            level_rank: default_preview_level(),
+        }
+    }
+}
+
+fn default_preview_faces() -> Vec<String> {
+    ["C2", "S2", "H2", "D2"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+fn default_preview_level() -> Option<u8> {
+    Some(2)
+}
+
 /// `layout = classic` 的花阵规格。坐标全部归一化到 0..1（相对牌面宽高），
 /// 便于同一套表复用到不同 canvas 尺寸。
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -206,6 +240,9 @@ pub struct ThemeMeta {
     /// `layout = classic` 时必填
     #[serde(default)]
     pub classic: Option<ClassicSpec>,
+    /// 主题选择界面的预览配置；缺省即「四张 2、带级牌态」
+    #[serde(default)]
+    pub preview: Option<PreviewSpec>,
 }
 
 impl ThemeMeta {
@@ -285,6 +322,23 @@ impl Theme {
 
     pub fn meta(&self) -> &ThemeMeta {
         &self.meta
+    }
+
+    /// 主题选择界面要渲染的面与级牌态：读 `theme.json` 的 `preview`，
+    /// 缺省为「四张 2（♣♠♥♦）+ 级牌 2」。
+    pub fn preview(
+        &self,
+    ) -> Result<(Vec<crate::card::Face>, Option<crate::render::LevelState>), DeckError> {
+        let spec = self.meta.preview.clone().unwrap_or_default();
+        let mut faces = Vec::with_capacity(spec.faces.len());
+        for code in &spec.faces {
+            faces.push(crate::card::Face::parse(code)?);
+        }
+        let level = match spec.level_rank {
+            Some(v) => Some(crate::render::LevelState::new(crate::card::Rank::new(v)?)),
+            None => None,
+        };
+        Ok((faces, level))
     }
 
     pub fn origin(&self) -> &str {
@@ -397,6 +451,28 @@ fn validate(meta: &ThemeMeta, assets: &HashMap<String, String>) -> Result<(), De
             // badge-only 时文字不参与渲染，但给了就照样校验，避免留坏配置
             validate_label(label)?;
         }
+    }
+    if let Some(preview) = &meta.preview {
+        validate_preview(preview)?;
+    }
+    Ok(())
+}
+
+fn validate_preview(spec: &PreviewSpec) -> Result<(), DeckError> {
+    if spec.faces.is_empty() || spec.faces.len() > 8 {
+        return Err(DeckError::ThemeInvalid(
+            "preview.faces 需 1..=8 张牌面".into(),
+        ));
+    }
+    for code in &spec.faces {
+        crate::card::Face::parse(code).map_err(|_| {
+            DeckError::ThemeInvalid(format!("preview.faces 里的 {code} 不是合法牌面"))
+        })?;
+    }
+    if let Some(v) = spec.level_rank {
+        crate::card::Rank::new(v).map_err(|_| {
+            DeckError::ThemeInvalid(format!("preview.levelRank={v} 越界（合法 1..=13）"))
+        })?;
     }
     Ok(())
 }
