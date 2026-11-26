@@ -153,7 +153,8 @@ impl Auth {
     /// 手机号哈希：`HMAC-SHA256(server_salt, 规范化 11 位手机号)`（§5.8）。
     pub fn phone_hash(&self, phone: &str) -> Option<String> {
         let phone = normalize_phone(phone)?;
-        let mut mac = Hmac::<Sha256>::new_from_slice(self.salt.as_bytes()).expect("HMAC 密钥长度无限制");
+        let mut mac =
+            Hmac::<Sha256>::new_from_slice(self.salt.as_bytes()).expect("HMAC 密钥长度无限制");
         mac.update(phone.as_bytes());
         Some(hex(&mac.finalize().into_bytes()))
     }
@@ -289,7 +290,10 @@ impl Auth {
         if exp <= now_ms / 1_000 {
             return None;
         }
-        claims.get("sub").and_then(|v| v.as_str()).map(|s| s.to_owned())
+        claims
+            .get("sub")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_owned())
     }
 
     /// 取档案（`GET /api/profile` 用）。
@@ -359,7 +363,8 @@ impl Auth {
         });
         let payload = URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
         let signing_input = format!("{header}.{payload}");
-        let mut mac = Hmac::<Sha256>::new_from_slice(self.jwt_secret.as_bytes()).expect("HMAC 密钥长度无限制");
+        let mut mac = Hmac::<Sha256>::new_from_slice(self.jwt_secret.as_bytes())
+            .expect("HMAC 密钥长度无限制");
         mac.update(signing_input.as_bytes());
         let signature = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
         format!("{signing_input}.{signature}")
@@ -376,14 +381,22 @@ pub fn normalize_phone(raw: &str) -> Option<String> {
         .strip_prefix("+86")
         .or_else(|| cleaned.strip_prefix("86").filter(|rest| rest.len() == 11))
         .unwrap_or(&cleaned);
-    if digits.len() != 11 || !digits.starts_with('1') || !digits.bytes().all(|b| b.is_ascii_digit()) {
+    if digits.len() != 11 || !digits.starts_with('1') || !digits.bytes().all(|b| b.is_ascii_digit())
+    {
         return None;
     }
     Some(digits.to_owned())
 }
 
 fn tail4(phone: &str) -> String {
-    phone.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect()
+    phone
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
 }
 
 /// 6 位数字验证码（含前导 0）。
@@ -450,9 +463,18 @@ mod tests {
 
     #[test]
     fn phone_normalization_rejects_junk() {
-        assert_eq!(normalize_phone("138 0013 8000").as_deref(), Some("13800138000"));
-        assert_eq!(normalize_phone("+86-13800138000").as_deref(), Some("13800138000"));
-        assert_eq!(normalize_phone("8613800138000").as_deref(), Some("13800138000"));
+        assert_eq!(
+            normalize_phone("138 0013 8000").as_deref(),
+            Some("13800138000")
+        );
+        assert_eq!(
+            normalize_phone("+86-13800138000").as_deref(),
+            Some("13800138000")
+        );
+        assert_eq!(
+            normalize_phone("8613800138000").as_deref(),
+            Some("13800138000")
+        );
         assert!(normalize_phone("1380013800").is_none());
         assert!(normalize_phone("02380013800").is_none(), "必须以 1 开头");
         assert!(normalize_phone("abcdefghijk").is_none());
@@ -466,7 +488,9 @@ mod tests {
         assert_eq!(challenge.cooldown_sec, 60);
         assert_eq!(
             auth.request_sms("13800138000", now + 10_000),
-            Err(SmsError::RateLimited { retry_after_ms: 50_000 })
+            Err(SmsError::RateLimited {
+                retry_after_ms: 50_000
+            })
         );
 
         let hash = auth.phone_hash("13800138000").expect("哈希");
@@ -497,11 +521,21 @@ mod tests {
         let code = auth.codes.lock().unwrap().get(&hash).unwrap().code.clone();
         let session = auth.login("13900139000", &code, now).unwrap();
 
-        assert_eq!(auth.verify_access(&session.token, now).as_deref(), Some(session.player_id.as_str()));
-        assert!(auth.verify_access(&session.token, now + ACCESS_TTL_MS + 1).is_none(), "过期后必须拒绝");
+        assert_eq!(
+            auth.verify_access(&session.token, now).as_deref(),
+            Some(session.player_id.as_str())
+        );
+        assert!(
+            auth.verify_access(&session.token, now + ACCESS_TTL_MS + 1)
+                .is_none(),
+            "过期后必须拒绝"
+        );
         let mut tampered = session.token.clone();
         tampered.push('a');
-        assert!(auth.verify_access(&tampered, now).is_none(), "签名被截断/篡改必须拒绝");
+        assert!(
+            auth.verify_access(&tampered, now).is_none(),
+            "签名被截断/篡改必须拒绝"
+        );
     }
 
     #[test]
@@ -513,10 +547,15 @@ mod tests {
         let code = auth.codes.lock().unwrap().get(&hash).unwrap().code.clone();
         let first = auth.login("13700137000", &code, now).unwrap();
 
-        let second = auth.refresh(&first.refresh_token, now + 1).expect("首次刷新");
+        let second = auth
+            .refresh(&first.refresh_token, now + 1)
+            .expect("首次刷新");
         assert_eq!(second.player_id, first.player_id);
         assert_ne!(second.refresh_token, first.refresh_token);
-        assert!(auth.refresh(&first.refresh_token, now + 2).is_err(), "旧 refresh 必须立刻失效");
+        assert!(
+            auth.refresh(&first.refresh_token, now + 2).is_err(),
+            "旧 refresh 必须立刻失效"
+        );
     }
 
     #[test]
@@ -527,8 +566,13 @@ mod tests {
         let capture = &auth.sms;
         // 白名单不投递真实短信：CaptureSms 里不该有记录。
         let _ = capture;
-        let session = auth.login("13800138000", DEFAULT_TEST_CODE, now + 1).expect("白名单直通");
-        assert_eq!(auth.profile(&session.player_id).unwrap().phone_tail4, "8000");
+        let session = auth
+            .login("13800138000", DEFAULT_TEST_CODE, now + 1)
+            .expect("白名单直通");
+        assert_eq!(
+            auth.profile(&session.player_id).unwrap().phone_tail4,
+            "8000"
+        );
         // 非白名单手机号用测试码则拒绝。
         assert_eq!(
             auth.login("13600136000", DEFAULT_TEST_CODE, now + 1),
@@ -540,8 +584,9 @@ mod tests {
     fn same_phone_maps_to_same_player_id() {
         let auth = auth(&["13800138000"]);
         let a = auth.login("13800138000", DEFAULT_TEST_CODE, 0).unwrap();
-        let b = auth.login("+86 138-0013-8000", DEFAULT_TEST_CODE, 1).unwrap();
+        let b = auth
+            .login("+86 138-0013-8000", DEFAULT_TEST_CODE, 1)
+            .unwrap();
         assert_eq!(a.player_id, b.player_id, "同一手机号必须复用同一 playerId");
     }
 }
-

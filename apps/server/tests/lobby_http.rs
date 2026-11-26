@@ -21,7 +21,9 @@ async fn call(app: &Arc<App>, method: &str, uri: &str, body: Option<Value>) -> (
     let request = match body {
         Some(body) => {
             builder = builder.header("content-type", "application/json");
-            builder.body(Body::from(body.to_string())).expect("请求构造失败")
+            builder
+                .body(Body::from(body.to_string()))
+                .expect("请求构造失败")
         }
         None => builder.body(Body::empty()).expect("请求构造失败"),
     };
@@ -53,7 +55,10 @@ async fn create_room(app: &Arc<App>, mode: &str) -> (String, String) {
     assert_eq!(status, StatusCode::OK, "建房失败：{body}");
     (
         body["matchId"].as_str().expect("缺 matchId").to_owned(),
-        body["inviteCode"].as_str().expect("缺 inviteCode").to_owned(),
+        body["inviteCode"]
+            .as_str()
+            .expect("缺 inviteCode")
+            .to_owned(),
     )
 }
 
@@ -72,7 +77,9 @@ async fn room_code_assigns_spare_seats_and_rejects_overflow() {
     let app = make_app(ServerConfig::default());
     let (match_id, code) = create_room(&app, "casual").await;
     assert_eq!(code.len(), 6, "房间码 6 位");
-    assert!(code.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()));
+    assert!(code
+        .chars()
+        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()));
 
     let mut seats = Vec::new();
     for _ in 0..4 {
@@ -101,7 +108,10 @@ async fn unknown_or_expired_code_is_rejected() {
     assert_eq!(body["detail"], "INVITE_CODE_UNKNOWN");
 
     // 码有效期为 0：出码后立即失效。
-    let cfg = ServerConfig { room_code_ttl_ms: 0, ..Default::default() };
+    let cfg = ServerConfig {
+        room_code_ttl_ms: 0,
+        ..Default::default()
+    };
     let app = make_app(cfg);
     let (_, code) = create_room(&app, "casual").await;
     let (status, body) = join(&app, &code).await;
@@ -144,7 +154,12 @@ async fn four_queued_tickets_form_one_room() {
         let (status, body) = call(&app, "GET", &format!("/api/match/queue/{ticket}"), None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["state"], "matched");
-        match_ids.push(body["matchId"].as_str().expect("matched 必须带 matchId").to_owned());
+        match_ids.push(
+            body["matchId"]
+                .as_str()
+                .expect("matched 必须带 matchId")
+                .to_owned(),
+        );
     }
     assert!(
         match_ids.windows(2).all(|w| w[0] == w[1]),
@@ -182,16 +197,31 @@ async fn queue_does_not_mix_modes_and_cancel_leaves_waiting() {
     let (_, body) = call(&app, "GET", &format!("/api/match/queue/{ranked}"), None).await;
     assert_eq!(body["state"], "waiting", "ranked 票不得混进 casual 房");
 
-    let (status, body) = call(&app, "DELETE", &format!("/api/match/queue/{}", casual[0]), None).await;
+    let (status, body) = call(
+        &app,
+        "DELETE",
+        &format!("/api/match/queue/{}", casual[0]),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["ok"], true);
-    let (_, body) = call(&app, "GET", &format!("/api/match/queue/{}", casual[0]), None).await;
+    let (_, body) = call(
+        &app,
+        "GET",
+        &format!("/api/match/queue/{}", casual[0]),
+        None,
+    )
+    .await;
     assert_eq!(body["state"], "timeout", "退队后状态转 timeout");
 }
 
 #[tokio::test]
 async fn queue_timeout_is_reported_by_poll() {
-    let cfg = ServerConfig { match_timeout_ms: 5, ..Default::default() };
+    let cfg = ServerConfig {
+        match_timeout_ms: 5,
+        ..Default::default()
+    };
     let app = make_app(cfg);
     let (_, body) = call(
         &app,
@@ -205,5 +235,3 @@ async fn queue_timeout_is_reported_by_poll() {
     let (_, body) = call(&app, "GET", &format!("/api/match/queue/{ticket}"), None).await;
     assert_eq!(body["state"], "timeout");
 }
-
-

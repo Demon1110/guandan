@@ -39,10 +39,23 @@ async fn call(
             .expect("请求构造失败"),
         None => builder.body(Body::empty()).expect("请求构造失败"),
     };
-    let response = app.clone().router().oneshot(request).await.expect("路由失败");
+    let response = app
+        .clone()
+        .router()
+        .oneshot(request)
+        .await
+        .expect("路由失败");
     let status = response.status();
-    let bytes = response.into_body().collect().await.expect("读响应").to_bytes();
-    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("读响应")
+        .to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 async fn login(app: &Arc<App>, phone: &str, code: &str) -> (StatusCode, Value) {
@@ -75,7 +88,9 @@ async fn sms_is_rate_limited_per_phone() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["cooldownSec"], 60);
-    assert!(body["requestId"].as_str().is_some_and(|id| id.starts_with("s-")));
+    assert!(body["requestId"]
+        .as_str()
+        .is_some_and(|id| id.starts_with("s-")));
 
     let (status, body) = call(
         &app,
@@ -152,7 +167,10 @@ async fn wrong_code_and_version_gate_are_rejected() {
 async fn refresh_rotates_and_invalidates_old_token() {
     let app = make_app();
     let (_, body) = login(&app, PHONE_A, TEST_CODE).await;
-    let refresh = body["refreshToken"].as_str().expect("缺 refreshToken").to_owned();
+    let refresh = body["refreshToken"]
+        .as_str()
+        .expect("缺 refreshToken")
+        .to_owned();
 
     let (status, rotated) = call(
         &app,
@@ -193,7 +211,11 @@ async fn require_auth_gates_lobby_and_binds_seats() {
         Some(json!({"mode": "casual"})),
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "强制鉴权时匿名建房必须被拒");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "强制鉴权时匿名建房必须被拒"
+    );
 
     let token_a = token_of(&app, PHONE_A).await;
     let token_b = token_of(&app, PHONE_B).await;
@@ -206,7 +228,10 @@ async fn require_auth_gates_lobby_and_binds_seats() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let code = body["inviteCode"].as_str().expect("缺 inviteCode").to_owned();
+    let code = body["inviteCode"]
+        .as_str()
+        .expect("缺 inviteCode")
+        .to_owned();
 
     let (status, body) = call(
         &app,

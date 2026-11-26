@@ -12,9 +12,7 @@ use gf_server::{App, ServerConfig};
 
 async fn connect(
     addr: std::net::SocketAddr,
-) -> tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-> {
+) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
     let url = format!("ws://{addr}/ws");
     let (socket, _) = tokio_tungstenite::connect_async(url)
         .await

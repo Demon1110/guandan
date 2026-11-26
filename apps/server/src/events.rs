@@ -4,7 +4,7 @@
 //! 不额外新增记账字段，避免与 `stateHash` 口径分叉。
 
 use gf_engine::contract::{Action, State};
-use gf_engine::engine::{PHASE_SETTLE, PHASE_PLAY};
+use gf_engine::engine::{PHASE_PLAY, PHASE_SETTLE};
 use gf_protocol::gf::protocol::v1 as pb;
 use gf_protocol::wire::{encode, kind};
 use gf_table_runtime::{ReplayedStep, RoomSnapshotWire, SettleSummary};
@@ -27,7 +27,13 @@ pub fn events_for(
                 .map(|play| play.pattern_id.clone())
                 .unwrap_or_default();
             events.push(delta(pb::delta_event::Event::Played(pb::PlayedEvent {
-                seat: u32::from(after.last_play.as_ref().map(|p| p.seat).unwrap_or(before.turn_seat)),
+                seat: u32::from(
+                    after
+                        .last_play
+                        .as_ref()
+                        .map(|p| p.seat)
+                        .unwrap_or(before.turn_seat),
+                ),
                 cards: cards.iter().map(|c| u32::from(*c)).collect(),
                 pattern_id,
             })));
@@ -40,7 +46,11 @@ pub fn events_for(
     }
 
     // 进贡 / 还贡：只在新增记录时补发（首局与抗贡局为空）。
-    for record in after.tribute_events.iter().skip(before.tribute_events.len()) {
+    for record in after
+        .tribute_events
+        .iter()
+        .skip(before.tribute_events.len())
+    {
         events.push(delta(pb::delta_event::Event::Tribute(pb::TributeEvent {
             from: u32::from(record.from),
             to: u32::from(record.to),
@@ -289,10 +299,7 @@ mod tests {
     #[test]
     fn settle_json_is_single_line_and_ordered() {
         let json = settle_json(&summary(Some(1)));
-        assert_eq!(
-            json,
-            "{\"winner_team\":1,\"ranks\":[2,0,3,1],\"points\":0}"
-        );
+        assert_eq!(json, "{\"winner_team\":1,\"ranks\":[2,0,3,1],\"points\":0}");
         assert!(!json.contains(' '), "canonical JSON 不得含空白");
         assert!(!json.contains("null"), "canonical JSON 不得写 null");
     }
@@ -314,8 +321,14 @@ mod tests {
     #[test]
     fn phase_enum_covers_all_four_engine_phases() {
         assert_eq!(phase_enum(gf_engine::engine::PHASE_DEAL), pb::Phase::Deal);
-        assert_eq!(phase_enum(gf_engine::engine::PHASE_TRIBUTE), pb::Phase::Tribute);
+        assert_eq!(
+            phase_enum(gf_engine::engine::PHASE_TRIBUTE),
+            pb::Phase::Tribute
+        );
         assert_eq!(phase_enum(gf_engine::engine::PHASE_PLAY), pb::Phase::Play);
-        assert_eq!(phase_enum(gf_engine::engine::PHASE_SETTLE), pb::Phase::Settle);
+        assert_eq!(
+            phase_enum(gf_engine::engine::PHASE_SETTLE),
+            pb::Phase::Settle
+        );
     }
 }

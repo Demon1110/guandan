@@ -106,7 +106,11 @@ async fn four_humans_play_a_round_then_settle() {
         let seq = room.seat_seq(seat).await + 1;
         let request_id = format!("r{}", counter.fetch_add(1, Ordering::Relaxed));
         let ack_bytes = room
-            .submit(seat, play_msg(seat, seq, &request_id, &action), room.now_ms())
+            .submit(
+                seat,
+                play_msg(seat, seq, &request_id, &action),
+                room.now_ms(),
+            )
             .await;
         let (kind, body) = wire::split(&ack_bytes).expect("回执应可拆");
         assert_eq!(kind, wire::kind::ACTION_ACK);
@@ -140,7 +144,10 @@ async fn four_humans_play_a_round_then_settle() {
             .map(|(_, b)| pb::SettleResult::decode(&b[..]).expect("结算解码失败"))
             .expect("有结算帧");
         let json = String::from_utf8(settle.result.clone()).expect("结算结果必须是 UTF-8");
-        assert!(json.starts_with("{\"winner_team\""), "结算 JSON 键序错：{json}");
+        assert!(
+            json.starts_with("{\"winner_team\""),
+            "结算 JSON 键序错：{json}"
+        );
         assert!(json.contains("\"ranks\":["), "结算必须带名次：{json}");
         assert_eq!(settle.levels_after.len(), 2, "两队级牌");
     }
@@ -148,7 +155,8 @@ async fn four_humans_play_a_round_then_settle() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn duplicate_request_id_is_idempotent() {
-    let room = RoomHost::spawn("match-idem", 0x51ED_0008, RoomOptions::default()).expect("建桌失败");
+    let room =
+        RoomHost::spawn("match-idem", 0x51ED_0008, RoomOptions::default()).expect("建桌失败");
     let mut rxs = Vec::new();
     for _ in 0..4u8 {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -163,7 +171,12 @@ async fn duplicate_request_id_is_idempotent() {
 
     let state = room.state_snapshot().await.expect("有状态");
     let seat = state.turn_seat;
-    let action = room.legal_actions().await.first().cloned().expect("有合法动作");
+    let action = room
+        .legal_actions()
+        .await
+        .first()
+        .cloned()
+        .expect("有合法动作");
     let seq = room.seat_seq(seat).await + 1;
     let msg = play_msg(seat, seq, "same-request", &action);
 
@@ -183,7 +196,8 @@ async fn duplicate_request_id_is_idempotent() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stale_seat_seq_is_rejected_without_advancing() {
-    let room = RoomHost::spawn("match-stale", 0x51ED_0009, RoomOptions::default()).expect("建桌失败");
+    let room =
+        RoomHost::spawn("match-stale", 0x51ED_0009, RoomOptions::default()).expect("建桌失败");
     let mut rxs = Vec::new();
     for _ in 0..4u8 {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -209,15 +223,29 @@ async fn stale_seat_seq_is_rejected_without_advancing() {
             target = Some((seat, current));
             break;
         }
-        let action = room.legal_actions().await.first().cloned().expect("有合法动作");
-        room.submit(seat, play_msg(seat, current + 1, &format!("adv-{played}"), &action), room.now_ms())
-            .await;
+        let action = room
+            .legal_actions()
+            .await
+            .first()
+            .cloned()
+            .expect("有合法动作");
+        room.submit(
+            seat,
+            play_msg(seat, current + 1, &format!("adv-{played}"), &action),
+            room.now_ms(),
+        )
+        .await;
         played += 1;
         assert!(played < 600, "推进手数超上界");
     }
     let (seat, _current) = target.expect("一局内必然有座位二次轮到");
     let advanced = room.room_seq().await;
-    let action = room.legal_actions().await.first().cloned().expect("有合法动作");
+    let action = room
+        .legal_actions()
+        .await
+        .first()
+        .cloned()
+        .expect("有合法动作");
 
     // 旧水位（0 < current）必须 STALE_SEQ，且不得推进房间序号。
     let stale = room
@@ -226,13 +254,17 @@ async fn stale_seat_seq_is_rejected_without_advancing() {
     let ack = pb::ActionAck::decode(wire::split(&stale).expect("可拆").1).expect("解码失败");
     assert!(!ack.accepted, "旧水位必须拒");
     assert_eq!(ack.reason.as_deref(), Some("STALE_SEQ"));
-    assert_eq!(room.room_seq().await, advanced, "被拒的动作不得推进房间序号");
+    assert_eq!(
+        room.room_seq().await,
+        advanced,
+        "被拒的动作不得推进房间序号"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reconnect_without_local_state_gets_reset_snapshot() {
-    let room = RoomHost::spawn("match-reconnect", 0x51ED_000A, RoomOptions::default())
-        .expect("建桌失败");
+    let room =
+        RoomHost::spawn("match-reconnect", 0x51ED_000A, RoomOptions::default()).expect("建桌失败");
     let mut rxs = Vec::new();
     for _ in 0..4u8 {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -248,10 +280,19 @@ async fn reconnect_without_local_state_gets_reset_snapshot() {
     for i in 0..2 {
         let state = room.state_snapshot().await.expect("有状态");
         let seat = state.turn_seat;
-        let action = room.legal_actions().await.first().cloned().expect("有合法动作");
+        let action = room
+            .legal_actions()
+            .await
+            .first()
+            .cloned()
+            .expect("有合法动作");
         let seq = room.seat_seq(seat).await + 1;
-        room.submit(seat, play_msg(seat, seq, &format!("pre-{i}"), &action), room.now_ms())
-            .await;
+        room.submit(
+            seat,
+            play_msg(seat, seq, &format!("pre-{i}"), &action),
+            room.now_ms(),
+        )
+        .await;
     }
 
     // 挑一个还没出过手的座位：本地零水位，服务端无法换算 roomSeq，只能给快照。
@@ -279,15 +320,19 @@ async fn reconnect_without_local_state_gets_reset_snapshot() {
     let turn = room.state_snapshot().await.expect("有状态").turn_seat;
     let action = room.legal_actions().await.first().cloned().expect("有动作");
     let seq = room.seat_seq(turn).await + 1;
-    room.submit(turn, play_msg(turn, seq, "after-reconnect", &action), room.now_ms())
-        .await;
+    room.submit(
+        turn,
+        play_msg(turn, seq, "after-reconnect", &action),
+        room.now_ms(),
+    )
+    .await;
     assert!(rx.try_recv().is_ok(), "重连座位必须重新收到下行帧");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reconnect_within_buffer_gets_delta_then_snapshot() {
-    let room = RoomHost::spawn("match-delta", 0x51ED_000C, RoomOptions::default())
-        .expect("建桌失败");
+    let room =
+        RoomHost::spawn("match-delta", 0x51ED_000C, RoomOptions::default()).expect("建桌失败");
     let mut rxs = Vec::new();
     for _ in 0..4u8 {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -316,8 +361,12 @@ async fn reconnect_within_buffer_gets_delta_then_snapshot() {
         let turn = room.state_snapshot().await.expect("有状态").turn_seat;
         let action = room.legal_actions().await.first().cloned().expect("有动作");
         let seq = room.seat_seq(turn).await + 1;
-        room.submit(turn, play_msg(turn, seq, &format!("delta-gap-{i}"), &action), room.now_ms())
-            .await;
+        room.submit(
+            turn,
+            play_msg(turn, seq, &format!("delta-gap-{i}"), &action),
+            room.now_ms(),
+        )
+        .await;
     }
     let latest = room.room_seq().await;
 
@@ -346,7 +395,11 @@ async fn reconnect_within_buffer_gets_delta_then_snapshot() {
     let mut deltas = Vec::new();
     for frame in &frames[..frames.len() - 1] {
         let (kind, body) = wire::split(frame).expect("可拆");
-        assert_eq!(kind, wire::kind::ROOM_DELTA, "增量路径中间帧必须是 RoomDelta");
+        assert_eq!(
+            kind,
+            wire::kind::ROOM_DELTA,
+            "增量路径中间帧必须是 RoomDelta"
+        );
         deltas.push(pb::RoomDelta::decode(body).expect("解码失败"));
     }
     assert_eq!(
@@ -355,7 +408,11 @@ async fn reconnect_within_buffer_gets_delta_then_snapshot() {
         "补发必须覆盖到最新一条记录"
     );
     for pair in deltas.windows(2) {
-        assert_eq!(pair[1].room_seq, pair[0].room_seq + 1, "补发的 roomSeq 必须连续");
+        assert_eq!(
+            pair[1].room_seq,
+            pair[0].room_seq + 1,
+            "补发的 roomSeq 必须连续"
+        );
         assert!(!pair[0].events.is_empty(), "每条记录至少带来一个事件");
     }
     // 末条增量带当前行动窗口：TurnChanged 的 deadline 必须是新的，不能回放历史值。
@@ -374,8 +431,8 @@ async fn reconnect_within_buffer_gets_delta_then_snapshot() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn seat_assignment_rejects_overflow_and_reports_free_seats() {
-    let room = RoomHost::spawn("match-seats", 0x51ED_000B, RoomOptions::default())
-        .expect("建桌失败");
+    let room =
+        RoomHost::spawn("match-seats", 0x51ED_000B, RoomOptions::default()).expect("建桌失败");
     let mut keep = Vec::new();
     for _ in 0..3u8 {
         let (tx, _rx) = mpsc::unbounded_channel();
