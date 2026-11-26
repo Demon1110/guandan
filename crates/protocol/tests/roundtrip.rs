@@ -116,12 +116,14 @@ fn room_snapshot_roundtrip_keeps_view_bytes() {
         view_schema_version: 3,
         view: view.clone(),
         snapshot_reset: false,
+        round_no: 2,
     };
     let back = roundtrip(&msg);
     assert_eq!(msg, back);
     // view 是 canonical JSON bytes，往返后字节原样保留；不做结构化解码。
     assert_eq!(back.view, view);
     assert_eq!(back.view_schema_version, 3);
+    assert_eq!(back.round_no, 2, "局号是快照头字段，必须随帧往返");
 }
 
 #[test]

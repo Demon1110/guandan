@@ -130,10 +130,16 @@ pub struct RoomSnapshot {
     #[prost(bytes = "vec", tag = "9")]
     pub view: ::prost::alloc::vec::Vec<u8>,
     /// true 表示客户端必须丢弃本地状态并接受本快照（§6.2）。
-    ///
-    /// 注意：stateHash 永不下发（§5.12 行 790），本消息不得出现 state_hash 字段。
     #[prost(bool, tag = "10")]
     pub snapshot_reset: bool,
+    /// 本快照所属的当前局号，口径与 State.roundNo 完全一致（§5.9 第三十二次变更，2026-11-24 裁定 A）；
+    /// 不进 stateHash、不属于 view 白名单，故不触发 viewSchemaVersion 升版。
+    /// 空窗期（settle → deal）收到的快照仍是已结束那一局，客户端据此 + phase 判「本局已结算、下一局未开始」。
+    /// 取值域 roundNo: u16，proto3 无 u16，落 uint32。
+    ///
+    /// 注意：stateHash 永不下发（§5.12 行 790），本消息不得出现 state_hash 字段。
+    #[prost(uint32, tag = "11")]
+    pub round_no: u32,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PlayedEvent {
