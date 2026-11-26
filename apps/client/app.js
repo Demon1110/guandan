@@ -201,6 +201,11 @@ const room = {
     if (!ex.gf_room_info) return { phase: 'idle', seats: [], levels: [] };
     return JSON.parse(cstr(ex.gf_room_info()));
   },
+  // 预检这组牌能否出（与 submit 同口径）；旧产物没有该导出时返回 null，交给清单兜底。
+  canPlay(cards) {
+    if (!ex.gf_room_can_play) return null;
+    return withCards(cards, (ptr, len) => JSON.parse(cstr(ex.gf_room_can_play(ptr, len))));
+  },
 };
 
 // ---------- 页面状态 ----------
@@ -463,14 +468,8 @@ function renderHand() {
       const b = document.createElement('button');
       b.className = `card${f.red ? ' red' : ''}${f.joker ? ' joker' : ''}${state.selected.has(id) ? ' picked' : ''}${myTurn ? '' : ' dim'}`;
       b.style.zIndex = String(i + 1);
+      b.dataset.cid = String(id);
       b.innerHTML = `<span class="corner"><b>${f.rank}</b><span class="suit">${f.suit}</span></span>${state.showIds ? `<span class="cid">${id}</span>` : ''}`;
-      b.onclick = () => {
-        if (state.waitingSeat !== state.humanSeat) return;
-        if (state.selected.has(id)) state.selected.delete(id);
-        else state.selected.add(id);
-        renderHand();
-        renderActions();
-      };
       col.appendChild(b);
     });
     box.appendChild(col);
@@ -498,10 +497,30 @@ function currentLegal() {
   return list;
 }
 
+// 选中这组牌能不能出：先用 wasm 的 preview_play 预检（与 submit 同口径，覆盖顺子/三带二
+// 这类多组合牌型），旧产物没有该导出时退化为「在候选清单里找同一组牌」。
+// 返回 {ok, pattern}，按 roomSeq + 选牌集缓存，避免每次重绘都跨边界调用。
+function previewSelection() {
+  if (state.selected.size === 0) return { ok: false, pattern: '' };
+  const cards = [...state.selected].sort((a, b) => a - b);
+  const key = `${state.legalSeq}|${state.waitingSeat}|${cards.join(',')}`;
+  if (state.previewCache && state.previewCache.key === key) return state.previewCache;
+  let out = null;
+  try {
+    const r = room.canPlay(cards);
+    if (r) out = { ok: !!r.ok, pattern: r.patternId ? patternName(r.patternId) : '' };
+  } catch { /* wasm 不可用时走清单兜底 */ }
+  if (!out) {
+    const target = cards.join(',');
+    const hit = currentLegal().find((a) => !a.pass && (a.cards ?? []).slice().sort((x, y) => x - y).join(',') === target);
+    out = { ok: !!hit, pattern: '' };
+  }
+  state.previewCache = { key, ...out };
+  return state.previewCache;
+}
+
 function selectedPlayIsLegal() {
-  if (state.selected.size === 0) return false;
-  const target = [...state.selected].sort((a, b) => a - b).join(',');
-  return currentLegal().some((a) => !a.pass && (a.cards ?? []).slice().sort((x, y) => x - y).join(',') === target);
+  return previewSelection().ok;
 }
 
 function renderActions() {
@@ -510,6 +529,7 @@ function renderActions() {
   const plays = legal.filter((a) => !a.pass);
   const canPass = myTurn && legal.some((a) => a.pass);
   const pickLegal = selectedPlayIsLegal();
+  const pickPattern = pickLegal ? previewSelection().pattern : '';
   el('play').disabled = !myTurn || !pickLegal;
   el('hint').disabled = !myTurn || plays.length === 0;
   el('pass').disabled = !canPass;
@@ -520,7 +540,7 @@ function renderActions() {
     parts.push(`已选 ${state.selected.size} 张：${[...state.selected]
       .sort((a, b) => columnKey(b, levelRankIndex()) - columnKey(a, levelRankIndex()))
       .map(cardLabel).join(' ')}`);
-    parts.push(pickLegal ? '✔ 可出' : '✘ 不合法');
+    parts.push(pickLegal ? `✔ 可出${pickPattern ? `（${pickPattern}）` : ''}` : '✘ 不合法');
   }
   if (myTurn) parts.push(plays.length === 0 ? (canPass ? '只剩过牌' : '要不起') : `可出 ${plays.length} 手`);
   el('selection').textContent = parts.join(' · ');
@@ -871,6 +891,39 @@ el('lobby-start').onclick = async () => {
 };
 
 el('lobby-resume').onclick = () => el('lobby-start').onclick();
+
+// ---------- 选牌：点选 + 按住滑动连选 ----------
+//
+// 只改选中状态对应的 DOM 类与按钮状态，不重建手牌——重建会让 pointermove 打在已失效的
+// 元素上，拖选会断。起点是「已选」时整段按取消处理，反之整段按选中处理。
+
+function setPicked(id, on) {
+  if (state.selected.has(id) === on) return;
+  if (on) state.selected.add(id);
+  else state.selected.delete(id);
+  const card = el('hand').querySelector(`.card[data-cid="${id}"]`);
+  if (card) card.classList.toggle('picked', on);
+  renderActions();
+}
+
+let dragPick = null;
+el('hand').addEventListener('pointerdown', (e) => {
+  if (state.waitingSeat !== state.humanSeat) return;
+  const card = e.target.closest('.card');
+  if (!card) return;
+  const id = Number(card.dataset.cid);
+  dragPick = { want: !state.selected.has(id) };
+  setPicked(id, dragPick.want);
+});
+el('hand').addEventListener('pointermove', (e) => {
+  if (!dragPick) return;
+  const hit = document.elementFromPoint(e.clientX, e.clientY);
+  const card = hit && hit.closest('.card');
+  if (!card) return;
+  setPicked(Number(card.dataset.cid), dragPick.want);
+});
+window.addEventListener('pointerup', () => { dragPick = null; });
+window.addEventListener('pointercancel', () => { dragPick = null; });
 
 // ---------- 入口 ----------
 

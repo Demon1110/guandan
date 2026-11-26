@@ -35,6 +35,7 @@ http://127.0.0.1:8123/index.html?seed=0x51EDA101&seat=2&level=1
   （「我方 X / 对方 Y」），打级方黄框、当前行动方 `▶` 加亮；座位卡给出我方/对方、手牌张数、
   最近一手，出完的座位打「头游 / 二游 / 三游 / 末游」标签。
   手牌**同点数一列纵向叠放**（只露左上角标），列序按牌力降序：大王、小王、级牌、A、K…2。
+  点一张选一张，也可以**按住左键横向/纵向滑过**连续选中（起点是已选牌则整段改为取消）。
   出牌区停到**当前行动家桌前**（下/右/上/左四向），上家的牌横向展开并标注「上家/下家/对家 +
   牌型中文名」；连续两家过牌后牌面自动收起（点一下展开）。
   按钮：出牌（选牌不合法时置灰，实时按 `gf_room_legal` 判定）、**提示**（在合法集里循环选一手，
@@ -71,7 +72,8 @@ IndexedDB 库 `guandan-m1`：
 | `gf_room_new_level(seed_hi, seed_lo, human_mask, bot_level)` | 建桌，`bot_level` 0/1/2 → L0/L1/L2 |
 | `gf_room_start / step / submit / replay_action / next_round / resume_window` | 房间推进 |
 | `gf_room_view / hash / meta / seats / last_record` | 视图与自证 |
-| `gf_room_legal` | 当前行动座位的合法动作集（`[{"pass":…,"cards":[…]}]`），出牌按钮与「提示」都按它判定 |
+| `gf_room_legal` | 当前行动座位的合法动作集（`[{"pass":…,"cards":[…]}]`），「提示」按钮按它选牌 |
+| `gf_room_can_play` | 预检一手牌能否出（与 `submit` 同口径）：结构不成立、不在手牌、压不过上家都返回 `ok:false`；「出牌」按钮读它 |
 | `gf_room_info` | 桌面公开信息（不进座位视图、不影响 `stateHash`）：相位、行动座位、连续过牌数、双方级牌、打级队、各家手牌张数与已锁定名次 |
 
 ## 无头回归

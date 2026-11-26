@@ -187,7 +187,7 @@ header .dot { opacity: .5; }
 /* 同点数一列、列内纵向叠放（只露顶部角标），列从左到右按牌力降序 */
 .hand-col { display: flex; flex-direction: column; align-items: center; flex: 0 0 auto; }
 .hand-col .card { width: 44px; height: 62px; }
-.hand-col .card + .card { margin-top: -42px; }
+.hand-col .card + .card { margin-top: -38px; }
 .actions { display: flex; gap: 10px; justify-content: center; margin-top: 10px; }
 
 .card {
@@ -207,6 +207,8 @@ header .dot { opacity: .5; }
   font-size: 15px;
   cursor: pointer;
   user-select: none;
+  -webkit-user-drag: none;
+  touch-action: manipulation;
   transition: transform .12s ease, box-shadow .12s ease;
   padding: 4px 5px;
 }
@@ -314,7 +316,7 @@ header .dot { opacity: .5; }
   .play-zone[data-rel="3"] { left: 8px; top: calc(30% + 132px); width: min(170px, 38%); }
   .hand-area { left: 8px; right: 8px; }
   .hand-col .card { width: 38px; height: 54px; }
-  .hand-col .card + .card { margin-top: -36px; }
+  .hand-col .card + .card { margin-top: -32px; }
   .card { width: 38px; height: 54px; font-size: 13px; }
   .card .suit { font-size: 13px; }
   .hand { justify-content: flex-start; min-height: 104px; }

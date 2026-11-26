@@ -951,6 +951,61 @@ impl M0Engine {
         out
     }
 
+    /// 预检一手牌：按 `apply` 的同口径判定「这组牌此刻能否作为 Play 提交」，不推进状态。
+    ///
+    /// 返回 `(patternId, 能否压过上家)`；不在手牌 / 结构不成型 / 压不过上家都返回错误。
+    /// 前端用它决定「出牌」按钮是否可点——`legal_actions` 只是候选清单，顺子、三带二这类
+    /// 多组合牌型不会把用户手里的每个具体花色组合都枚举出来。
+    pub fn preview_play(
+        &self,
+        state: &State,
+        cards: &[u16],
+    ) -> Result<(String, bool), EngineError> {
+        if state.phase != PHASE_PLAY {
+            return Err(EngineError::IllegalAction {
+                reason: "当前不在 play 相位".to_owned(),
+            });
+        }
+        if cards.is_empty() {
+            return Err(EngineError::IllegalAction {
+                reason: "未选牌".to_owned(),
+            });
+        }
+        let seat = state.turn_seat;
+        let Some(hand) = self.hand_cards(state, seat) else {
+            return Err(EngineError::Internal {
+                message: format!("seat {seat} 手牌区缺失"),
+            });
+        };
+        let mut seen: Vec<u16> = Vec::with_capacity(cards.len());
+        for &card in cards {
+            if !hand.contains(&card) {
+                return Err(EngineError::IllegalAction {
+                    reason: format!("牌 {card} 不在 seat {seat} 的手牌中"),
+                });
+            }
+            if seen.contains(&card) {
+                return Err(EngineError::IllegalAction {
+                    reason: format!("牌 {card} 重复提交"),
+                });
+            }
+            seen.push(card);
+        }
+        let ctx = self.rank_context(state);
+        let ladder = self.cached_ladder();
+        let rec = patterns::recognize(ladder, &self.ruleset, &ctx, cards).ok_or_else(|| {
+            EngineError::IllegalAction {
+                reason: format!("seat {seat} 选中的牌不构成任何已声明牌型"),
+            }
+        })?;
+        let force = self.require_legal_params().0;
+        let beats = match (&state.last_play, force) {
+            (Some(last), true) => patterns::beats(ladder, &self.ruleset, &rec, last),
+            _ => true,
+        };
+        Ok((rec.pattern_id.clone(), beats))
+    }
+
     fn legal_actions_impl(&self, state: &State) -> Result<Vec<Action>, EngineError> {
         let out: Vec<Action> = Vec::new();
         if state.phase != PHASE_PLAY {

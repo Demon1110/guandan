@@ -447,6 +447,33 @@ pub extern "C" fn gf_room_seats() -> *mut u8 {
     out(s)
 }
 
+/// 预检一手牌能否出（「出牌」按钮的判定源）：`{"ok":true,"patternId":"straight-5"}`，
+/// 不可出时 `{"ok":false,"reason":"…"}`。与 `gf_room_submit` 的判定口径一致，
+/// 但不推进状态；`gf_room_legal` 只是候选清单，顺子/三带二的具体花色组合未必都在里面。
+#[no_mangle]
+pub unsafe extern "C" fn gf_room_can_play(cards_ptr: *const u16, cards_len: usize) -> *mut u8 {
+    let Some(r) = room() else {
+        return err("no room");
+    };
+    let cards = read_cards(cards_ptr, cards_len);
+    let state = match r.state() {
+        Ok(s) => s,
+        Err(e) => return err(e),
+    };
+    match r.engine().preview_play(state, &cards) {
+        Ok((pattern, beats)) => out(format!(
+            "{{\"ok\":{},\"patternId\":{},\"reason\":{}}}",
+            beats,
+            json_str(&pattern),
+            json_str(if beats { "" } else { "压不过上家" })
+        )),
+        Err(e) => out(format!(
+            "{{\"ok\":false,\"reason\":{}}}",
+            json_str(&format!("{e:?}"))
+        )),
+    }
+}
+
 /// 当前行动座位的合法动作集（`[{"pass":…,"cards":[…]}]`）；出牌按钮与「提示」共用。
 #[no_mangle]
 pub extern "C" fn gf_room_legal() -> *mut u8 {

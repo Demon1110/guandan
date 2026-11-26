@@ -220,14 +220,11 @@ fn cases() -> Vec<(&'static str, String, Vec<Expect>)> {
     ));
     out.push((
         "duplicate-normalized-shape",
-        {
-            let s = swap(
-                &base,
-                "  - { id: triple-pair,",
-                "  - { id: pair-dup, primitiveId: pattern.same-rank, params: { count: 2 } }\n  - { id: triple-pair,",
-            );
-            s
-        },
+        swap(
+            &base,
+            "  - { id: triple-pair,",
+            "  - { id: pair-dup, primitiveId: pattern.same-rank, params: { count: 2 } }\n  - { id: triple-pair,",
+        ),
         vec![(ErrorCode::RsSchemaInvalid, "patterns[3].params")],
     ));
     out.push((
