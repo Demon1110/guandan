@@ -124,6 +124,23 @@ node apps/client/verify_wasm_hash.mjs
 `test_restore.mjs` 在一个 Node 进程内跑完「两局 → 存档 → 丢弃 Instance → 新建 Instance 回放」，
 断言恢复哈希与存档哈希相等且恢复后还能继续推进。这是 `apps/client` 的可自动化 gate。
 
+## 主题工坊 `theme-studio.html`
+
+单文件主题编辑器：`theme.json` 的每个字段都摊成表单，右侧 15 张牌（2–A + 大小王）实时预览。
+
+- **打开方式**：直接双击 `apps/client/theme-studio.html`（素材已内联，无任何外链），或走 `serve.ps1` 访问
+  `http://127.0.0.1:8123/theme-studio.html`。
+- **预览不是贴图**：页面里那份渲染内核逐条照 `render.rs` 实现（角标倍率重排、`cornerSuitPlacement` 的
+  下方/右侧分支、classic 花阵的 `pipInset` 安全区与 `PIP_GAP` 自适应收窄）。用同一份配置与
+  `gfdeck render` 对拍过三组（compact 220% below、compact 240% right、classic 240% 四角），
+  所有 `translate/scale` 数值逐条相同。
+- **级联**：`layout=classic` 才露花阵参数、勾「启用文字」才露字体与位置、角标花色选「右侧」时把失效的
+  `cornerSuit.x/y` 变灰、取消全部角标会有告警。
+- **素材补录**：23 个 SVG 位都能替换，上传后按目标框（花色 100×100、点数 100×140、其余 500×700）
+  等比缩进并居中；关掉自适应就按素材原始尺寸摆，位置会走样。
+- **进出配置**：默认值即 `themes/defaults/theme.json`，可导入已有 `theme.json` 继续改，导出/复制新配置。
+  导出只给 JSON，素材文件仍需按 JSON 里的路径放进主题目录，再 `gfdeck pack` 打成 `.gfdeck`。
+
 ## 已知边界
 
 - 花色显示顺序按引擎 id 编码 `(suit×13+rank)×2+copy` 映射为 ♠♥♦♣；纯表现层，不参与判定。

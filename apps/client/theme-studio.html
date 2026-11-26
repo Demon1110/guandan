@@ -1,0 +1,1038 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>牌面主题工坊 · gf-deckart</title>
+<style>
+:root{
+  --ink:#1f2430; --sub:#6b7280; --line:#e3e6ec; --bg:#f2f4f7; --card:#fff;
+  --accent:#3f6ad8; --accent-soft:#eaf0ff; --warn:#b45309; --radius:10px;
+}
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.5 "PingFang SC","Microsoft YaHei",system-ui,sans-serif;color:var(--ink);background:var(--bg)}
+header{height:56px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 18px;background:#fff;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20}
+h1{margin:0;font-size:16px;letter-spacing:.3px;white-space:nowrap}
+h1 small{font-weight:400;color:var(--sub);font-size:12px;margin-left:8px;letter-spacing:0}
+.acts{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+button{border:1px solid var(--line);background:#fff;color:var(--ink);padding:7px 13px;border-radius:8px;font-size:13px;cursor:pointer;white-space:nowrap}
+button:hover{border-color:#c7cede;background:#fafbfd}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.primary:hover{filter:brightness(1.05)}
+button.ghost{color:var(--sub)}
+button.tiny{padding:3px 8px;font-size:11px;border-radius:6px}
+main{display:grid;grid-template-columns:400px minmax(0,1fr);gap:16px;padding:16px;align-items:start}
+aside{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:4px 16px 16px;max-height:calc(100vh - 88px);overflow:auto}
+section{padding:12px 0;border-bottom:1px dashed var(--line)}
+section:last-child{border-bottom:0}
+section h2{font-size:13px;margin:2px 0 10px;color:var(--ink);display:flex;align-items:center;gap:8px}
+section h2 em{font-style:normal;font-size:11px;color:var(--sub);font-weight:400}
+.row{display:flex;align-items:center;gap:8px;margin:7px 0;flex-wrap:wrap}
+.row>span.lb,.lb{width:86px;flex:none;font-size:13px;color:#374151}
+.row input[type=text],.row input[type=number],.row select{flex:1;min-width:0;border:1px solid var(--line);border-radius:7px;padding:6px 8px;font-size:13px;color:var(--ink);background:#fff;font-variant-numeric:tabular-nums}
+.row input[type=number]{max-width:96px}
+.row select{cursor:pointer}
+.row input[type=color]{width:38px;height:28px;padding:0;border:1px solid var(--line);border-radius:7px;background:#fff;cursor:pointer}
+.row input[type=range]{flex:1;min-width:80px;accent-color:var(--accent)}
+.val{width:52px;text-align:right;font-size:12px;color:var(--accent);font-variant-numeric:tabular-nums}
+.mini{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--sub)}
+.mini input{width:62px!important;max-width:62px!important;padding:5px 6px!important}
+.hint{font-size:12px;color:var(--sub);margin:4px 0 0;line-height:1.65}
+.hint.warn{color:var(--warn)}
+.chip{display:inline-block;font-size:11px;padding:2px 7px;border-radius:99px;background:var(--accent-soft);color:var(--accent)}
+.chip.gray{background:#f1f2f5;color:var(--sub)}
+.checks{display:flex;flex-wrap:wrap;gap:6px 14px}
+.checks label{display:flex;align-items:center;gap:6px;font-size:13px;color:#374151;cursor:pointer}
+.switch{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;color:#374151}
+textarea{width:100%;border:1px solid var(--line);border-radius:8px;padding:8px;font:12px/1.55 ui-monospace,Consolas,monospace;color:#374151;resize:vertical;background:#fcfcfd}
+textarea.area{min-height:112px}
+.hide{display:none!important}
+.adv{margin-top:10px}
+.adv summary{cursor:pointer;font-size:12px;color:var(--sub);list-style:none;padding:2px 0}
+.adv summary::before{content:"▸ ";color:var(--accent)}
+.adv[open] summary::before{content:"▾ "}
+.adv textarea{margin-top:6px}
+.stage{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px 18px;min-height:calc(100vh - 88px)}
+.stage-top{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:14px}
+.stage-top .grow{flex:1}
+.pv-opts{display:flex;gap:12px;align-items:center;font-size:12px;color:var(--sub);flex-wrap:wrap}
+.pv-opts select{border:1px solid var(--line);border-radius:7px;padding:4px 7px;font-size:12px;background:#fff;color:var(--ink)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:14px 12px}
+.cell{display:flex;flex-direction:column;gap:5px}
+.card{position:relative;border-radius:9px;overflow:hidden;background:#fff;box-shadow:0 1px 3px rgba(20,30,60,.10),0 6px 18px rgba(20,30,60,.06)}
+.card svg{display:block;width:100%;height:auto}
+.cell .cap{font-size:10px;color:#9aa1ae;letter-spacing:.4px;text-align:center}
+.grid.fan{display:flex;gap:0;overflow-x:auto;padding-bottom:6px}
+.grid.fan .cell{flex:none;width:132px}
+.grid.fan .cell+.cell{margin-left:-58px}
+.grid.fan .cap{display:none}
+.grid.fan .card{border-radius:8px;box-shadow:0 1px 2px rgba(20,30,60,.14)}
+.warnbar{margin-top:14px;display:flex;flex-direction:column;gap:4px}
+.warnbar div{font-size:12px;color:var(--warn);background:#fff8ef;border:1px solid #f6dfc0;border-radius:7px;padding:6px 9px}
+.jsonbox{margin-top:16px;border-top:1px dashed var(--line);padding-top:12px}
+.jsonbox summary{cursor:pointer;font-size:13px;color:var(--sub);list-style:none;display:flex;align-items:center;gap:8px}
+.jsonbox summary::before{content:"▸";color:var(--accent)}
+.jsonbox[open] summary::before{content:"▾"}
+.jsonbox .json-acts{display:flex;gap:8px;margin-top:8px;justify-content:flex-end}
+/* 素材面板 */
+.asset{padding:7px 0;border-bottom:1px dotted #eef0f4}
+.asset:last-child{border-bottom:0}
+.asset .top{display:flex;align-items:center;gap:8px}
+.asset .nm{flex:1;font-size:12px;color:#374151;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.asset .sz{font-size:11px;color:var(--sub);font-variant-numeric:tabular-nums}
+.asset .pth{display:flex;gap:6px;margin-top:5px}
+.asset .pth input{flex:1;border:1px solid var(--line);border-radius:6px;padding:4px 7px;font:11px/1.4 ui-monospace,Consolas,monospace;color:#4b5563;background:#fff}
+.asset .pth input.changed{color:#b45309;border-color:#f0d5b3;background:#fffdf8}
+.assetgroup{margin:10px 0 2px;font-size:11px;color:var(--sub);letter-spacing:.5px}
+#toast{position:fixed;left:50%;bottom:26px;transform:translate(-50%,14px);background:#1f2430;color:#fff;font-size:13px;padding:9px 16px;border-radius:9px;box-shadow:0 8px 24px rgba(20,30,60,.22);opacity:0;pointer-events:none;transition:.22s;z-index:60;max-width:70vw}
+#toast.show{opacity:1;transform:translate(-50%,0)}
+.tips{margin-top:20px;border:1px solid var(--line);border-radius:10px;padding:12px 16px;background:#fafbfe}
+.tips b{font-size:12px;color:var(--sub);font-weight:600;letter-spacing:.4px}
+.tips ol{margin:8px 0 0;padding-left:18px;font-size:12px;color:#4b5563;line-height:1.85}
+.tips code{background:#eef1f6;border-radius:4px;padding:0 4px;font-size:11px}
+@media (max-width:1080px){ main{grid-template-columns:1fr} aside{max-height:none} }
+</style>
+</head>
+<body>
+<header>
+  <h1>牌面主题工坊<small>gf-deckart · theme.json 可视化</small></h1>
+  <div class="acts">
+    <button id="btnImport" class="ghost">导入 theme.json</button>
+    <button id="btnCopy">复制 JSON</button>
+    <button id="btnDownload" class="primary">下载 theme.json</button>
+    <button id="btnReset" class="ghost">恢复默认</button>
+    <input type="file" id="fileJson" accept=".json,application/json" hidden>
+  </div>
+</header>
+
+<main>
+<aside id="panel">
+
+  <section>
+    <h2>基本信息</h2>
+    <div class="row"><span class="lb">主题 id</span><input type="text" data-path="id"></div>
+    <div class="row"><span class="lb">名称</span><input type="text" data-path="name"></div>
+    <div class="row"><span class="lb">版本</span><input type="number" data-path="version" step="1" min="0">
+      <span class="lb" style="width:auto;padding-left:6px">协议</span><input type="text" data-path="license"></div>
+    <p class="hint">id 会写进 <code>data-theme</code>；改名等于另一个主题包。</p>
+  </section>
+
+  <section>
+    <h2>画布与配色</h2>
+    <div class="row"><span class="lb">宽 / 高</span>
+      <input type="number" data-path="canvas.width" step="1" min="0">
+      <input type="number" data-path="canvas.height" step="1" min="0"></div>
+    <div class="row"><span class="lb">圆角</span><input type="number" data-path="canvas.cornerRadius" step="1" min="0"></div>
+    <div class="row"><span class="lb">红色花色</span><input type="color" data-path="palette.red"><span class="val" data-hex="palette.red"></span></div>
+    <div class="row"><span class="lb">黑色花色</span><input type="color" data-path="palette.black"><span class="val" data-hex="palette.black"></span></div>
+    <div class="row"><span class="lb">底纸</span><input type="color" data-path="palette.paper"><span class="val" data-hex="palette.paper"></span></div>
+    <div class="row"><span class="lb">级牌</span><input type="color" data-path="palette.level"><span class="val" data-hex="palette.level"></span></div>
+    <div class="row"><span class="lb">逢人配</span><input type="color" data-path="palette.wild"><span class="val" data-hex="palette.wild"></span></div>
+    <p class="hint">花色与点数素材里的墨色占位 <code>#1B1B1B</code> / <code>#C62828</code> 会被替换成上面两个颜色；底纸、级牌、逢人配目前只是声明值，画面由素材自己上色。</p>
+  </section>
+
+  <section>
+    <h2>布局</h2>
+    <div class="row"><span class="lb">布局</span>
+      <select data-path="layout">
+        <option value="compact">compact · 角标 + 中央大花色</option>
+        <option value="classic">classic · 角标 + 中央花阵</option>
+      </select></div>
+    <div class="row"><span class="lb">角标倍率</span>
+      <input type="range" data-path="cornerScale" min="1" max="3" step="0.05">
+      <span class="val" data-out="cornerScale"></span></div>
+    <p class="hint">只放大角标区（点数与花色同乘），底面、描边、花阵都不动。</p>
+    <div class="row"><span class="lb">角标位置</span>
+      <div class="checks" id="cornersBox">
+        <label><input type="checkbox" data-corner="topLeft">左上</label>
+        <label><input type="checkbox" data-corner="topRight">右上</label>
+        <label><input type="checkbox" data-corner="bottomLeft">左下</label>
+        <label><input type="checkbox" data-corner="bottomRight">右下</label>
+      </div></div>
+    <p class="hint warn hide" id="hintNoCorner">四个角都取消了：牌面只剩中央图形，实战里读不出点数。</p>
+    <div class="row"><span class="lb">角标花色</span>
+      <select data-path="cornerSuitPlacement">
+        <option value="below">在点数下方</option>
+        <option value="right">在点数右侧</option>
+      </select></div>
+    <p class="hint hide" id="hintRight">右侧摆放：花色贴点数右缘 +10 单位、纵向居中，<b>忽略花色槽位的 x / y</b>，只保留大小。classic 下角标区变宽，花阵会自动缩小让位。</p>
+  </section>
+
+  <section id="secCompact">
+    <h2>角标槽位<em>compact</em></h2>
+    <div class="row"><span class="lb">角标点数</span>
+      <label class="mini">x<input type="number" data-path="slots.cornerRank.x" step="1"></label>
+      <label class="mini">y<input type="number" data-path="slots.cornerRank.y" step="1"></label>
+      <label class="mini">倍<input type="number" data-path="slots.cornerRank.scale" step="0.01"></label></div>
+    <div class="row"><span class="lb">角标花色</span>
+      <label class="mini">x<input type="number" data-path="slots.cornerSuit.x" step="1"></label>
+      <label class="mini">y<input type="number" data-path="slots.cornerSuit.y" step="1"></label>
+      <label class="mini">倍<input type="number" data-path="slots.cornerSuit.scale" step="0.01"></label></div>
+    <div class="row"><span class="lb">中央大花色</span>
+      <label class="mini">x<input type="number" data-path="slots.centerSuit.x" step="1"></label>
+      <label class="mini">y<input type="number" data-path="slots.centerSuit.y" step="1"></label>
+      <label class="mini">倍<input type="number" data-path="slots.centerSuit.scale" step="0.01"></label></div>
+    <p class="hint">槽位是「素材左上角坐标 + 缩放」，不做画布比例换算。放大角标后花色 y 会自动重排，这里的 y 只在 100% 时有效。</p>
+  </section>
+
+  <section id="secClassic">
+    <h2>花阵<em>classic</em></h2>
+    <div class="row"><span class="lb">角标点数</span>
+      <label class="mini">x<input type="number" data-path="classic.cornerRank.x" step="1"></label>
+      <label class="mini">y<input type="number" data-path="classic.cornerRank.y" step="1"></label>
+      <label class="mini">倍<input type="number" data-path="classic.cornerRank.scale" step="0.01"></label></div>
+    <div class="row"><span class="lb">角标花色</span>
+      <label class="mini">x<input type="number" data-path="classic.cornerSuit.x" step="1"></label>
+      <label class="mini">y<input type="number" data-path="classic.cornerSuit.y" step="1"></label>
+      <label class="mini">倍<input type="number" data-path="classic.cornerSuit.scale" step="0.01"></label></div>
+    <div class="row"><span class="lb">花阵单点</span>
+      <input type="range" data-path="classic.pipScale" min="0.3" max="1.3" step="0.01">
+      <span class="val" data-out="classic.pipScale"></span></div>
+    <div class="row"><span class="lb">内边距</span>
+      <input type="range" data-path="classic.pipInset" min="0" max="0.30" step="0.01">
+      <span class="val" data-out="classic.pipInset"></span></div>
+    <p class="hint">内边距按画布比例算安全区，再按放大后的角标宽度往里让；两列快挤到一起时花阵自动等比缩小。</p>
+    <div class="row"><span class="lb">大符号倍率</span>
+      <input type="range" data-path="classic.aceScale" min="0.8" max="2.5" step="0.01">
+      <span class="val" data-out="classic.aceScale"></span></div>
+    <div class="row"><span class="lb">人像牌</span>
+      <select data-path="classic.courtStyle">
+        <option value="monogram">monogram · 单一大符号（唯一实现）</option>
+        <option value="figure">figure · 半身像（未实现）</option>
+      </select></div>
+    <p class="hint warn hide" id="hintFigure">figure 目前只有 schema 占位，渲染仍按 monogram 走。</p>
+    <details class="adv">
+      <summary>点位表（高级，一般不用动）</summary>
+      <textarea id="pipsArea" class="area" spellcheck="false" rows="9"></textarea>
+      <p class="hint" id="pipsHint">2–10 每个点数一张点位表，归一化 0–1；改完自动校验。</p>
+    </details>
+  </section>
+
+  <section>
+    <h2>通用<em>两种布局共用</em></h2>
+    <div class="row"><span class="lb">逢人配徽章</span>
+      <label class="mini">x<input type="number" data-path="slots.wildBadge.x" step="1"></label>
+      <label class="mini">y<input type="number" data-path="slots.wildBadge.y" step="1"></label>
+      <label class="mini">倍<input type="number" data-path="slots.wildBadge.scale" step="0.01"></label></div>
+    <p class="hint">只在红桃级牌上出现；横排叠牌时会被压在别的牌下面。</p>
+  </section>
+
+  <section>
+    <h2>级牌文本层</h2>
+    <label class="switch"><input type="checkbox" data-path="textLayer.enabled">启用文字（关掉就只画徽章素材）</label>
+    <div id="textDetail" class="hide">
+      <div class="row"><span class="lb">出场方式</span>
+        <select data-path="textLayer.badge">
+          <option value="both">both · 素材 + 文字</option>
+          <option value="badge-only">badge-only · 只要素材</option>
+          <option value="text-only">text-only · 只要文字</option>
+        </select></div>
+      <div id="labelDetail">
+        <div class="row"><span class="lb">文字</span><input type="text" data-path="textLayer.levelLabel.text"></div>
+        <div class="row"><span class="lb">位置 x / y</span>
+          <input type="number" data-path="textLayer.levelLabel.x" step="1">
+          <input type="number" data-path="textLayer.levelLabel.y" step="1"></div>
+        <div class="row"><span class="lb">字号</span><input type="number" data-path="textLayer.levelLabel.size" step="1" min="0">
+          <span class="lb" style="width:auto">对齐</span>
+          <select data-path="textLayer.levelLabel.anchor" style="max-width:110px">
+            <option value="middle">middle</option><option value="start">start</option><option value="end">end</option>
+          </select></div>
+        <div class="row"><span class="lb">文字颜色</span><input type="color" data-path="textLayer.levelLabel.color"><span class="val" data-hex="textLayer.levelLabel.color"></span></div>
+        <div class="row"><span class="lb">字体</span><input type="text" data-path="textLayer.fontFamily"></div>
+        <p class="hint">文字直接写进 SVG，客户端要有这个字体才不跑版；text-only 模式需要素材自带描边或底板。</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>素材<em>23 个 SVG · 可手动替换</em></h2>
+    <label class="switch"><input type="checkbox" id="fitToggle" checked>按槽位目标尺寸自适应（推荐）</label>
+    <p class="hint">上传任意尺寸的 SVG，会自动等比缩进目标框并居中（花色 100×100、点数 100×140、其余 500×700）。关掉就用素材原始尺寸，位置会整体走样。</p>
+    <div id="assetList"></div>
+    <div class="row" style="margin-top:8px"><button class="tiny ghost" id="btnResetAssets">全部还原内置素材</button></div>
+    <p class="hint">替换只影响本页预览与导出路径；打包时把上传的 SVG 按上面的路径放进主题目录，再运行
+      <code>gfdeck pack 主题目录 -o xxx.gfdeck --key-id … --sign-key …</code>。</p>
+  </section>
+
+  <section>
+    <h2>主题墙预览<em>写进包里的那几张</em></h2>
+    <div class="row"><span class="lb">面编码</span><input type="text" data-path="preview.facesRaw" placeholder="C2,S2,H2,D2"></div>
+    <div class="row"><span class="lb">预览级牌</span>
+      <select data-path="preview.levelRank" id="previewLevel"><option value="0">无（纯牌面）</option></select></div>
+    <p class="hint">逗号分隔，形如 <code>C2</code> / <code>D10</code> / <code>JOKER-B</code>，最多 8 张；只影响主题包封面图。</p>
+  </section>
+
+</aside>
+
+<section class="stage">
+  <div class="stage-top">
+    <div class="chip">实时预览 · 2–A 13 张 + 大小王</div>
+    <div class="grow"></div>
+    <div class="pv-opts">
+      <label><input type="checkbox" id="fanToggle">手牌叠放</label>
+      <label>花色 <select id="pvSuit">
+        <option value="diamond">♦ 方块</option>
+        <option value="heart">♥ 红桃</option>
+        <option value="spade">♠ 黑桃</option>
+        <option value="club">♣ 梅花</option>
+      </select></label>
+      <label>级牌 <select id="pvLevel"></select></label>
+    </div>
+  </div>
+  <div class="grid" id="grid"></div>
+<div class="warnbar" id="warn"></div>
+
+  <div class="tips">
+    <b>怎么用</b>
+    <ol>
+      <li>左侧改参数，右边 15 张牌立刻重画 —— 预览是照 <code>render.rs</code> 的摆放公式算的，不是贴图。</li>
+      <li>级联项按需出现：选 <code>classic</code> 才露花阵参数，勾「启用文字」才露字体与位置，角标花色选「右侧」就把失效的 x/y 变灰。</li>
+      <li>换素材：在「素材」里传 SVG，会自动等比缩进目标框；导出 JSON 前确认路径名与你要放进主题目录的文件名一致。</li>
+      <li>导出后拿 <code>gfdeck pack</code> 打成 <code>.gfdeck</code>，再丢给客户端或 wasm 运行时。</li>
+    </ol>
+    <p class="hint">草稿自动存在本机浏览器（localStorage）；「恢复默认」会一并清掉。</p>
+  </div>
+
+  <details class="jsonbox" id="jsonBox">
+    <summary>theme.json 输出</summary>
+    <textarea id="jsonOut" readonly rows="16" spellcheck="false"></textarea>
+    <div class="json-acts">
+      <button id="btnCopy2">复制</button>
+      <button id="btnDownload2" class="primary">下载</button>
+    </div>
+  </details>
+</section>
+</main>
+
+<script>
+const ASSETS = {"base":{"w":500,"h":700,"inner":"<rect x=\"0\" y=\"0\" width=\"500\" height=\"700\" rx=\"36\" ry=\"36\" fill=\"#FFFFFF\"/>\n  <rect x=\"9\" y=\"9\" width=\"482\" height=\"682\" rx=\"28\" ry=\"28\" fill=\"none\" stroke=\"#D8D8D8\" stroke-width=\"2\"/>\n  <rect x=\"14\" y=\"14\" width=\"472\" height=\"672\" rx=\"24\" ry=\"24\" fill=\"none\" stroke=\"#F2F2F2\" stroke-width=\"4\"/>"},"suits":{"spade":{"w":100,"h":100,"inner":"<path d=\"M50 8 C 72 30 90 46 90 62 C 90 76 79 86 66 86 C 59 86 54 82 50 78 C 46 82 41 86 34 86 C 21 86 10 76 10 62 C 10 46 28 30 50 8 Z\" fill=\"#1B1B1B\"/>\n  <path d=\"M50 70 L58 92 L42 92 Z\" fill=\"#1B1B1B\"/>"},"heart":{"w":100,"h":100,"inner":"<path d=\"M50 90 C 22 68 10 52 10 36 C 10 20 22 10 34 10 C 42 10 47 14 50 20 C 53 14 58 10 66 10 C 78 10 90 20 90 36 C 90 52 78 68 50 90 Z\" fill=\"#C62828\"/>"},"diamond":{"w":100,"h":100,"inner":"<path d=\"M50 6 L94 50 L50 94 L6 50 Z\" fill=\"#C62828\"/>"},"club":{"w":100,"h":100,"inner":"<circle cx=\"50\" cy=\"26\" r=\"21\" fill=\"#1B1B1B\"/>\n  <circle cx=\"26\" cy=\"56\" r=\"21\" fill=\"#1B1B1B\"/>\n  <circle cx=\"74\" cy=\"56\" r=\"21\" fill=\"#1B1B1B\"/>\n  <path d=\"M44 62 L56 62 L60 94 L40 94 Z\" fill=\"#1B1B1B\"/>"}},"ranks":[{"w":100,"h":140,"inner":"<path d=\"M 20 122 L 50 16 L 80 122 M 31 84 L 69 84\" fill=\"none\" stroke=\"#1B1B1B\" stroke-width=\"18\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"},{"w":100,"h":140,"inner":"<path d=\"M 28 48 C 28 22 72 20 72 48 C 72 72 44 92 28 116 M 26 116 L 80 116\" fill=\"none\" stroke=\"#1B1B1B\" stroke-width=\"18\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"},{"w":100,"h":140,"inner":"<path d=\"M 30 32 C 44 20 72 24 72 46 C 72 66 50 70 34 72 M 34 72 C 52 74 74 80 74 100 C 74 120 42 124 30 112\" fill=\"none\" stroke=\"#1B1B1B\" stroke-width=\"18\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"},{"w":100,"h":140,"inner":"<path d=\"M 66 18 L 26 92 L 84 92 M 62 18 L 62 122\" fill=\"none\" stroke=\"#1B1B1B\" stroke-width=\"18\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"},{"w":100,"h":140,"inner":"<path d=\"M 74 22 L 36 22 L 32 62 C 34 84 54 72 66 78 C 84 86 82 118 56 122 C 44 124 34 118 30 112\" fill=\"none\" stroke=\"#1B1B1B\" stroke-width=\"18\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"},{"w":100,"h":140,"inner":"<path d=\"M 62 22 C 36 26 22 54 30 80 C 38 106 62 124 78 112 C 92 100 84 74 58 72 C 40 70 28 84 30 88\" fill=\"none\" stroke=\"#1B1B1B\" stroke-width=\"18\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"},{"w":100,"h":140,"inner":"<path d=\"M 26 22 L 78 22 L 42 122\" fill=\"none\" stroke=\"#1B1B1B\" stroke-width=\"18\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"},{"w":100,"h":140,"inner":"<path d=\"M 50 18 C 30 18 30 58 50 58 C 72 58 72 18 50 18 M 50 58 C 22 58 20 112 50 112 C 80 112 78 58 50 58\" fill=\"none\" stroke=\"#1B1B1B\" stroke-width=\"18\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"},{"w":100,"h":140,"inner":"<path d=\"M 36 104 C 58 110 78 94 70 68 C 62 44 40 44 28 58 C 16 74 24 96 42 96 M 70 66 L 70 122\" fill=\"none\" stroke=\"#1B1B1B\" stroke-width=\"18\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"},{"w":100,"h":140,"inner":"<path d=\"M 12 44 L 28 30 L 28 118 M 4 118 L 40 118 M 76 30 C 58 30 50 52 50 76 C 50 100 58 120 76 120 C 94 120 102 100 102 76 C 102 52 94 30 76 30\" fill=\"none\" stroke=\"#1B1B1B\" stroke-width=\"18\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"},{"w":100,"h":140,"inner":"<path d=\"M 22 18 L 50 18 M 37 18 L 37 92 C 37 124 8 128 12 104\" fill=\"none\" stroke=\"#1B1B1B\" stroke-width=\"18\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"},{"w":100,"h":140,"inner":"<path d=\"M 46 28 C 26 28 18 50 18 72 C 18 94 26 116 46 116 C 66 116 74 94 74 72 C 74 50 66 28 46 28 M 54 104 L 80 128\" fill=\"none\" stroke=\"#1B1B1B\" stroke-width=\"18\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"},{"w":100,"h":140,"inner":"<path d=\"M 30 22 L 30 122 M 80 22 L 24 76 M 24 76 L 84 122\" fill=\"none\" stroke=\"#1B1B1B\" stroke-width=\"18\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"}],"jokers":{"small":{"w":500,"h":700,"inner":"<path d=\"M170 132 L196 198 L250 160 L304 198 L330 132 L330 212 L170 212 Z\" fill=\"#9E9E9E\"/>\n  <circle cx=\"170\" cy=\"126\" r=\"12\" fill=\"#9E9E9E\"/>\n  <circle cx=\"250\" cy=\"152\" r=\"12\" fill=\"#9E9E9E\"/>\n  <circle cx=\"330\" cy=\"126\" r=\"12\" fill=\"#9E9E9E\"/>\n  <path d=\"M250 250 L272 320 L346 320 L286 362 L308 432 L250 390 L192 432 L214 362 L154 320 L228 320 Z\" fill=\"#1B1B1B\"/>\n  <path d=\"M150 500 L162 536 L200 536 L170 558 L181 594 L150 572 L119 594 L130 558 L100 536 L138 536 Z\" fill=\"#9E9E9E\"/>\n  <path d=\"M350 500 L362 536 L400 536 L370 558 L381 594 L350 572 L319 594 L330 558 L300 536 L338 536 Z\" fill=\"#9E9E9E\"/>\n  <rect x=\"150\" y=\"632\" width=\"200\" height=\"8\" rx=\"4\" fill=\"#1B1B1B\" opacity=\"0.6\"/>"},"big":{"w":500,"h":700,"inner":"<path d=\"M170 132 L196 198 L250 160 L304 198 L330 132 L330 212 L170 212 Z\" fill=\"#E8A33D\"/>\n  <circle cx=\"170\" cy=\"126\" r=\"12\" fill=\"#E8A33D\"/>\n  <circle cx=\"250\" cy=\"152\" r=\"12\" fill=\"#E8A33D\"/>\n  <circle cx=\"330\" cy=\"126\" r=\"12\" fill=\"#E8A33D\"/>\n  <path d=\"M250 250 L272 320 L346 320 L286 362 L308 432 L250 390 L192 432 L214 362 L154 320 L228 320 Z\" fill=\"#C62828\"/>\n  <path d=\"M150 500 L162 536 L200 536 L170 558 L181 594 L150 572 L119 594 L130 558 L100 536 L138 536 Z\" fill=\"#E8A33D\"/>\n  <path d=\"M350 500 L362 536 L400 536 L370 558 L381 594 L350 572 L319 594 L330 558 L300 536 L338 536 Z\" fill=\"#E8A33D\"/>\n  <rect x=\"150\" y=\"632\" width=\"200\" height=\"8\" rx=\"4\" fill=\"#C62828\" opacity=\"0.6\"/>"}},"badges":{"level":{"w":500,"h":700,"inner":"<rect x=\"4\" y=\"4\" width=\"492\" height=\"692\" rx=\"34\" ry=\"34\" fill=\"none\" stroke=\"#E53935\" stroke-width=\"11\"/>\n  <rect x=\"10\" y=\"10\" width=\"480\" height=\"680\" rx=\"28\" ry=\"28\" fill=\"none\" stroke=\"#FF8A80\" stroke-width=\"3\" opacity=\"0.6\"/>\n  <rect x=\"248\" y=\"16\" width=\"236\" height=\"62\" rx=\"31\" ry=\"31\" fill=\"#E53935\"/>\n  <path d=\"M268 29 L280 48 L256 48 Z\" fill=\"#FFFFFF\"/>\n  <path d=\"M292 29 L304 48 L280 48 Z\" fill=\"#FFFFFF\"/>\n  <path d=\"M316 29 L328 48 L304 48 Z\" fill=\"#FFFFFF\"/>"},"wild":{"w":120,"h":120,"inner":"<circle cx=\"60\" cy=\"60\" r=\"52\" fill=\"#FFFFFF\" stroke=\"#C62828\" stroke-width=\"6\"/>\n  <path d=\"M60 30 C 44 18 22 26 22 46 C 22 62 40 78 60 96 C 80 78 98 62 98 46 C 98 26 76 18 60 30 Z\" fill=\"#C62828\"/>"}},"back":{"w":500,"h":700,"inner":"<rect x=\"0\" y=\"0\" width=\"500\" height=\"700\" rx=\"36\" ry=\"36\" fill=\"#0E3B2E\"/>\n  <rect x=\"22\" y=\"22\" width=\"456\" height=\"656\" rx=\"24\" ry=\"24\" fill=\"none\" stroke=\"#C8A24A\" stroke-width=\"3\"/>\n  <g fill=\"none\" stroke=\"#1F5B47\" stroke-width=\"6\">\n    <path d=\"M60 60 L440 640 M440 60 L60 640\"/>\n    <path d=\"M60 200 L440 200 M60 350 L440 350 M60 500 L440 500\"/>\n  </g>\n  <circle cx=\"250\" cy=\"350\" r=\"96\" fill=\"none\" stroke=\"#C8A24A\" stroke-width=\"3\"/>\n  <circle cx=\"250\" cy=\"350\" r=\"72\" fill=\"none\" stroke=\"#1F5B47\" stroke-width=\"8\"/>"}};
+
+/* ===== 常量：与 crates/deckart/src/render.rs 对齐 ===== */
+const CORNER_GAP = 10;
+const PIP_GAP = 26;
+const CORNER_MAX = 3.0;
+const RANKS = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
+const RL = (r) => ({ 1:'A', 11:'J', 12:'Q', 13:'K' }[r] || String(r));
+const SUIT_CODE = { diamond:'D', heart:'H', spade:'S', club:'C' };
+
+/* ===== 素材登记表（key = 素材槽位，path 可改） ===== */
+const SPEC = [
+  { key:'base',   group:'底面', label:'底纸',        path:'base.svg',        nominal:[500,700] },
+  { key:'back',   group:'底面', label:'牌背',        path:'back.svg',        nominal:[500,700] },
+  { key:'spade',  group:'花色', label:'黑桃 ♠',      path:'suits/spade.svg',   nominal:[100,100] },
+  { key:'heart',  group:'花色', label:'红桃 ♥',      path:'suits/heart.svg',   nominal:[100,100] },
+  { key:'diamond',group:'花色', label:'方块 ♦',      path:'suits/diamond.svg', nominal:[100,100] },
+  { key:'club',   group:'花色', label:'梅花 ♣',      path:'suits/club.svg',    nominal:[100,100] },
+  ...[1,2,3,4,5,6,7,8,9,10,11,12,13].map((i) => ({
+    key:'rank' + i, group:'点数', label:'点数 ' + (i === 1 ? '1（A）' : i),
+    path:`ranks/${i}.svg`, nominal:[100,140]
+  })),
+  { key:'jokerSmall', group:'大小王', label:'小王',    path:'jokers/small.svg', nominal:[500,700] },
+  { key:'jokerBig',   group:'大小王', label:'大王',    path:'jokers/big.svg',   nominal:[500,700] },
+  { key:'level',  group:'徽章', label:'级牌徽章',    path:'badges/level.svg', nominal:[500,700] },
+  { key:'wild',   group:'徽章', label:'逢人配徽章',  path:'badges/wild.svg',  nominal:[120,120] },
+];
+const SPEC_BY_KEY = Object.fromEntries(SPEC.map((s) => [s.key, s]));
+
+/* 内置素材 → 统一成 { w, h, inner } */
+const BUILTIN = {
+  base: ASSETS.base, back: ASSETS.back,
+  spade: ASSETS.suits.spade, heart: ASSETS.suits.heart,
+  diamond: ASSETS.suits.diamond, club: ASSETS.suits.club,
+  jokerSmall: ASSETS.jokers.small, jokerBig: ASSETS.jokers.big,
+  level: ASSETS.badges.level, wild: ASSETS.badges.wild,
+};
+ASSETS.ranks.forEach((a, i) => { BUILTIN['rank' + (i + 1)] = a; });
+
+/* 运行期素材：用户上传后覆盖，不写进 JSON */
+const ART = {};
+SPEC.forEach((s) => { ART[s.key] = { ...BUILTIN[s.key], fromFile:null }; });
+
+/* ===== 默认主题 = themes/defaults/theme.json ===== */
+const DEFAULTS = {
+  id:'defaults', version:2, name:'默认（深绿）', license:'CC0-1.0',
+  canvas:{ width:500, height:700, cornerRadius:36 },
+  palette:{ red:'#C62828', black:'#1B1B1B', paper:'#FFFFFF', level:'#E53935', wild:'#D32F2F' },
+  layout:'compact',
+  cornerScale:2.2,
+  corners:['topLeft','bottomRight'],
+  cornerSuitPlacement:'below',
+  slots:{
+    cornerRank:{ x:30, y:34, scale:0.42 },
+    cornerSuit:{ x:36, y:112, scale:0.34 },
+    centerSuit:{ x:155, y:242, scale:1.90 },
+    wildBadge:{ x:26, y:560, scale:0.60 }
+  },
+  textLayer:{
+    enabled:true, badge:'both',
+    fontFamily:"'Microsoft YaHei', 'PingFang SC', 'Noto Sans SC', sans-serif",
+    levelLabel:{ text:'级牌', x:404, y:58, size:28, color:'#FFFFFF', anchor:'middle' }
+  },
+  preview:{ facesRaw:'C2,S2,H2,D2', levelRank:2 },
+  classic:{
+    cornerRank:{ x:34, y:30, scale:0.36 },
+    cornerSuit:{ x:38, y:98, scale:0.22 },
+    pipScale:0.88, pipInset:0.10, aceScale:1.70, courtStyle:'monogram',
+    pipPositions:{
+      '2':[[0.5,0.18],[0.5,0.82]],
+      '3':[[0.5,0.16],[0.5,0.5],[0.5,0.84]],
+      '4':[[0.28,0.18],[0.72,0.18],[0.28,0.82],[0.72,0.82]],
+      '5':[[0.28,0.18],[0.72,0.18],[0.5,0.5],[0.28,0.82],[0.72,0.82]],
+      '6':[[0.28,0.18],[0.72,0.18],[0.28,0.5],[0.72,0.5],[0.28,0.82],[0.72,0.82]],
+      '7':[[0.28,0.18],[0.72,0.18],[0.5,0.34],[0.28,0.5],[0.72,0.5],[0.28,0.82],[0.72,0.82]],
+      '8':[[0.28,0.18],[0.72,0.18],[0.5,0.34],[0.28,0.5],[0.72,0.5],[0.5,0.66],[0.28,0.82],[0.72,0.82]],
+      '9':[[0.28,0.14],[0.72,0.14],[0.28,0.38],[0.72,0.38],[0.5,0.5],[0.28,0.62],[0.72,0.62],[0.28,0.86],[0.72,0.86]],
+      '10':[[0.28,0.14],[0.72,0.14],[0.5,0.26],[0.28,0.38],[0.72,0.38],[0.28,0.62],[0.72,0.62],[0.5,0.74],[0.28,0.86],[0.72,0.86]]
+    }
+  }
+};
+
+let state = structuredClone(DEFAULTS);
+let paths = Object.fromEntries(SPEC.map((s) => [s.key, s.path]));
+let fitAsset = true;
+let pipDraft = '';
+const pv = { suit:'diamond', level:2 };
+
+/* ===== 小工具 ===== */
+const clone = (o) => structuredClone(o);
+const num = (v) => {
+  if (!Number.isFinite(v)) return '0';
+  const r = Math.round(v);
+  if (Math.abs(v - r) < 1e-9) return String(r);
+  return v.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
+};
+const hex2 = (s, ink) => s.split('#1B1B1B').join(ink).split('#C62828').join(ink);
+const esc = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const isRed = (suit) => suit === 'diamond' || suit === 'heart';
+const getP = (p) => p.split('.').reduce((a, k) => (a == null ? a : a[k]), state);
+const setP = (p, v) => { const ks = p.split('.'); const last = ks.pop(); ks.reduce((a,k)=>a[k],state)[last] = v; };
+const pct = (v) => Math.round(v * 100) + '%';
+const fmtPips = (obj) => '{\n' + Object.entries(obj).map(([k, v]) =>
+  `  "${k}": [${v.map((p) => `[${num(p[0])},${num(p[1])}]`).join(', ')}]`).join(',\n') + '\n}';
+const q = (s) => document.querySelector(s);
+const qa = (s) => Array.from(document.querySelectorAll(s));
+
+/* 取素材：自适应时缩进目标框并居中 */
+const NOM = (key) => {
+  if ((key === 'base' || key === 'back') && fitAsset) return [Number(state.canvas.width), Number(state.canvas.height)];
+  return SPEC_BY_KEY[key].nominal;
+};
+function art(key) {
+  const a = ART[key];
+  const [nw, nh] = NOM(key);
+  if (!fitAsset) return { w:a.w, h:a.h, inner:a.inner };
+  const s = Math.min(nw / a.w, nh / a.h);
+  if (Math.abs(s - 1) < 1e-6 && Math.abs(a.w - nw) < 1e-6 && Math.abs(a.h - nh) < 1e-6)
+    return { w:nw, h:nh, inner:a.inner };
+  const dx = (nw - a.w * s) / 2, dy = (nh - a.h * s) / 2;
+  return { w:nw, h:nh, inner:`<g transform="translate(${num(dx)} ${num(dy)}) scale(${num(s)})">${a.inner}</g>` };
+}
+
+/* ===== 渲染：逐条对应 render.rs ===== */
+function place(a, slot, corner, cw, ch, inner) {
+  const s = slot.scale;
+  let tx, ty, rot = false;
+  switch (corner) {
+    case 'topLeft':     tx = slot.x;         ty = slot.y;        break;
+    case 'topRight':    tx = cw - slot.x;    ty = slot.y + a.h * s; rot = true; break;
+    case 'bottomLeft':  tx = slot.x + a.w * s; ty = ch - slot.y;   rot = true; break;
+    case 'bottomRight': tx = cw - slot.x;    ty = ch - slot.y;    rot = true; break;
+  }
+  return `<g transform="translate(${num(tx)} ${num(ty)})${rot ? ' rotate(180)' : ''} scale(${num(s)})">${inner}</g>`;
+}
+
+function compactBody(t, rank, suit, corner) {
+  const W = t.canvas.width, H = t.canvas.height;
+  const ink = isRed(suit) ? t.palette.red : t.palette.black;
+  const suitA = art(suit), rankA = art('rank' + rank);
+  const sIn = hex2(suitA.inner, ink), rIn = hex2(rankA.inner, ink);
+
+  let cr = { ...t.slots.cornerRank }, cs = { ...t.slots.cornerSuit };
+  const center = t.slots.centerSuit;
+  if (Math.abs(corner - 1) > 1e-9) { cr.scale *= corner; cs.scale *= corner; }
+
+  const mode = t.cornerSuitPlacement || 'below';
+  if (mode === 'below' && Math.abs(corner - 1) > 1e-9) {
+    cs.y = cr.y + rankA.h * cr.scale + CORNER_GAP * corner;
+  } else if (mode === 'right') {
+    cs.x = cr.x + rankA.w * cr.scale + CORNER_GAP * corner;
+    cs.y = cr.y + (rankA.h * cr.scale - suitA.h * cs.scale) / 2;
+  }
+
+  let out = '<g id="L2-suit">';
+  for (const c of t.corners) if (c !== 'bottomRight') out += place(suitA, cs, c, W, H, sIn);
+  out += `<g transform="translate(${num(center.x)} ${num(center.y)}) scale(${num(center.scale)})">${sIn}</g>`;
+  out += '</g><g id="L3-rank">';
+  for (const c of t.corners) out += place(rankA, cr, c, W, H, rIn);
+  out += '</g>';
+  if (t.corners.includes('bottomRight')) {
+    out += `<g id="L2-suit-mirror" transform="translate(${num(W - cs.x)} ${num(H - cs.y)}) rotate(180) scale(${num(cs.scale)})">${sIn}</g>`;
+  }
+  return out;
+}
+
+function classicBody(t, rank, suit, corner) {
+  const W = t.canvas.width, H = t.canvas.height;
+  const spec = t.classic;
+  const ink = isRed(suit) ? t.palette.red : t.palette.black;
+  const suitA = art(suit), rankA = art('rank' + rank);
+  const sIn = hex2(suitA.inner, ink), rIn = hex2(rankA.inner, ink);
+
+  let cr = { ...spec.cornerRank }, cs = { ...spec.cornerSuit };
+  if (Math.abs(corner - 1) > 1e-9) { cr.scale *= corner; cs.scale *= corner; }
+  const mode = t.cornerSuitPlacement || 'below';
+  if (mode === 'below' && Math.abs(corner - 1) > 1e-9) {
+    cs.y = cr.y + rankA.h * cr.scale + CORNER_GAP * corner;
+  } else if (mode === 'right') {
+    cs.x = cr.x + rankA.w * cr.scale + CORNER_GAP;
+    cs.y = cr.y + (rankA.h * cr.scale - suitA.h * cs.scale) / 2;
+  }
+
+  let out = '<g id="L2-suit">';
+  if (rank === 1 || rank >= 11) {
+    const s = spec.aceScale;
+    const tx = (W - suitA.w * s) / 2, ty = (H - suitA.h * s) / 2;
+    out += `<g transform="translate(${num(tx)} ${num(ty)}) scale(${num(s)})">${sIn}</g>`;
+  } else {
+    const pts = spec.pipPositions[String(rank)] || [];
+    const cornerRight = Math.max(cr.x + rankA.w * cr.scale, cs.x + suitA.w * cs.scale);
+    const gap = mode === 'right' ? CORNER_GAP : CORNER_GAP * corner;
+    const insetX = Math.min(Math.max(spec.pipInset * W, cornerRight + gap), W * 0.42);
+    const insetY = spec.pipInset * H;
+    const twoCol = pts.some((p) => Math.abs(p[0] - 0.5) > 0.1);
+    let s = spec.pipScale;
+    if (twoCol) {
+      const capW = (W - 2 * insetX - PIP_GAP) / (2 * suitA.w);
+      s = Math.min(s, Math.max(capW, 0.15));
+    }
+    const hw = suitA.w * s / 2, hh = suitA.h * s / 2;
+    const minX = insetX + hw, minY = insetY + hh;
+    const maxY = Math.max(H - insetY - hh, minY);
+    for (const p of pts) {
+      let dx = Math.min(p[0], 1 - p[0]) * W;
+      const ceiling = Math.max(W * 0.5, minX);
+      dx = Math.min(Math.max(dx, minX), ceiling);
+      const cx = p[0] < 0.5 ? dx : W - dx;
+      const cy = Math.min(Math.max(p[1] * H, minY), maxY);
+      out += `<g transform="translate(${num(cx - hw)} ${num(cy - hh)}) scale(${num(s)})">${sIn}</g>`;
+    }
+  }
+  for (const c of t.corners) out += place(suitA, cs, c, W, H, sIn);
+  out += '</g><g id="L3-rank">';
+  for (const c of t.corners) out += place(rankA, cr, c, W, H, rIn);
+  out += '</g>';
+  return out;
+}
+
+function renderFace(t, face, levelRank, cornerScale) {
+  const W = Number(t.canvas.width), H = Number(t.canvas.height);
+  const isLevel = face.rank != null && !!levelRank && face.rank === levelRank;
+  const isWild = isLevel && face.suit === 'heart';
+
+  let body = '<g id="L1-base">' + art('base').inner + '</g>';
+  if (face.joker) {
+    body += '<g id="L2-joker">' + art(face.joker === 'big' ? 'jokerBig' : 'jokerSmall').inner + '</g>';
+  } else {
+    body += (t.layout === 'classic' ? classicBody : compactBody)(t, face.rank, face.suit, cornerScale);
+  }
+
+  if (isLevel) {
+    const tx = t.textLayer;
+    const drawBadge = !tx.enabled || tx.badge !== 'text-only';
+    const drawLabel = tx.enabled && tx.badge !== 'badge-only';
+    if (drawBadge) body += '<g id="L4-level">' + art('level').inner + '</g>';
+    if (drawLabel && tx.levelLabel) {
+      const l = tx.levelLabel;
+      body += `<g id="L4t-level-label"><text x="${num(l.x)}" y="${num(l.y)}" font-family="${esc(tx.fontFamily)}" font-size="${num(l.size)}" fill="${esc(l.color)}" text-anchor="${esc(l.anchor)}">${esc(l.text)}</text></g>`;
+    }
+  }
+  if (isWild) {
+    const slot = t.slots.wildBadge;
+    body += `<g id="L4b-wild" transform="translate(${num(slot.x)} ${num(slot.y)}) scale(${num(slot.scale)})">${art('wild').inner}</g>`;
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${num(W)} ${num(H)}" width="${num(W)}" height="${num(H)}" data-layout="${t.layout}">${body}</svg>`;
+}
+
+/* ===== 预览 ===== */
+const cap = (f) => f.joker ? (f.joker === 'big' ? 'JOKER-B' : 'JOKER-S') : SUIT_CODE[f.suit] + RL(f.rank);
+function previewFaces() {
+  const faces = [];
+  for (let i = 2; i <= 13; i++) faces.push({ rank:i, suit:pv.suit });
+  faces.push({ rank:1, suit:pv.suit });
+  faces.push({ joker:'small' }, { joker:'big' });
+  return faces;
+}
+
+let pending = 0;
+function render() {
+  if (pending) return;
+  pending = requestAnimationFrame(() => {
+    pending = 0;
+    const grid = q('#grid');
+    grid.innerHTML = previewFaces().map((f) => {
+      let s;
+      try { s = renderFace(state, f, pv.level, state.cornerScale); }
+      catch (e) {
+        s = `<svg viewBox="0 0 500 700"><text x="24" y="80" font-size="26" fill="#b45309">渲染失败：${esc(e.message)}</text></svg>`;
+      }
+      return `<div class="cell" data-code="${cap(f)}"><div class="card">${s}</div><span class="cap">${cap(f)}</span></div>`;
+    }).join('');
+    drawWarnings();
+    drawJson();
+    save();
+  });
+}
+
+function drawWarnings() {
+  const w = [], t = state;
+  const dw = Number(t.canvas.width), dh = Number(t.canvas.height);
+  if (dw !== 500 || dh !== 700) {
+    if (art('level').w === 500 && !ART.level.fromFile) w.push(`画布 ${dw}×${dh}：级牌徽章素材是按 500×700 画的整幅层，超出部分不会自适应，需要重画或上传同尺寸素材。`);
+  }
+  if (!t.corners.length) w.push('corners 为空：没有角标，实战里只剩中央图形。');
+  if (Number(t.cornerScale) > CORNER_MAX) w.push(`角标倍率超过 ${pct(CORNER_MAX)}，theme.json 加载期会被判非法。`);
+  if (t.layout === 'classic' && t.cornerSuitPlacement === 'right' && Number(t.cornerScale) > 2.0)
+    w.push(`classic + 右侧花色 + ${pct(Number(t.cornerScale))}：数字已占掉约 1/4 牌宽，花阵只能缩很小。建议 ≤200% 或把 classic 角标点数倍率收到 0.30。`);
+  if (t.textLayer.enabled && !t.textLayer.levelLabel && t.textLayer.badge !== 'badge-only')
+    w.push('文本层开着但没给 levelLabel：级牌只出徽章素材。');
+  SPEC.forEach((s) => {
+    if (paths[s.key] !== s.path && !ART[s.key].fromFile)
+      w.push(`素材路径改成了 ${paths[s.key]}，但没上传替换文件，预览仍用内置 ${s.path}。`);
+  });
+  const pips = t.classic.pipPositions || {};
+  ['2','3','4','5','6','7','8','9','10'].forEach((k) => {
+    if (!Array.isArray(pips[k])) w.push(`classic 花阵缺点数 ${k} 的点位表。`);
+  });
+  q('#warn').innerHTML = w.map((s) => `<div>⚠ ${esc(s)}</div>`).join('');
+}
+
+/* ===== JSON ===== */
+const r2 = (v) => Math.round(Number(v) * 100) / 100;
+const r3 = (v) => Math.round(Number(v) * 1000) / 1000;
+const slotOut = (s) => ({ x:r2(s.x), y:r2(s.y), scale:r3(s.scale) });
+
+function buildTheme() {
+  const t = state;
+  const out = {
+    id: t.id,
+    version: Number(t.version) || 0,
+    name: t.name,
+    license: t.license,
+    canvas: { width:Number(t.canvas.width), height:Number(t.canvas.height), cornerRadius:Number(t.canvas.cornerRadius) },
+    palette: { red:t.palette.red, black:t.palette.black, paper:t.palette.paper, level:t.palette.level, wild:t.palette.wild },
+    layout: t.layout,
+    cornerScale: Number(t.cornerScale),
+    corners: t.corners.slice(),
+    cornerSuitPlacement: t.cornerSuitPlacement,
+    layers: {
+      base: paths.base,
+      suits: { spade:paths.spade, heart:paths.heart, diamond:paths.diamond, club:paths.club },
+      ranks: { kind:'vector', files:[1,2,3,4,5,6,7,8,9,10,11,12,13].map((i) => paths['rank' + i]) },
+      jokers: { small:paths.jokerSmall, big:paths.jokerBig },
+      back: paths.back
+    },
+    badges: { level:paths.level, wild:paths.wild },
+    slots: {
+      cornerRank: slotOut(t.slots.cornerRank),
+      cornerSuit: slotOut(t.slots.cornerSuit),
+      centerSuit: slotOut(t.slots.centerSuit),
+      wildBadge: slotOut(t.slots.wildBadge)
+    },
+    textLayer: {
+      enabled: !!t.textLayer.enabled,
+      badge: t.textLayer.badge,
+      fontFamily: t.textLayer.fontFamily,
+      levelLabel: t.textLayer.levelLabel ? {
+        text: t.textLayer.levelLabel.text,
+        x: r2(t.textLayer.levelLabel.x), y: r2(t.textLayer.levelLabel.y),
+        size: r2(t.textLayer.levelLabel.size),
+        color: t.textLayer.levelLabel.color,
+        anchor: t.textLayer.levelLabel.anchor
+      } : null
+    },
+    preview: {
+      faces: String(t.preview.facesRaw || '').split(/[,，\s]+/).filter(Boolean).slice(0, 8),
+      levelRank: Number(t.preview.levelRank) ? Number(t.preview.levelRank) : null
+    }
+  };
+  if (t.layout === 'classic') {
+    out.classic = {
+      cornerRank: slotOut(t.classic.cornerRank),
+      cornerSuit: slotOut(t.classic.cornerSuit),
+      pipScale: r2(t.classic.pipScale),
+      pipInset: r2(t.classic.pipInset),
+      aceScale: r2(t.classic.aceScale),
+      courtStyle: t.classic.courtStyle,
+      pipPositions: t.classic.pipPositions
+    };
+  } else if (t.classic) {
+    out.classic = {
+      cornerRank: slotOut(t.classic.cornerRank),
+      cornerSuit: slotOut(t.classic.cornerSuit),
+      pipScale: r2(t.classic.pipScale),
+      pipInset: r2(t.classic.pipInset),
+      aceScale: r2(t.classic.aceScale),
+      courtStyle: t.classic.courtStyle,
+      pipPositions: t.classic.pipPositions
+    };
+  }
+  return out;
+}
+const themeText = () => JSON.stringify(buildTheme(), null, 2);
+function drawJson() {
+  const el = q('#jsonOut');
+  const txt = themeText();
+  if (el.value !== txt) el.value = txt;
+}
+
+/* ===== 表单同步 ===== */
+function syncControls() {
+  qa('[data-path]').forEach((el) => {
+    const v = getP(el.dataset.path);
+    if (el.type === 'checkbox') el.checked = !!v;
+    else el.value = v == null ? '' : v;
+  });
+  qa('[data-corner]').forEach((el) => { el.checked = state.corners.includes(el.dataset.corner); });
+  qa('[data-out]').forEach((el) => {
+    const p = el.dataset.out, v = Number(getP(p));
+    el.textContent = (p === 'cornerScale' || p === 'classic.pipInset') ? pct(v) : num(v);
+  });
+  qa('[data-hex]').forEach((el) => { el.textContent = getP(el.dataset.hex); });
+  const pips = q('#pipsArea');
+  if (document.activeElement !== pips) {
+    pipDraft = fmtPips(state.classic.pipPositions);
+    pips.value = pipDraft;
+  }
+  q('#pvSuit').value = pv.suit;
+  q('#pvLevel').value = String(pv.level);
+  q('#previewLevel').value = String(state.preview.levelRank || 0);
+  q('#fitToggle').checked = fitAsset;
+  renderAssets();
+}
+
+function applyCascade() {
+  const t = state;
+  q('#secCompact').classList.toggle('hide', t.layout !== 'compact');
+  q('#secClassic').classList.toggle('hide', t.layout !== 'classic');
+  const right = t.cornerSuitPlacement === 'right';
+  q('#hintRight').classList.toggle('hide', !right);
+  q('#hintNoCorner').classList.toggle('hide', t.corners.length > 0);
+  q('#hintFigure').classList.toggle('hide', t.classic.courtStyle !== 'figure');
+  qa('[data-path="slots.cornerSuit.x"],[data-path="slots.cornerSuit.y"],[data-path="classic.cornerSuit.x"],[data-path="classic.cornerSuit.y"]')
+    .forEach((el) => {
+      el.disabled = right;
+      el.style.opacity = right ? '.4' : '1';
+      el.closest('.mini').style.opacity = right ? '.5' : '1';
+    });
+  const tx = t.textLayer;
+  q('#textDetail').classList.toggle('hide', !tx.enabled);
+  q('#labelDetail').classList.toggle('hide', !tx.enabled || tx.badge === 'badge-only');
+}
+
+/* ===== 素材面板 ===== */
+function renderAssets() {
+  const box = q('#assetList');
+  if (box.dataset.built === '1') { updateAssetRows(); return; }
+  box.dataset.built = '1';
+  let html = '', last = '';
+  for (const s of SPEC) {
+    if (s.group !== last) { html += `<div class="assetgroup">${s.group}</div>`; last = s.group; }
+    html += `<div class="asset" data-key="${s.key}">
+      <div class="top">
+        <span class="nm">${s.label}</span>
+        <span class="sz" data-sz="${s.key}"></span>
+        <button class="tiny" data-up="${s.key}">替换</button>
+        <button class="tiny ghost hide" data-re="${s.key}">还原</button>
+        <input type="file" accept=".svg,image/svg+xml" data-file="${s.key}" hidden>
+      </div>
+      <div class="pth"><input type="text" data-p="${s.key}" spellcheck="false"></div>
+    </div>`;
+  }
+  box.innerHTML = html;
+  updateAssetRows();
+
+  box.addEventListener('click', (e) => {
+    const up = e.target.closest('[data-up]');
+    if (up) { box.querySelector(`[data-file="${up.dataset.up}"]`).click(); return; }
+    const re = e.target.closest('[data-re]');
+    if (re) {
+      const k = re.dataset.re;
+      ART[k] = { ...BUILTIN[k], fromFile:null };
+      paths[k] = SPEC_BY_KEY[k].path;
+      renderAssets(); render();
+    }
+  });
+  box.addEventListener('change', async (e) => {
+    const inp = e.target.closest('[data-file]');
+    if (!inp) return;
+    const key = inp.dataset.file;
+    const file = inp.files && inp.files[0];
+    inp.value = '';
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const frag = parseSvg(text, key);
+      ART[key] = { ...frag, fromFile:file.name };
+      const dir = SPEC_BY_KEY[key].path.includes('/') ? SPEC_BY_KEY[key].path.replace(/[^/]+$/, '') : '';
+      paths[key] = dir + file.name;
+      renderAssets(); render();
+    } catch (err) {
+      toast('这个 SVG 读不了：' + err.message);
+    }
+  });
+  box.addEventListener('input', (e) => {
+    const p = e.target.closest('[data-p]');
+    if (!p) return;
+    paths[p.dataset.p] = p.value.trim();
+    p.classList.toggle('changed', p.value.trim() !== SPEC_BY_KEY[p.dataset.p].path);
+    render();
+  });
+}
+
+function updateAssetRows() {
+  qa('[data-sz]').forEach((el) => {
+    const k = el.dataset.sz, a = ART[k];
+    const [nw, nh] = SPEC_BY_KEY[k].nominal;
+    const fitted = fitAsset && (Math.abs(a.w - nw) > 1e-6 || Math.abs(a.h - nh) > 1e-6);
+    el.textContent = `${Math.round(a.w)}×${Math.round(a.h)}${a.fromFile ? ' · 已替换' : ''}${fitted ? ' → 缩进' : ''}`;
+  });
+  qa('[data-p]').forEach((el) => {
+    el.value = paths[el.dataset.p];
+    el.classList.toggle('changed', el.value !== SPEC_BY_KEY[el.dataset.p].path);
+  });
+  qa('[data-re]').forEach((el) => { el.classList.toggle('hide', !ART[el.dataset.re].fromFile); });
+}
+
+function parseSvg(text, key) {
+  const openEnd = text.indexOf('>');
+  const closeStart = text.lastIndexOf('</svg>');
+  if (openEnd < 0 || closeStart < 0 || closeStart <= openEnd) throw new Error('不是完整的内联 <svg> 文件');
+  const tag = text.slice(0, openEnd);
+  const vb = tag.match(/viewBox=["']([^"']+)["']/);
+  let w, h;
+  if (vb) {
+    const parts = vb[1].split(/[,\s]+/).filter(Boolean).map(Number);
+    if (parts.length !== 4 || !parts.every(Number.isFinite)) throw new Error('viewBox 解析不了');
+    w = parts[2]; h = parts[3];
+  } else {
+    const wm = tag.match(/\swidth=["']([\d.]+)/), hm = tag.match(/\sheight=["']([\d.]+)/);
+    if (!wm || !hm) throw new Error('既没有 viewBox 也没有 width/height');
+    w = Number(wm[1]); h = Number(hm[1]);
+  }
+  if (!(w > 0 && h > 0)) throw new Error('尺寸为 0');
+  const inner = text.slice(openEnd + 1, closeStart).trim();
+  if (!inner) throw new Error('SVG 里没有图形内容');
+  if (/url\(#|xlink:href=["']#/.test(inner) === false && /<image\b/i.test(inner)) throw new Error('不支持位图 <image> 引用');
+  return { w, h, inner };
+}
+
+/* ===== 事件 ===== */
+qa('[data-path]').forEach((el) => {
+  const p = el.dataset.path;
+  if (el.type === 'checkbox') {
+    el.addEventListener('change', () => { setP(p, el.checked); applyCascade(); refreshSoon(); });
+  } else {
+    const numeric = el.type === 'number' || el.type === 'range';
+    el.addEventListener('input', () => {
+      const v = numeric ? Number(el.value) : el.value;
+      setP(p, v);
+      applyCascade();
+      qa('[data-out="' + p + '"]').forEach((o) => {
+        o.textContent = (p === 'cornerScale' || p === 'classic.pipInset') ? pct(v) : num(v);
+      });
+      qa('[data-hex="' + p + '"]').forEach((o) => { o.textContent = el.value; });
+      render();
+    });
+  }
+});
+
+function refreshSoon() { applyCascade(); render(); }
+
+qa('[data-corner]').forEach((el) => {
+  el.addEventListener('change', () => {
+    const c = el.dataset.corner;
+    const set = new Set(state.corners);
+    if (el.checked) { if (set.size >= 4) { el.checked = false; return; } set.add(c); }
+    else set.delete(c);
+    state.corners = ['topLeft','topRight','bottomLeft','bottomRight'].filter((k) => set.has(k));
+    refreshSoon(); syncControls();
+  });
+});
+
+q('#pipsArea').addEventListener('input', (e) => {
+  pipDraft = e.target.value;
+  const hint = q('#pipsHint');
+  try {
+    const parsed = JSON.parse(pipDraft);
+    const keys = ['2','3','4','5','6','7','8','9','10'];
+    const ok = parsed && typeof parsed === 'object' && keys.every((k) => Array.isArray(parsed[k]))
+      && Object.values(parsed).every((tbl) => Array.isArray(tbl) && tbl.every((p) => Array.isArray(p) && p.length === 2 && p.every(Number.isFinite)));
+    if (!ok) throw new Error('每张表都要是 [[x,y], …] 的数组，2–10 九张不能少');
+    state.classic.pipPositions = parsed;
+    hint.classList.remove('warn');
+    hint.textContent = '点位已生效：' + Object.entries(parsed).map(([k, v]) => `${k}×${v.length}`).join('  ');
+    render();
+  } catch (err) {
+    hint.classList.add('warn');
+    hint.textContent = 'JSON 有问题：' + err.message;
+  }
+});
+
+/* 预览控件 */
+q('#pvLevel').innerHTML = '<option value="0">无（纯牌面）</option>'
+  + [2,3,4,5,6,7,8,9,10,11,12,13,1].map((r) => `<option value="${r}">${RL(r)}</option>`).join('');
+q('#previewLevel').innerHTML = '<option value="0">无（纯牌面）</option>'
+  + [2,3,4,5,6,7,8,9,10,11,12,13,1].map((r) => `<option value="${r}">${RL(r)}</option>`).join('');
+q('#pvSuit').addEventListener('change', (e) => { pv.suit = e.target.value; render(); });
+q('#pvLevel').addEventListener('change', (e) => { pv.level = Number(e.target.value); render(); });
+q('#previewLevel').addEventListener('change', (e) => { state.preview.levelRank = Number(e.target.value); render(); });
+q('#fanToggle').addEventListener('change', (e) => { q('#grid').classList.toggle('fan', e.target.checked); });
+q('#fitToggle').addEventListener('change', (e) => { fitAsset = e.target.checked; renderAssets(); render(); });
+q('#btnResetAssets').addEventListener('click', () => {
+  SPEC.forEach((s) => { ART[s.key] = { ...BUILTIN[s.key], fromFile:null }; paths[s.key] = s.path; });
+  renderAssets(); render();
+});
+
+/* 非模态提示：不打断操作 */
+let toastTimer = 0;
+function toast(msg) {
+  let el = document.getElementById('toast');
+  if (!el) { el = document.createElement('div'); el.id = 'toast'; document.body.appendChild(el); }
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 3200);
+}
+
+/* 动作 */
+function copyText(txt) {
+  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(txt);
+  const ta = document.createElement('textarea');
+  ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove();
+  return Promise.resolve();
+}
+function flash(b, t) { const o = b.textContent; b.textContent = t; setTimeout(() => { b.textContent = o; }, 1200); }
+qa('#btnCopy,#btnCopy2').forEach((b) => b.addEventListener('click', () => copyText(themeText()).then(() => flash(b, '已复制'))));
+
+function download() {
+  const blob = new Blob([themeText()], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (state.id || 'theme') + '.theme.json';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+qa('#btnDownload,#btnDownload2').forEach((b) => b.addEventListener('click', download));
+
+q('#btnImport').addEventListener('click', () => q('#fileJson').click());
+q('#fileJson').addEventListener('change', async (e) => {
+  const f = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  try { applyTheme(JSON.parse(await f.text())); }
+  catch (err) { toast('theme.json 解析失败：' + err.message); }
+});
+
+function applyTheme(o) {
+  if (!o || typeof o !== 'object') throw new Error('不是对象');
+  state.id = o.id ?? DEFAULTS.id;
+  state.version = o.version ?? DEFAULTS.version;
+  state.name = o.name ?? DEFAULTS.name;
+  state.license = o.license ?? DEFAULTS.license;
+  state.canvas = { ...DEFAULTS.canvas, ...(o.canvas || {}) };
+  state.palette = { ...DEFAULTS.palette, ...(o.palette || {}) };
+  state.layout = o.layout === 'classic' ? 'classic' : (o.layout === 'compact' ? 'compact' : DEFAULTS.layout);
+  state.cornerScale = Number(o.cornerScale ?? DEFAULTS.cornerScale);
+  const defCorners = state.layout === 'classic'
+    ? ['topLeft','topRight','bottomLeft','bottomRight'] : ['topLeft','bottomRight'];
+  state.corners = Array.isArray(o.corners) ? o.corners.filter((c) => ['topLeft','topRight','bottomLeft','bottomRight'].includes(c)) : defCorners;
+  state.cornerSuitPlacement = o.cornerSuitPlacement === 'right' ? 'right' : 'below';
+  const m = (a, b) => ({ ...b, ...(a || {}) });
+  state.slots.cornerRank = m((o.slots || {}).cornerRank, DEFAULTS.slots.cornerRank);
+  state.slots.cornerSuit = m((o.slots || {}).cornerSuit, DEFAULTS.slots.cornerSuit);
+  state.slots.centerSuit = m((o.slots || {}).centerSuit, DEFAULTS.slots.centerSuit);
+  state.slots.wildBadge = m((o.slots || {}).wildBadge, DEFAULTS.slots.wildBadge);
+  const tl = o.textLayer;
+  if (tl) {
+    state.textLayer = {
+      enabled: !!tl.enabled,
+      badge: ['both','badge-only','text-only'].includes(tl.badge) ? tl.badge : 'both',
+      fontFamily: tl.fontFamily || DEFAULTS.textLayer.fontFamily,
+      levelLabel: tl.levelLabel ? { ...DEFAULTS.textLayer.levelLabel, ...tl.levelLabel } : null
+    };
+  } else state.textLayer = clone(DEFAULTS.textLayer);
+  const cl = o.classic;
+  if (cl) {
+    state.classic.cornerRank = m(cl.cornerRank, DEFAULTS.classic.cornerRank);
+    state.classic.cornerSuit = m(cl.cornerSuit, DEFAULTS.classic.cornerSuit);
+    state.classic.pipScale = Number(cl.pipScale ?? DEFAULTS.classic.pipScale);
+    state.classic.pipInset = Number(cl.pipInset ?? DEFAULTS.classic.pipInset);
+    state.classic.aceScale = Number(cl.aceScale ?? DEFAULTS.classic.aceScale);
+    state.classic.courtStyle = cl.courtStyle === 'figure' ? 'figure' : 'monogram';
+    if (cl.pipPositions && typeof cl.pipPositions === 'object') state.classic.pipPositions = cl.pipPositions;
+  }
+  const pvSpec = o.preview || {};
+  state.preview.facesRaw = Array.isArray(pvSpec.faces) ? pvSpec.faces.join(',') : DEFAULTS.preview.facesRaw;
+  state.preview.levelRank = pvSpec.levelRank == null ? 0 : Number(pvSpec.levelRank);
+  pv.level = state.preview.levelRank || 0;
+
+  const L = o.layers || {};
+  if (typeof L.base === 'string') paths.base = L.base;
+  if (typeof L.back === 'string') paths.back = L.back;
+  if (L.suits) ['spade','heart','diamond','club'].forEach((s) => { if (typeof L.suits[s] === 'string') paths[s] = L.suits[s]; });
+  if (L.ranks && Array.isArray(L.ranks.files)) L.ranks.files.slice(0, 13).forEach((p, i) => { if (typeof p === 'string') paths['rank' + (i + 1)] = p; });
+  if (L.jokers) { if (typeof L.jokers.small === 'string') paths.jokerSmall = L.jokers.small; if (typeof L.jokers.big === 'string') paths.jokerBig = L.jokers.big; }
+  if (o.badges) { if (typeof o.badges.level === 'string') paths.level = o.badges.level; if (typeof o.badges.wild === 'string') paths.wild = o.badges.wild; }
+
+  pipDraft = fmtPips(state.classic.pipPositions);
+  q('#pipsHint').classList.remove('warn');
+  q('#pipsHint').textContent = '已从导入的配置恢复点位表。';
+  commit();
+  toast('已载入 ' + state.id + '（素材仍用内置，可在「素材」里逐个替换）');
+}
+
+q('#btnReset').addEventListener('click', () => {
+  state = clone(DEFAULTS);
+  SPEC.forEach((s) => { ART[s.key] = { ...BUILTIN[s.key], fromFile:null }; paths[s.key] = s.path; });
+  pv.suit = 'diamond'; pv.level = DEFAULTS.preview.levelRank;
+  q('#pipsHint').classList.remove('warn');
+  q('#pipsHint').textContent = '2–10 每个点数一张点位表，归一化 0–1；改完自动校验。';
+  try { localStorage.removeItem(LS_KEY); } catch (_) {}
+  commit();
+});
+
+/* ===== 草稿自动保存 ===== */
+const LS_KEY = 'gfdeck-theme-studio-v1';
+let saveTimer = 0;
+function save() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    try { localStorage.setItem(LS_KEY, JSON.stringify({ state, paths, fitAsset })); } catch (_) {}
+  }, 400);
+}
+function restore() {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return false;
+    const d = JSON.parse(raw);
+    if (!d || !d.state) return false;
+    state = { ...clone(DEFAULTS), ...d.state };
+    state.classic = { ...clone(DEFAULTS.classic), ...(d.state.classic || {}) };
+    state.slots = { ...clone(DEFAULTS.slots), ...(d.state.slots || {}) };
+    if (d.paths) paths = { ...paths, ...d.paths };
+    fitAsset = d.fitAsset !== false;
+    return true;
+  } catch (_) { return false; }
+}
+
+function commit() { applyCascade(); syncControls(); render(); }
+
+/* 初始化 */
+const restored = restore();
+pipDraft = fmtPips(state.classic.pipPositions);
+q('#pipsHint').textContent = restored ? '已恢复上次编辑的草稿。' : '2–10 每个点数一张点位表，归一化 0–1；改完自动校验。';
+commit();
+</script>
+</body>
+</html>
