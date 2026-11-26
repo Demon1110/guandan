@@ -192,10 +192,29 @@ crates/deckart/
 ├── pkgs/                      # 打包产物：themes/<id>/ → <id>.gfdeck
 │   └── defaults.gfdeck
 └── scripts/
-    └── pack-all.ps1           # 一键打包 themes/ 下所有主题
+    ├── pack-all.ps1           # 一键打包 themes/ 下所有主题
+    ├── squabby-ranks.py       # 生成 squabby 的 13 个点数 + 4 个花色
+    ├── squabby-art.py         # 生成 squabby 的底面/牌背/大小王/徽章
+    └── squabby-compress-svg.py # 压缩主题 SVG 里的长浮点（可选，日常已内置）
 ```
 
 新主题在 `themes/` 下建目录（目录名即包名），`theme.json` 的 `id` 保持 `[a-z0-9-]`；打完的 `<id>.gfdeck` 落在 `pkgs/`。
+
+### 重生成 squabby 的矢量素材
+
+squabby 的 23 个 SVG 是由字体 + 手写路径生成的，源码不再放 `target/`，直接跑：
+
+```powershell
+python crates/deckart/scripts/squabby-ranks.py   # ranks/1..13 + suits/4
+python crates/deckart/scripts/squabby-art.py     # base / back / jokers / badges
+python crates/deckart/scripts/squabby-compress-svg.py --dry-run   # 只体检体积
+```
+
+两个生成脚本默认写 `crates/deckart/themes/squabby/`，也可以 `--out` 指到任意主题目录；写到别的主题前先确认该主题的 `theme.json` 配色/布局能接住。脚本依赖 Windows 自带的 Arial Bold（`C:\Windows\Fonts\arialbd.ttf`），换机器要改脚本顶部的 `FONT_PATH`。
+
+点数统一按**大写高度**对齐（`CAP=112`），A/Q/K 只压宽度不压高度；`10` 因为横向压缩会让竖笔变细，额外用 `TEN_TRACKING` 收紧字距、`TEN_MAX_W` 控制宽度、`TEN_STROKE` 补同色描边。觉得 `10` 还不够粗就调大 `TEN_STROKE`（改完重跑 `squabby-ranks.py`），别直接改 `ranks/10.svg`，会被脚本覆盖。
+
+生成脚本写文件时已经把浮点压到 2 位小数；`squabby-compress-svg.py` 是给“素材已经存在、只想再瘦一遍”或其它主题用的，可反复跑，不会动结构。
 
 ### `theme.json`（现行 schema）
 
