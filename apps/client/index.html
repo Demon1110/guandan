@@ -75,16 +75,29 @@
         </div>
 
         <div class="hand-area">
+          <!-- 轮到本人时才出现：出牌 / 提示 / 过牌 / 取消选牌，压在牌型行上方 -->
+          <div id="turn-actions" class="turn-actions hidden">
+            <button id="play" class="primary" disabled>出牌</button>
+            <button id="hint" disabled>提示</button>
+            <button id="pass" disabled>过牌</button>
+            <button id="clear-select" disabled>取消选牌</button>
+          </div>
           <div class="hand-head">
             <span id="hand-count" class="muted">手牌 0</span>
             <span id="selection" class="muted">未选牌</span>
           </div>
           <div id="hand" class="hand"></div>
-          <div class="actions">
-            <button id="play" class="primary" disabled>出牌</button>
-            <button id="hint" disabled>提示</button>
-            <button id="pass" disabled>过牌</button>
-            <button id="clear-select" disabled>取消选牌</button>
+          <!-- 理牌条：组牌建议 | 四花色（有同花顺则高亮）| 理成一列 | 回复理牌 -->
+          <div class="arrange-bar">
+            <button id="suggest">组牌建议</button>
+            <div class="suit-tabs">
+              <button class="suit" data-suit="0" title="♠">♠</button>
+              <button class="suit red" data-suit="1" title="♥">♥</button>
+              <button class="suit red" data-suit="2" title="♦">♦</button>
+              <button class="suit" data-suit="3" title="♣">♣</button>
+            </div>
+            <button id="arrange">理成一列</button>
+            <button id="restore">回复理牌</button>
           </div>
         </div>
       </div>

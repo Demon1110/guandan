@@ -155,7 +155,8 @@ header .dot { opacity: .5; }
   text-align: center;
   transition: top .2s ease, left .2s ease;
 }
-.play-zone[data-rel="0"] { left: 50%; bottom: 176px; transform: translateX(-50%); }
+/* 牌桌底部现在叠了三层（动作行 / 牌型行 / 手牌 / 理牌条），自己那侧的出牌区要相应抬高 */
+.play-zone[data-rel="0"] { left: 50%; bottom: 292px; transform: translateX(-50%); }
 .play-zone[data-rel="1"] { right: 10px; top: calc(30% + 132px); width: min(210px, 32%); transform: none; }
 .play-zone[data-rel="2"] { left: 50%; top: 134px; transform: translateX(-50%); }
 .play-zone[data-rel="3"] { left: 10px; top: calc(30% + 132px); width: min(210px, 32%); transform: none; }
@@ -183,9 +184,27 @@ header .dot { opacity: .5; }
   bottom: 14px;
 }
 .hand-head { display: flex; justify-content: space-between; margin-bottom: 6px; }
+/* 轮到自己时才露出的动作行，压在牌型行上方 */
+.turn-actions { display: flex; gap: 10px; justify-content: center; margin-bottom: 8px; }
+.turn-actions.hidden { display: none; }
+/* 理牌条：贴在手牌下方 */
+.arrange-bar { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 8px; }
+.arrange-bar button { font-size: 12px; padding: 5px 10px; }
+.suit-tabs { display: flex; gap: 4px; }
+.suit-tabs .suit { width: 30px; padding: 5px 0; text-align: center; font-size: 15px; line-height: 1; }
+.suit-tabs .suit.red { color: #d94b4b; }
+/* 该花色能凑同花顺：高亮；当前正在展示的那一套再重一档 */
+.suit-tabs .suit.hot { border-color: #e8c15a; color: #ffe08a; background: rgba(232, 193, 90, .16); box-shadow: 0 0 0 1px rgba(232, 193, 90, .25); }
+.suit-tabs .suit.hot.red { color: #ff9a9a; }
+.suit-tabs .suit.active { border-color: #ffd66b; background: rgba(232, 193, 90, .32); }
+.suit-tabs .suit:disabled { opacity: .35; }
 .hand { display: flex; flex-wrap: nowrap; gap: 7px; justify-content: center; align-items: flex-end; min-height: 118px; overflow-x: auto; overflow-y: hidden; padding: 16px 4px 6px; }
 /* 同点数一列、列内纵向叠放（只露顶部角标），列从左到右按牌力降序 */
 .hand-col { display: flex; flex-direction: column; align-items: center; flex: 0 0 auto; }
+/* 理牌列：整组框住，点击整组可选中/取消 */
+.hand-col.grouped { padding: 0 4px 3px; border-radius: 8px; border: 1px solid rgba(232, 193, 90, .55); background: rgba(232, 193, 90, .08); }
+.hand-col.grouped.group-left { border-color: rgba(255, 214, 107, .8); }
+.hand-col.grouped.group-right { border-color: rgba(120, 190, 220, .6); background: rgba(120, 190, 220, .08); }
 .hand-col .card { width: 44px; height: 62px; }
 .hand-col .card + .card { margin-top: -38px; }
 .actions { display: flex; gap: 10px; justify-content: center; margin-top: 10px; }
@@ -310,7 +329,7 @@ header .dot { opacity: .5; }
   .slot-bottom { left: 8px; bottom: 236px; }
   .center { top: 38%; width: min(340px, 54%); }
   .play-zone { width: min(320px, 52%); }
-  .play-zone[data-rel="0"] { bottom: 200px; }
+  .play-zone[data-rel="0"] { bottom: 306px; }
   .play-zone[data-rel="1"] { right: 8px; top: calc(30% + 132px); width: min(170px, 38%); }
   .play-zone[data-rel="2"] { top: 126px; }
   .play-zone[data-rel="3"] { left: 8px; top: calc(30% + 132px); width: min(170px, 38%); }

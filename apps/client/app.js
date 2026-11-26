@@ -234,6 +234,12 @@ const state = {
   revealLast: false,
   legalCache: null,
   legalSeq: 0,
+  // 手理牌分组：{ cards, patternId, layout: 'left'|'right', suit? }。
+  // 只是布局，不动手牌本身；出牌 / 合法性仍走 selected + canPlay。
+  arranged: [],
+  // 每个花色当前展示到第几个同花顺窗口（多点几次轮换方案）。
+  flushCursor: {},
+  previewCache: null,
 };
 
 const el = (id) => document.getElementById(id);
@@ -445,6 +451,37 @@ function renderCenter() {
   }
 }
 
+// 理牌分组只改布局：手牌本身、选中集、合法判定都不受影响。
+// 炸弹 / 同花顺这类「一眼要能认出来」的牌型理到最左，其余理到最右。
+const SPECIAL_PATTERN = (pid) => pid === 'joker-bomb' || pid.startsWith('bomb-') || pid.startsWith('straight-flush');
+
+function cardButton(id, index, myTurn) {
+  const f = cardFace(id);
+  const b = document.createElement('button');
+  b.className = `card${f.red ? ' red' : ''}${f.joker ? ' joker' : ''}${state.selected.has(id) ? ' picked' : ''}${myTurn ? '' : ' dim'}`;
+  b.style.zIndex = String(index + 1);
+  b.dataset.cid = String(id);
+  b.innerHTML = `<span class="corner"><b>${f.rank}</b><span class="suit">${f.suit}</span></span>${state.showIds ? `<span class="cid">${id}</span>` : ''}`;
+  return b;
+}
+
+function sortedCards(list) {
+  return [...list].sort((a, b) => columnKey(b, levelRankIndex()) - columnKey(a, levelRankIndex())
+    || suitIndexOf(a) - suitIndexOf(b) || (a % 2) - (b % 2));
+}
+
+function pushColumn(box, ids, myTurn, grouped) {
+  const col = document.createElement('div');
+  col.className = `hand-col${grouped ? ` grouped group-${grouped.side}` : ''}`;
+  if (grouped) {
+    col.dataset.group = String(grouped.index);
+    col.dataset.cards = ids.join(',');
+    col.dataset.pattern = grouped.patternId ?? '';
+  }
+  sortedCards(ids).forEach((id, i) => col.appendChild(cardButton(id, i, myTurn)));
+  box.appendChild(col);
+}
+
 function renderHand() {
   const v = room.view(state.humanSeat);
   const cards = [...(v.hand.cards ?? [])];
@@ -452,29 +489,205 @@ function renderHand() {
   const box = el('hand');
   box.innerHTML = '';
   const myTurn = state.waitingSeat === state.humanSeat;
-  // 同点数一列；列键降序 → 大王、小王、级牌、A、K…2 依次靠左。
+
+  // 出完 / 被换局后，理牌组里可能有已经不存在的牌：先剪掉。
+  const handSet = new Set(cards);
+  state.arranged = state.arranged
+    .map((g) => ({ ...g, cards: g.cards.filter((id) => handSet.has(id)) }))
+    .filter((g) => g.cards.length > 0);
+  const groupedIds = new Set(state.arranged.flatMap((g) => g.cards));
+
+  const left = state.arranged.filter((g) => g.layout === 'left');
+  const right = state.arranged.filter((g) => g.layout === 'right');
+  left.forEach((g) => pushColumn(box, g.cards, myTurn, { side: 'left', index: state.arranged.indexOf(g), patternId: g.patternId }));
+
+  // 未理的牌仍按同点数一列、列键降序（大王、小王、级牌、A、K…2）。
   const cols = new Map();
   for (const id of cards) {
+    if (groupedIds.has(id)) continue;
     const key = columnKey(id, levelIdx);
     if (!cols.has(key)) cols.set(key, []);
     cols.get(key).push(id);
   }
   for (const key of [...cols.keys()].sort((a, b) => b - a)) {
-    const list = cols.get(key).sort((a, b) => suitIndexOf(a) - suitIndexOf(b) || (a % 2) - (b % 2));
-    const col = document.createElement('div');
-    col.className = 'hand-col';
-    list.forEach((id, i) => {
-      const f = cardFace(id);
-      const b = document.createElement('button');
-      b.className = `card${f.red ? ' red' : ''}${f.joker ? ' joker' : ''}${state.selected.has(id) ? ' picked' : ''}${myTurn ? '' : ' dim'}`;
-      b.style.zIndex = String(i + 1);
-      b.dataset.cid = String(id);
-      b.innerHTML = `<span class="corner"><b>${f.rank}</b><span class="suit">${f.suit}</span></span>${state.showIds ? `<span class="cid">${id}</span>` : ''}`;
-      col.appendChild(b);
-    });
-    box.appendChild(col);
+    pushColumn(box, cols.get(key), myTurn, null);
   }
+
+  right.forEach((g) => pushColumn(box, g.cards, myTurn, { side: 'right', index: state.arranged.indexOf(g), patternId: g.patternId }));
+
   el('hand-count').textContent = `手牌 ${cards.length} 张`;
+  syncSuitTabs(cards, groupedIds);
+}
+
+// ---------- 理牌：只调布局，不动手牌 / 选中 / 合法判定 ----------
+
+const SUIT_NAMES = ['♠', '♥', '♦', '♣'];
+
+function flash(msg) {
+  state.notice = msg;
+  renderCenter();
+  clearTimeout(state.noticeTimer);
+  state.noticeTimer = setTimeout(() => { state.notice = ''; renderCenter(); }, 2600);
+}
+
+// 该花色手牌里所有「5 张连续」的窗口（王不参与；级牌转换 / 百搭不在此展开）。
+function flushWindows(suit, ids) {
+  const byRank = new Map();
+  for (const id of ids) {
+    if (id >= 100) continue;
+    if (Math.floor(id / 26) !== suit) continue;
+    const rank = Math.floor(id / 2) % 13;
+    if (!byRank.has(rank)) byRank.set(rank, []);
+    byRank.get(rank).push(id);
+  }
+  const out = [];
+  for (let start = 0; start + 4 < 13; start += 1) {
+    const cards = [];
+    for (let d = 0; d < 5; d += 1) {
+      const list = byRank.get(start + d);
+      if (!list || list.length === 0) { cards.length = 0; break; }
+      cards.push(list[0]);
+    }
+    if (cards.length === 5) out.push({ start, cards });
+  }
+  return out;
+}
+
+// 该花色「可用的牌池」：排除其它理牌组，但保留自己这一组（否则高亮会在切换时消失）。
+function poolForSuit(cards, suit) {
+  const others = new Set(
+    state.arranged.filter((g) => g.suit !== suit).flatMap((g) => g.cards),
+  );
+  return cards.filter((id) => !others.has(id));
+}
+
+// 四个花色按钮：能凑出同花顺就高亮，已经理出来的那套再压重一档。
+function syncSuitTabs(cards, groupedIds) {
+  const myTurn = state.waitingSeat === state.humanSeat;
+  for (const btn of document.querySelectorAll('.suit-tabs .suit')) {
+    const suit = Number(btn.dataset.suit);
+    const opts = flushWindows(suit, poolForSuit(cards, suit));
+    btn.classList.toggle('hot', opts.length > 0);
+    btn.classList.toggle('active', state.arranged.some((g) => g.suit === suit));
+    btn.disabled = !myTurn || opts.length === 0;
+    btn.title = opts.length
+      ? `${SUIT_NAMES[suit]} 可凑 ${opts.length} 种同花顺（可反复点击切换）`
+      : `${SUIT_NAMES[suit]} 凑不出同花顺`;
+  }
+}
+
+// 点花色：在「该花色所有同花顺窗口」里循环切换，只保留最后选中的那套。
+function cycleFlush(suit) {
+  if (state.waitingSeat !== state.humanSeat) {
+    flash('轮到你时才能理同花顺');
+    return;
+  }
+  const cards = [...(room.view(state.humanSeat).hand.cards ?? [])];
+  const opts = flushWindows(suit, poolForSuit(cards, suit));
+  if (opts.length === 0) {
+    flash(`${SUIT_NAMES[suit]} 凑不出同花顺`);
+    return;
+  }
+  const cur = state.flushCursor?.[suit] ?? -1;
+  const idx = (cur + 1) % opts.length;
+  state.flushCursor = { ...(state.flushCursor ?? {}), [suit]: idx };
+  const pick = opts[idx];
+  state.arranged = state.arranged.filter((g) => g.suit !== suit);
+  state.arranged.push({
+    cards: pick.cards.slice(),
+    patternId: 'straight-flush-5',
+    layout: 'left',
+    suit,
+  });
+  state.selected.clear();
+  renderHand();
+  renderActions();
+  flash(`${SUIT_NAMES[suit]} 同花顺方案 ${idx + 1}/${opts.length}`);
+}
+
+// 「理成一列」：只认牌型，不看压不压得住；炸弹 / 同花理到最左，其余理到最右。
+function arrangeSelection() {
+  if (state.waitingSeat !== state.humanSeat) {
+    flash('轮到你时才能理牌');
+    return;
+  }
+  if (state.selected.size === 0) {
+    flash('先选中要理的牌型');
+    return;
+  }
+  const cards = [...state.selected].sort((a, b) => a - b);
+  const pre = room.canPlay(cards);
+  const pid = pre?.patternId ?? '';
+  if (!pid) {
+    flash('选中的牌凑不成牌型，理不了');
+    return;
+  }
+  const suit = pid.startsWith('straight-flush') ? suitIndexOf(cards[0]) : null;
+  state.arranged = state.arranged.filter((g) => g.cards.slice().sort((a, b) => a - b).join(',') !== cards.join(','));
+  state.arranged.push({ cards, patternId: pid, layout: SPECIAL_PATTERN(pid) ? 'left' : 'right', suit });
+  state.selected.clear();
+  renderHand();
+  renderActions();
+  const beat = pre.ok ? '' : '（当前压不过上家）';
+  flash(`${patternName(pid)} 已理到${SPECIAL_PATTERN(pid) ? '最左' : '最右'}一列${beat}`);
+}
+
+// 「组牌建议」：按合法集给每种牌型各挑一手，炸弹/同花进左列、其它进右列，各最多 4 组。
+function arrangeSuggest() {
+  if (state.waitingSeat !== state.humanSeat) {
+    flash('轮到你时才能看组牌建议');
+    return;
+  }
+  const plays = currentLegal().filter((a) => !a.pass && a.cards?.length && a.patternId);
+  const byPattern = new Map();
+  for (const a of plays) if (!byPattern.has(a.patternId)) byPattern.set(a.patternId, a);
+  const groups = [...byPattern.values()];
+  const special = groups.filter((a) => SPECIAL_PATTERN(a.patternId));
+  const normal = groups.filter((a) => !SPECIAL_PATTERN(a.patternId));
+  const used = new Set();
+  const take = (list, layout, limit) => {
+    const out = [];
+    for (const a of list) {
+      if (out.length >= limit) break;
+      if (a.cards.some((id) => used.has(id))) continue;
+      a.cards.forEach((id) => used.add(id));
+      out.push({
+        cards: a.cards.slice(),
+        patternId: a.patternId,
+        layout,
+        suit: a.patternId.startsWith('straight-flush') ? suitIndexOf(a.cards[0]) : null,
+      });
+    }
+    return out;
+  };
+  state.arranged = [...take(special, 'left', 4), ...take(normal, 'right', 4)];
+  state.selected.clear();
+  renderHand();
+  renderActions();
+  flash(state.arranged.length === 0 ? '暂时没有可出的牌型' : `组牌建议：${state.arranged.length} 组（左=炸弹/同花，右=其它）`);
+}
+
+// 「回复理牌」：选中的牌正好是某一组时只恢复那一组；否则恢复全部理牌。
+function restoreArrange() {
+  if (state.arranged.length === 0) {
+    flash('没有可恢复的理牌');
+    return;
+  }
+  const sel = [...state.selected].sort((a, b) => a - b).join(',');
+  const hit = sel
+    ? state.arranged.findIndex((g) => g.cards.slice().sort((a, b) => a - b).join(',') === sel)
+    : -1;
+  if (hit >= 0) {
+    const [g] = state.arranged.splice(hit, 1);
+    state.selected.clear();
+    flash(`已恢复 ${patternName(g.patternId)}`);
+  } else {
+    state.arranged = [];
+    state.flushCursor = {};
+    flash('已恢复全部理牌');
+  }
+  renderHand();
+  renderActions();
 }
 
 function renderHeader() {
@@ -530,10 +743,15 @@ function renderActions() {
   const canPass = myTurn && legal.some((a) => a.pass);
   const pickLegal = selectedPlayIsLegal();
   const pickPattern = pickLegal ? previewSelection().pattern : '';
+  // 动作行只在轮到自己时露出来，压在牌型行上方。
+  el('turn-actions').classList.toggle('hidden', !myTurn);
   el('play').disabled = !myTurn || !pickLegal;
   el('hint').disabled = !myTurn || plays.length === 0;
   el('pass').disabled = !canPass;
   el('clear-select').disabled = state.selected.size === 0;
+  el('suggest').disabled = !myTurn || plays.length === 0;
+  el('arrange').disabled = !myTurn || state.selected.size === 0 || !pickLegal;
+  el('restore').disabled = state.arranged.length === 0;
   const parts = [];
   if (state.selected.size === 0) parts.push('未选牌');
   else {
@@ -909,6 +1127,19 @@ function setPicked(id, on) {
 let dragPick = null;
 el('hand').addEventListener('pointerdown', (e) => {
   if (state.waitingSeat !== state.humanSeat) return;
+  // 理牌列：整组一起选中 / 取消，方便再理或只恢复这一组。
+  const grouped = e.target.closest('.hand-col.grouped');
+  if (grouped) {
+    const g = state.arranged[Number(grouped.dataset.group)];
+    if (!g) return;
+    const all = g.cards.every((id) => state.selected.has(id)) && state.selected.size === g.cards.length;
+    state.selected.clear();
+    if (!all) g.cards.forEach((id) => state.selected.add(id));
+    dragPick = null;
+    renderHand();
+    renderActions();
+    return;
+  }
   const card = e.target.closest('.card');
   if (!card) return;
   const id = Number(card.dataset.cid);
@@ -924,6 +1155,15 @@ el('hand').addEventListener('pointermove', (e) => {
 });
 window.addEventListener('pointerup', () => { dragPick = null; });
 window.addEventListener('pointercancel', () => { dragPick = null; });
+
+// ---------- 理牌条 ----------
+
+el('suggest').onclick = arrangeSuggest;
+el('arrange').onclick = arrangeSelection;
+el('restore').onclick = restoreArrange;
+for (const btn of document.querySelectorAll('.suit-tabs .suit')) {
+  btn.onclick = () => cycleFlush(Number(btn.dataset.suit));
+}
 
 // ---------- 入口 ----------
 
@@ -950,3 +1190,8 @@ init().catch((e) => {
   const box = el('lobby-note');
   if (box) box.textContent = `启动失败：${e.message}`;
 });
+
+// 调试钩子：URL 带 debug=1 时可从控制台看内部状态（不影响正常路径）。
+if (location.search.includes('debug')) {
+  window.__gd = { state, room, currentLegal, previewSelection };
+}

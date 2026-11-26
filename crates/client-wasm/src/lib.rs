@@ -108,6 +108,27 @@ fn action_json(action: &Action) -> String {
     }
 }
 
+/// 带牌型名的候选动作：页面理牌要按「是不是炸弹 / 同花顺」分流，这里顺手把牌型带上。
+fn action_json_patterned(action: &Action, pattern_id: &str) -> String {
+    match action {
+        Action::Pass => "{\"pass\":true}".to_owned(),
+        Action::Play { cards } => {
+            let mut s = format!(
+                "{{\"pass\":false,\"patternId\":{},\"cards\":[",
+                json_str(pattern_id)
+            );
+            for (i, c) in cards.iter().enumerate() {
+                if i > 0 {
+                    s.push(',');
+                }
+                s.push_str(&c.to_string());
+            }
+            s.push_str("]}");
+            s
+        }
+    }
+}
+
 fn auto_json(auto: Option<gf_table_runtime::AutoReason>) -> &'static str {
     match auto {
         None => "null",
@@ -474,15 +495,30 @@ pub unsafe extern "C" fn gf_room_can_play(cards_ptr: *const u16, cards_len: usiz
     }
 }
 
-/// 当前行动座位的合法动作集（`[{"pass":…,"cards":[…]}]`）；出牌按钮与「提示」共用。
+/// 当前行动座位的合法动作集（`[{"pass":…,"patternId":"…","cards":[…]}]`）；
+/// 「提示」选牌、理牌分流都按它。`patternId` 由 `preview_play` 顺带判定，不改枚举结果。
 #[no_mangle]
 pub extern "C" fn gf_room_legal() -> *mut u8 {
     let Some(r) = room() else {
         return err("no room");
     };
+    let state = r.state().ok();
     match r.legal_now() {
         Ok(legal) => {
-            let items: Vec<String> = legal.iter().map(action_json).collect();
+            let items: Vec<String> = legal
+                .iter()
+                .map(|a| {
+                    let pid = match (a, state) {
+                        (Action::Play { cards }, Some(s)) => r
+                            .engine()
+                            .preview_play(s, cards)
+                            .map(|(pid, _)| pid)
+                            .unwrap_or_default(),
+                        _ => String::new(),
+                    };
+                    action_json_patterned(a, &pid)
+                })
+                .collect();
             out(format!("[{}]", items.join(",")))
         }
         Err(e) => err(e),
