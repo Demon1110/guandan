@@ -321,7 +321,7 @@ guandan/
 | --- | --- | --- |
 | M0 | ✅ 已收口 | 契约锁定、双端 `stateHash` 一致、断线恢复原型、非法 RuleSet 反证、空转与包体实测 |
 | M1 | ✅ 已收口 | 牌型全表、枚举路径重构、结算两批、进贡/还贡/抗贡、跨局携带、快照 wire、组牌推荐、房间主干（含计时/托管/断线恢复/再来一局）、AI-L0/L1/L2（跟牌/留牌/记牌/队友配合）、Web 端（牌桌/大厅/结算/设置）+ IndexedDB 续局、校验器 L2–L4、CI 双产物 gate、性能与容量 gate（353.3µs / 3,952–7,904 房间）、接风与进贡后手牌刷新专项；覆盖率门禁按 **行 ≥90% 且区域 ≥90%**（实测行 92.23% / 区域 91.61%，函数 89.95%，分支 85.05% 作观测项），口径与缺口见 `docs/assets/m1-coverage-baseline.md` |
-| M2 | 🟡 进行中 | 已落地：`apps/server` 联机骨架（入座/开局/动作/结算/重连）、传输帧头（`gf_protocol::wire`）、快照 `roundNo` 补齐；待做：账号与短信、匹配队列、PG/Redis 落库、增量重连、第 24 周联机内测、桌面壳三端产物、回放只读观战 |
+| M2 | 🟡 进行中 | 已落地：`apps/server` 联机骨架（入座/开局/动作/结算）、传输帧头（`gf_protocol::wire`）、快照 `roundNo` 补齐、增量重连（`ReconnectBuffer` → `RoomDelta`，跨局/结算落快照重置）；待做：账号与短信、匹配队列、PG/Redis 落库、第 24 周联机内测、桌面壳三端产物、回放只读观战 |
 | M3 / M4 | 未开始 | 见 `docs/开发计划.md` |
 
 **M1 目前的硬账**
@@ -387,10 +387,10 @@ S→C 11 JoinAck | 12 RoomSnapshot | 13 RoomDelta | 14 ActionAck | 15 PhaseChang
 - 满四人发牌；`JoinAck` 必先于快照（新座位不会把快照当第一帧）。
 - 动作：`kind` 与 `oneof` 分支双向校验、`requestId` 幂等（同 id 重放回同一份回执、不推进 `roomSeq`）、`seatSeq` 低于水位回 `STALE_SEQ`、请求 `seat` 与绑定座位不符回 `AUTH_INVALID`。
 - 结算：`SettleResult.result` 走 canonical JSON（键序 `winner_team, ranks, points`，单行、无空白、不写 `null`）；同一局只广播一次。
-- 断线：WS 断开/30s 无消息即记 `Offline`，房间按宽限托管；重连先走全量快照重置（增量路径待下一刀）。
+- 断线：WS 断开/30s 无消息即记 `Offline`，房间按宽限托管；重连优先补发 `RoomDelta` 增量（水位在 200 条缓冲内且未跨局、未落在结算空窗期），末尾附 `snapshotReset=false` 快照；其余情形只发 `snapshotReset=true` 全量快照。
 - 服务端自证：`RoomHost::state_hash()` 与 `replay_hash()` 必须相等，四座位整局用例已锁。
 
-**本切片明确没做**（按开发计划 §3 M2 顺序）：账号与短信、匹配队列、PG/Redis 落库、增量重连、回放导出与观战、桌面壳三端产物、第 24 周联机内测。
+**本切片明确没做**（按开发计划 §3 M2 顺序）：账号与短信、匹配队列、PG/Redis 落库、回放导出与观战、桌面壳三端产物、第 24 周联机内测。
 
 **两个待裁口径**（代码里留了 TODO 常量）
 

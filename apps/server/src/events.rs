@@ -7,7 +7,7 @@ use gf_engine::contract::{Action, State};
 use gf_engine::engine::{PHASE_SETTLE, PHASE_PLAY};
 use gf_protocol::gf::protocol::v1 as pb;
 use gf_protocol::wire::{encode, kind};
-use gf_table_runtime::{RoomSnapshotWire, SettleSummary};
+use gf_table_runtime::{ReplayedStep, RoomSnapshotWire, SettleSummary};
 
 /// 一个动作（含托管代打）造成的事件列表。
 pub fn events_for(
@@ -90,6 +90,52 @@ pub fn delta_frame(match_id: &str, room_seq: u64, events: Vec<pb::DeltaEvent>) -
         events,
     };
     encode(kind::ROOM_DELTA, &prost::Message::encode_to_vec(&msg))
+}
+
+/// 断线补发的增量帧：每条缓冲记录一帧，`roomSeq` 逐条对齐（客户端按水位顺序应用）。
+///
+/// 与实时广播只有两处差别：
+/// - 历史记录里的 `TurnChanged.deadlineMs` 早已过期，这里只为**最后一条**补一个当前窗口的
+///   `TurnChanged`（`deadline_ms == 0` 表示没有行动窗口，跳过）；中间记录不报换手；
+/// - 跨局与结算不在增量路径内（服务端在这两种情形一律走快照重置），
+///   所以只需要 `PlayedEvent` / `PassedEvent` 两种事件。
+pub fn replay_frames(match_id: &str, steps: &[ReplayedStep], deadline_ms: u64) -> Vec<Vec<u8>> {
+    let last = steps.len().saturating_sub(1);
+    let mut frames = Vec::with_capacity(steps.len());
+    for (i, step) in steps.iter().enumerate() {
+        let mut events = Vec::new();
+        match &step.record.action {
+            Action::Play { cards } => {
+                let pattern_id = step
+                    .after
+                    .last_play
+                    .as_ref()
+                    .filter(|play| play.cards == *cards)
+                    .map(|play| play.pattern_id.clone())
+                    .unwrap_or_default();
+                events.push(delta(pb::delta_event::Event::Played(pb::PlayedEvent {
+                    seat: u32::from(step.record.seat),
+                    cards: cards.iter().map(|c| u32::from(*c)).collect(),
+                    pattern_id,
+                })));
+            }
+            Action::Pass => {
+                events.push(delta(pb::delta_event::Event::Passed(pb::PassedEvent {
+                    seat: u32::from(step.record.seat),
+                })));
+            }
+        }
+        if i == last && deadline_ms != 0 {
+            events.push(delta(pb::delta_event::Event::TurnChanged(
+                pb::TurnChangedEvent {
+                    seat: u32::from(step.after.turn_seat),
+                    deadline_ms,
+                },
+            )));
+        }
+        frames.push(delta_frame(match_id, step.record.room_seq, events));
+    }
+    frames
 }
 
 /// 组装 `PhaseChange` 帧。

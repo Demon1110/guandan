@@ -230,7 +230,7 @@ async fn stale_seat_seq_is_rejected_without_advancing() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reconnect_returns_reset_snapshot_after_progress() {
+async fn reconnect_without_local_state_gets_reset_snapshot() {
     let room = RoomHost::spawn("match-reconnect", 0x51ED_000A, RoomOptions::default())
         .expect("建桌失败");
     let mut rxs = Vec::new();
@@ -254,16 +254,24 @@ async fn reconnect_returns_reset_snapshot_after_progress() {
             .await;
     }
 
-    let seat = 0u8;
-    let last = room.seat_seq(seat).await;
+    // 挑一个还没出过手的座位：本地零水位，服务端无法换算 roomSeq，只能给快照。
+    let mut idle = None;
+    for seat in 0..4u8 {
+        if room.seat_seq(seat).await == 0 {
+            idle = Some(seat);
+            break;
+        }
+    }
+    let seat = idle.expect("两手动作后必然还有座位没出过手");
     let (tx, mut rx) = mpsc::unbounded_channel();
     assert!(room.rebind(seat, tx).await, "重连必须能接管座位通道");
-    let snapshot = room.reconnect(seat, last).await.expect("重连失败");
-    let (kind, body) = wire::split(&snapshot).expect("可拆");
+    let frames = room.reconnect(seat, 0).await.expect("重连失败");
+    assert_eq!(frames.len(), 1, "零水位只能收到一份快照，不得凭空补发增量");
+    let (kind, body) = wire::split(&frames[0]).expect("可拆");
     assert_eq!(kind, wire::kind::ROOM_SNAPSHOT);
     let snap = pb::RoomSnapshot::decode(body).expect("解码失败");
     assert_eq!(snap.seat, u32::from(seat));
-    assert!(snap.snapshot_reset, "重连切片走快照重置");
+    assert!(snap.snapshot_reset, "无法换算水位时必须 snapshotReset");
     assert!(!snap.view_hash.is_empty(), "viewHash 必须由服务端给出");
     assert_eq!(snap.view_hash.len(), 16, "viewHash 是 16 字符十六进制");
 
@@ -273,10 +281,95 @@ async fn reconnect_returns_reset_snapshot_after_progress() {
     let seq = room.seat_seq(turn).await + 1;
     room.submit(turn, play_msg(turn, seq, "after-reconnect", &action), room.now_ms())
         .await;
+    assert!(rx.try_recv().is_ok(), "重连座位必须重新收到下行帧");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reconnect_within_buffer_gets_delta_then_snapshot() {
+    let room = RoomHost::spawn("match-delta", 0x51ED_000C, RoomOptions::default())
+        .expect("建桌失败");
+    let mut rxs = Vec::new();
+    for _ in 0..4u8 {
+        let (tx, rx) = mpsc::unbounded_channel();
+        room.join(None, tx).await.expect("入座失败");
+        rxs.push(rx);
+    }
+    room.start_if_full().await;
+    for rx in &mut rxs {
+        let _ = frames(rx).await;
+    }
+
+    // 打一手，等这个座位真的有了记录，再取它的水位当 `lastSeatSeq`。
+    let seat = room.state_snapshot().await.expect("有状态").turn_seat;
+    let action = room.legal_actions().await.first().cloned().expect("有动作");
+    let seq = room.seat_seq(seat).await + 1;
+    room.submit(seat, play_msg(seat, seq, "delta-0", &action), room.now_ms())
+        .await;
+    let last = room.seat_watermark(seat).await;
     assert!(
-        rx.try_recv().is_ok(),
-        "重连座位必须重新收到下行帧"
+        room.seat_seq(seat).await > 0,
+        "该座位必须已有记录（记录里的 seatSeq 从 0 起算）"
     );
+
+    // 掉线期间再打两手，这两手就是要补发的增量。
+    for i in 0..2 {
+        let turn = room.state_snapshot().await.expect("有状态").turn_seat;
+        let action = room.legal_actions().await.first().cloned().expect("有动作");
+        let seq = room.seat_seq(turn).await + 1;
+        room.submit(turn, play_msg(turn, seq, &format!("delta-gap-{i}"), &action), room.now_ms())
+            .await;
+    }
+    let latest = room.room_seq().await;
+
+    let (tx, rx) = mpsc::unbounded_channel();
+    assert!(room.rebind(seat, tx).await, "重连必须能接管座位通道");
+    let frames = room.reconnect(seat, last).await.expect("重连失败");
+    assert!(
+        frames.len() >= 2,
+        "增量路径必须先补 RoomDelta 再附快照，实际 {} 帧",
+        frames.len()
+    );
+    let (last_kind, last_body) = wire::split(frames.last().expect("至少一帧")).expect("可拆");
+    assert_eq!(last_kind, wire::kind::ROOM_SNAPSHOT, "最后一帧必须是快照");
+    let snap = pb::RoomSnapshot::decode(last_body).expect("解码失败");
+    assert!(
+        !snap.snapshot_reset,
+        "增量路径 snapshotReset 必须为 false（客户端保留本地状态）"
+    );
+    assert_eq!(
+        snap.last_seat_seq,
+        room.seat_watermark(seat).await,
+        "快照水位必须是该座位当前已应用到的 seatSeq"
+    );
+
+    // 增量帧：roomSeq 连续、逐帧对齐，末帧 roomSeq 追平房间广播序。
+    let mut deltas = Vec::new();
+    for frame in &frames[..frames.len() - 1] {
+        let (kind, body) = wire::split(frame).expect("可拆");
+        assert_eq!(kind, wire::kind::ROOM_DELTA, "增量路径中间帧必须是 RoomDelta");
+        deltas.push(pb::RoomDelta::decode(body).expect("解码失败"));
+    }
+    assert_eq!(
+        deltas.last().expect("至少一条增量").room_seq,
+        latest.saturating_sub(1),
+        "补发必须覆盖到最新一条记录"
+    );
+    for pair in deltas.windows(2) {
+        assert_eq!(pair[1].room_seq, pair[0].room_seq + 1, "补发的 roomSeq 必须连续");
+        assert!(!pair[0].events.is_empty(), "每条记录至少带来一个事件");
+    }
+    // 末条增量带当前行动窗口：TurnChanged 的 deadline 必须是新的，不能回放历史值。
+    let tail = deltas.last().expect("至少一条增量");
+    let turn_changed = tail
+        .events
+        .iter()
+        .find_map(|e| match &e.event {
+            Some(pb::delta_event::Event::TurnChanged(t)) => Some(t),
+            _ => None,
+        })
+        .expect("末条增量必须带 TurnChanged");
+    assert!(turn_changed.deadline_ms > 0, "行动窗口 deadline 必须有效");
+    let _ = rx;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

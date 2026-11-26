@@ -195,7 +195,7 @@ async fn session(app: Arc<App>, socket: WebSocket) {
                         ));
                         // 入座回执先发，再按「满四人」开局；新座位随后拿全量快照。
                         room.start_if_full().await;
-                        if let Ok(snapshot) = room.reconnect(seat, 0).await {
+                        if let Ok(snapshot) = room.join_snapshot(seat).await {
                             let _ = tx.send(snapshot);
                         }
                         bound = Some((room, seat));
@@ -219,7 +219,7 @@ async fn session(app: Arc<App>, socket: WebSocket) {
                         // §5.9：请求 seat 与绑定座位不一致 → AUTH_INVALID，并记指标。
                         let _ = tx.send(events::action_ack_frame(
                             &submit.request_id,
-                            room.seat_seq(*seat).await,
+                            room.seat_watermark(*seat).await,
                             room.room_seq().await,
                             false,
                             Some("AUTH_INVALID"),
@@ -239,8 +239,11 @@ async fn session(app: Arc<App>, socket: WebSocket) {
                     break;
                 }
                 match room.reconnect(seat, re.last_seat_seq).await {
-                    Ok(snapshot) => {
-                        let _ = tx.send(snapshot);
+                    Ok(frames) => {
+                        // 增量帧在前、快照在后，必须按顺序下发。
+                        for frame in frames {
+                            let _ = tx.send(frame);
+                        }
                         bound = Some((room, seat));
                     }
                     Err(_) => break,

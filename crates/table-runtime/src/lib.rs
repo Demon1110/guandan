@@ -20,8 +20,8 @@ pub use recovery::{
 };
 pub use room::{
     normalize_action, replay, AutoAction, AutoReason, BotContext, BotPolicy, HandPlan,
-    HandPlanCard, HandPlanGroup, PlayerKind, PlayerStatus, ReconnectPlan, Room, RoomConfig,
-    RoomError, SettleSummary, StepOutcome, DEFAULT_GRACE_MS, DEFAULT_OFFLINE_ALL_MS,
+    HandPlanCard, HandPlanGroup, PlayerKind, PlayerStatus, ReconnectPlan, ReplayedStep, Room,
+    RoomConfig, RoomError, SettleSummary, StepOutcome, DEFAULT_GRACE_MS, DEFAULT_OFFLINE_ALL_MS,
     DEFAULT_RULESET_VERSION, DEFAULT_TURN_MS,
 };
 pub use snapshot::{CodecError, RoomSnapshotWire};

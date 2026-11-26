@@ -259,6 +259,89 @@ fn reconnect_delta_replays_to_same_hash() {
 }
 
 #[test]
+fn reconnect_delta_steps_chain_before_after_states() {
+    let mut room = bot_room(0x51ED_0005);
+    room.start(0).expect("发牌失败");
+    let mut now_ms = 1000u64;
+    for _ in 0..40 {
+        room.step(now_ms).expect("step 失败");
+        now_ms += 1000;
+    }
+    let seat = (0..4u8)
+        .find(|s| room.seat_seq(*s).expect("水位查询失败") >= 2)
+        .expect("40 步内必然有座位出过两手");
+    let last_seat_seq = room.seat_seq(seat).expect("水位查询失败") - 1;
+    let state = room.state().expect("有状态").clone();
+
+    let (from_room_seq, steps) = room
+        .reconnect_delta(seat, last_seat_seq)
+        .expect("增量查询失败")
+        .expect("水位仍在缓冲内且未跨局，必须走增量");
+
+    assert!(!steps.is_empty(), "水位差应有增量记录");
+    assert!(
+        steps.iter().all(|s| s.record.round_no == state.round_no),
+        "增量只能覆盖当前局"
+    );
+    assert!(
+        steps.iter().all(|s| s.record.room_seq > from_room_seq),
+        "增量必须严格晚于客户端水位"
+    );
+    assert!(
+        steps
+            .windows(2)
+            .all(|pair| pair[0].after == pair[1].before),
+        "前后状态必须首尾相接，断裂即重放口径分叉"
+    );
+    let tail = steps.last().expect("非空已断言");
+    if tail.record.room_seq + 1 == room.room_seq() {
+        assert_eq!(
+            gf_table_runtime::state_hash_of(&tail.after),
+            room.state_hash().expect("权威哈希失败"),
+            "补到最新一条记录后必须与权威状态同哈希"
+        );
+    }
+}
+
+#[test]
+fn reconnect_delta_falls_back_on_settled_or_cross_round() {
+    let mut room = bot_room(0x51ED_0006);
+    room.start(0).expect("发牌失败");
+    let (_, _, now_ms) = play_one_round(&mut room, 1000);
+
+    // 结算态没有行动窗口，增量无法表达（也不该补发历史 deadline）。
+    let settled = room
+        .reconnect_delta(0, room.seat_seq(0).expect("水位查询失败"))
+        .expect("增量查询失败");
+    assert!(settled.is_none(), "结算态必须退回快照重置");
+
+    // 记下某个座位在第一局的**首手**水位（`seatSeq = 0`），续局后再拿它重连：
+    // 缓冲里必然同时留有上一局后半段的记录，增量跨局，必须退回快照重置。
+    let watermark = 0u64;
+    let seat = (0..4u8)
+        .find(|s| room.seat_seq(*s).expect("水位查询失败") > 0)
+        .expect("一局内必然有座位出过手");
+    room.next_round(now_ms + 1000).expect("续局失败");
+    assert_eq!(
+        room.state().expect("有状态").phase,
+        gf_engine::engine::PHASE_PLAY,
+        "续局应直接进入出牌段"
+    );
+    let mut cursor = now_ms + 2000;
+    for _ in 0..5 {
+        room.step(cursor).expect("step 失败");
+        cursor += 1000;
+    }
+    let cross = room
+        .reconnect_delta(seat, watermark)
+        .expect("增量查询失败");
+    assert!(
+        cross.is_none(),
+        "跨局增量表达不了新局手牌，必须退回快照重置"
+    );
+}
+
+#[test]
 fn reconnect_falls_back_to_snapshot_reset_when_evicted() {
     let mut room = bot_room(0x51ED_0004);
     room.start(0).expect("发牌失败");

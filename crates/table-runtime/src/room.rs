@@ -264,6 +264,21 @@ impl From<gf_engine::contract::EngineError> for RoomError {
     }
 }
 
+/// 增量补发的一步：动作记录 + 该动作应用前后的权威状态。
+///
+/// 服务端把缓冲里的记录翻成 §5.9 `RoomDelta.events[]`（`PlayedEvent.patternId`、
+/// `TurnChangedEvent.seat` 都从状态里取），因此必须带前后状态；`after` 与下一条的
+/// `before` 首尾相接，调用方可据此自证重放没有断裂。
+#[derive(Clone, Debug)]
+pub struct ReplayedStep {
+    /// 缓冲里的原始记录（`roomSeq` / `seatSeq` 水位即取自此）。
+    pub record: ActionRecord,
+    /// 动作应用前。
+    pub before: State,
+    /// 动作应用后。
+    pub after: State,
+}
+
 /// 断线重连的服务端答复（增量事件 + 全量快照 + wire 帧三件齐）。
 #[derive(Clone, Debug)]
 pub struct ReconnectPlan {
@@ -290,6 +305,9 @@ pub struct Room {
     seat_seq: Vec<u64>,
     log: Vec<ActionRecord>,
     buffer: ReconnectBuffer,
+    /// 当前局发牌态的副本：增量补发要从这里往后重放，才能拿到每条记录的前后状态。
+    /// 只在 `start` / `next_round` 写入；`aborted` 后不再更新。
+    round_start: Option<State>,
     auto: Vec<AutoAction>,
     turn_deadline_ms: Option<u64>,
     turn_ms: u64,
@@ -345,6 +363,7 @@ impl Room {
             seat_seq: vec![0; seat_count],
             log: Vec::new(),
             buffer: ReconnectBuffer::default(),
+            round_start: None,
             auto: Vec::new(),
             turn_deadline_ms: None,
             turn_ms,
@@ -370,6 +389,7 @@ impl Room {
     /// 发牌开局（场次首局）。发完即进入出牌阶段并开第一个行动窗口。
     pub fn start(&mut self, now_ms: u64) -> Result<(), RoomError> {
         let state = self.engine.deal(self.round_seed(1))?;
+        self.round_start = Some(state.clone());
         self.state = Some(state);
         self.last_settle = None;
         self.open_window(now_ms);
@@ -401,6 +421,7 @@ impl Room {
         let state = self
             .engine
             .deal_next_round(prev, self.round_seed(round_no))?;
+        self.round_start = Some(state.clone());
         self.state = Some(state);
         self.last_settle = None;
         self.open_window(now_ms);
@@ -502,6 +523,17 @@ impl Room {
     pub fn seat_seq(&self, seat: u8) -> Result<u64, RoomError> {
         let idx = self.seat_index(seat)?;
         Ok(self.seat_seq[idx])
+    }
+
+    /// 对外的「已应用到」水位：`ActionRecord.seatSeq` 从 0 起算，
+    /// 因此它是内部计数器的前一条（该座位尚未出过手时为 0）。
+    ///
+    /// [`Room::seat_seq`] 给的是「下一条动作该用的序号」（`STALE_SEQ` 判定口径），
+    /// 两者相差 1，不能互相替代：`RoomSnapshot.lastSeatSeq` 与 `ActionAck.seatSeq`
+    /// 必须用本方法，客户端拿它做 `Reconnect.lastSeatSeq` 才能换算回 `roomSeq`。
+    pub fn seat_watermark(&self, seat: u8) -> Result<u64, RoomError> {
+        let idx = self.seat_index(seat)?;
+        Ok(self.seat_seq[idx].saturating_sub(1))
     }
 
     /// 最近一次结算摘要。
@@ -655,7 +687,7 @@ impl Room {
             self.ruleset_id.clone(),
             self.ruleset_version.clone(),
             self.room_seq,
-            self.seat_seq[idx],
+            self.seat_watermark(seat)?,
             self.engine.ruleset.view.schema_version,
             view.bytes.clone(),
             snapshot_reset,
@@ -688,13 +720,77 @@ impl Room {
         Ok(())
     }
 
+    /// 重连增量：`last_seat_seq` 之后的缓冲记录 + 每条记录应用前后的状态（§6.2）。
+    ///
+    /// `Ok(None)` 表示必须走快照重置，三种情况：
+    /// 1. 缓冲判定本身是 `SnapshotReset`（水位早于缓冲起点 / 双序号列里查不到）；
+    /// 2. 缓冲记录跨了局（存在 `roundNo != 当前局` 的记录）——换局后手牌全变，
+    ///    增量事件表达不了新视图，客户端只能接受快照；
+    /// 3. 当前不在出牌阶段（结算空窗期 / 未发牌），没有可继续的行动窗口。
+    ///
+    /// 状态重建从**当前局发牌态**往后重放本局日志，代价是一次局内重放
+    /// （一局通常 ≤200 次 `apply`）；不整场重放，避免第 20 局之后重连延迟抖动。
+    pub fn reconnect_delta(
+        &self,
+        seat: u8,
+        last_seat_seq: u64,
+    ) -> Result<Option<(u64, Vec<ReplayedStep>)>, RoomError> {
+        self.seat_index(seat)?;
+        let state = self.state.as_ref().ok_or(RoomError::NotStarted)?;
+        if state.phase != PHASE_PLAY {
+            return Ok(None);
+        }
+        let ReconnectDecision::Delta {
+            from_room_seq,
+            events,
+        } = decide(&self.buffer, seat, last_seat_seq)
+        else {
+            return Ok(None);
+        };
+        if events.iter().any(|r| r.round_no != state.round_no) {
+            return Ok(None);
+        }
+        let Some(base) = self.round_start.clone() else {
+            return Ok(None);
+        };
+        if base.round_no != state.round_no {
+            return Ok(None);
+        }
+
+        let last_room_seq = events.last().map(|r| r.room_seq);
+        let mut cursor = base;
+        let mut steps = Vec::with_capacity(events.len());
+        for record in self
+            .log
+            .iter()
+            .filter(|r| r.round_no == state.round_no)
+        {
+            if last_room_seq.is_some_and(|last| record.room_seq > last) {
+                break;
+            }
+            // 重放失败（日志与快照分叉）不允许修补，直接退回快照重置（§6.6）。
+            let Ok(after) = self.engine.apply(cursor.clone(), record.action.clone()) else {
+                return Ok(None);
+            };
+            if record.room_seq > from_room_seq {
+                steps.push(ReplayedStep {
+                    record: record.clone(),
+                    before: cursor,
+                    after: after.clone(),
+                });
+            }
+            cursor = after;
+        }
+        Ok(Some((from_room_seq, steps)))
+    }
+
     /// 按座位取 wire 快照帧（服务端下发前自证 `viewHash`）。
     pub fn snapshot_wire(
         &self,
         seat: u8,
         snapshot_reset: bool,
     ) -> Result<RoomSnapshotWire, RoomError> {
-        let idx = self.seat_index(seat)?;
+        self.seat_index(seat)?;
         let state = self.state.as_ref().ok_or(RoomError::NotStarted)?;
         let view = self.engine.view(state, Seat(seat));
         Ok(RoomSnapshotWire::server_build(
@@ -704,7 +800,7 @@ impl Room {
             self.ruleset_id.clone(),
             self.ruleset_version.clone(),
             self.room_seq,
-            self.seat_seq[idx],
+            self.seat_watermark(seat)?,
             self.engine.ruleset.view.schema_version,
             view.bytes,
             snapshot_reset,

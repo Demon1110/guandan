@@ -213,22 +213,23 @@ impl RoomHost {
         let mut broadcast: Vec<Vec<u8>> = Vec::new();
         let ack = {
             let mut room = self.room.lock().await;
+            let watermark = room.seat_watermark(seat).unwrap_or(0);
             if room.state().is_err() {
                 events::action_ack_frame(
                     &request_id,
-                    room.seat_seq(seat).unwrap_or(0),
+                    watermark,
                     room.room_seq(),
                     false,
                     Some("TOO_LATE"),
                 )
             } else if room
                 .seat_seq(seat)
-                .is_ok_and(|current| msg.seat_seq < current)
+                .is_ok_and(|next| msg.seat_seq < next)
             {
-                // 座位水位：低于当前水位即 STALE_SEQ（§6.2）。
+                // 座位水位：低于「下一条动作序号」即 STALE_SEQ（§6.2）。
                 events::action_ack_frame(
                     &request_id,
-                    room.seat_seq(seat).unwrap_or(0),
+                    watermark,
                     room.room_seq(),
                     false,
                     Some("STALE_SEQ"),
@@ -236,7 +237,7 @@ impl RoomHost {
             } else {
                 let before = room.state().ok().cloned().unwrap();
                 let outcome = room.submit(seat, action, now);
-                let ack_seat_seq = room.seat_seq(seat).unwrap_or(0);
+                let ack_seat_seq = room.seat_watermark(seat).unwrap_or(0);
                 let mut ack_room_seq = room.room_seq();
                 let ack = match outcome {
                     Ok(StepOutcome::Applied {
@@ -300,15 +301,39 @@ impl RoomHost {
         ack
     }
 
-    /// 重连：给本座位的全量快照。
+    /// 重连：增量帧（走增量时）+ 全量快照。
     ///
-    /// 切片说明：增量路径（`ReconnectDecision::Delta`）要求把缓冲里的记录逐条翻成事件，
-    /// 本切片统一走「快照重置」（`snapshotReset=true`，客户端丢弃本地状态），
-    /// 语义合法但带宽更高；增量路径排在下一个切片。
-    pub async fn reconnect(&self, seat: u8, last_seat_seq: u64) -> Result<Vec<u8>, RoomError> {
+    /// 两条路径（§6.2）：
+    /// - 增量：客户端水位仍在 200 条缓冲内且没跨局/没落在结算空窗期 → 逐条补发 `RoomDelta`，
+    ///   末尾附一份 `snapshotReset = false` 的快照（用于校验 `viewHash` 与刷新水位）；
+    /// - 快照重置：其余情况 → 只发 `snapshotReset = true` 的快照，客户端丢弃本地状态。
+    ///
+    /// 返回的帧按发送顺序排列，调用方必须顺序下发（增量在快照之前）。
+    pub async fn reconnect(
+        &self,
+        seat: u8,
+        last_seat_seq: u64,
+    ) -> Result<Vec<Vec<u8>>, RoomError> {
         let mut room = self.room.lock().await;
+        let delta = room.reconnect_delta(seat, last_seat_seq)?;
         let plan = room.reconnect(seat, last_seat_seq)?;
-        Ok(events::snapshot_frame(&plan.wire, true))
+        let mut frames = Vec::new();
+        if let Some((_from_room_seq, steps)) = delta {
+            let deadline = room.turn_deadline_ms().unwrap_or(0);
+            frames.extend(events::replay_frames(&self.match_id, &steps, deadline));
+        }
+        frames.push(events::snapshot_frame(&plan.wire, plan.wire.snapshot_reset));
+        Ok(frames)
+    }
+
+    /// 入座时的首帧快照（`snapshotReset = true`）。
+    ///
+    /// 与 [`RoomHost::reconnect`] 的区别：新入座的客户端本地没有状态，也不该拿座位历史做增量，
+    /// 只能接受全量视图。
+    pub async fn join_snapshot(&self, seat: u8) -> Result<Vec<u8>, RoomError> {
+        let room = self.room.lock().await;
+        let wire = room.snapshot_wire(seat, true)?;
+        Ok(events::snapshot_frame(&wire, true))
     }
 
     /// 房间号。
@@ -325,9 +350,16 @@ impl RoomHost {
         true
     }
 
-    /// 座位水位（`ActionAck.seat_seq` 与 `STALE_SEQ` 判定用）。
+    /// 座位「下一条动作序号」（`STALE_SEQ` 判定用）。
     pub async fn seat_seq(&self, seat: u8) -> u64 {
         self.room.lock().await.seat_seq(seat).unwrap_or(0)
+    }
+
+    /// 座位已应用到的水位（`ActionAck.seat_seq` / 快照 `lastSeatSeq` / 重连水位用）。
+    ///
+    /// 与 [`RoomHost::seat_seq`] 相差 1：动作记录里的 `seatSeq` 从 0 起算。
+    pub async fn seat_watermark(&self, seat: u8) -> u64 {
+        self.room.lock().await.seat_watermark(seat).unwrap_or(0)
     }
 
     /// 房间广播序。
@@ -366,7 +398,7 @@ impl RoomHost {
         let room = self.room.lock().await;
         events::action_ack_frame(
             request_id,
-            room.seat_seq(seat).unwrap_or(0),
+            room.seat_watermark(seat).unwrap_or(0),
             room.room_seq(),
             false,
             Some(reason),

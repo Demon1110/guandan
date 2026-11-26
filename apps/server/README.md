@@ -55,8 +55,12 @@ cargo clippy --all-targets -- -D warnings
 
 ## 已知取舍（都在代码里有注释）
 
-- **重连走全量快照**：`ReconnectDecision::Delta` 要求把 200 条环形缓冲逐条翻成事件，
-  当前统一发 `snapshotReset=true` 的全量快照。语义合法、带宽偏高，下一刀补增量。
+- **重连两条路径**：水位仍在 200 条环形缓冲内、且没跨局、没落在结算空窗期 → 逐条补发
+  `RoomDelta`，末尾附 `snapshotReset=false` 的快照（客户端保留本地状态、用 `viewHash` 自证）；
+  其余情形一律 `snapshotReset=true`。跨局必须重发视图（新手牌表达不了），这条是刻意选择。
+- **动作序号两个口径**：`ActionRecord.seatSeq` 从 0 起算（`lastSeatSeq` / 快照水位取它）；
+  `SubmitAction.seatSeq` 与 `STALE_SEQ` 比的是「下一条动作序号」，比记录值大 1。
+  两者由 `Room::seat_watermark` / `Room::seat_seq` 分开暴露，不要混用。
 - **自动续局**：`M2-OPEN-01`，联机"再来一局"触发方未裁定（会动 `actions.kind` 闭集）。
 - **进房即建房**：只为本机联调，正式匹配/房间码在账号链路上线后替换。
 - **未接持久化**：房间状态只在内存，进程重启即丢；PG/Redis 在 M2 后段接入。
