@@ -40,6 +40,7 @@ fn preview_accepts_legal_candidate_and_submit_agrees() {
         .find_map(|a| match a {
             Action::Play { cards } => Some(cards.clone()),
             Action::Pass => None,
+            Action::TributeReturn { .. } => None,
         })
         .expect("领出必有可出牌型");
 

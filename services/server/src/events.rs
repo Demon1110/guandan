@@ -43,6 +43,8 @@ pub fn events_for(
                 seat: u32::from(before.turn_seat),
             })));
         }
+        // 还贡本身由下方 `tribute_events` 差量统一补发，不额外造 Played 事件。
+        Action::TributeReturn { .. } => {}
     }
 
     // 进贡 / 还贡：只在新增记录时补发（首局与抗贡局为空）。
@@ -133,6 +135,21 @@ pub fn replay_frames(match_id: &str, steps: &[ReplayedStep], deadline_ms: u64) -
                 events.push(delta(pb::delta_event::Event::Passed(pb::PassedEvent {
                     seat: u32::from(step.record.seat),
                 })));
+            }
+            Action::TributeReturn { .. } => {
+                if let Some(rec) = step
+                    .after
+                    .tribute_events
+                    .iter()
+                    .rev()
+                    .find(|r| r.is_return)
+                {
+                    events.push(delta(pb::delta_event::Event::Tribute(pb::TributeEvent {
+                        from: u32::from(rec.from),
+                        to: u32::from(rec.to),
+                        card: u32::from(rec.card),
+                    })));
+                }
             }
         }
         if i == last && deadline_ms != 0 {

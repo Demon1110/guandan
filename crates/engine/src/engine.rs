@@ -11,7 +11,7 @@
 
 use crate::contract::{
     Action, Engine, EngineError, MatchEnd, MatchEndReason, PatternId, Seat, State,
-    TributeEventRecord, View, ZoneId,
+    TributeEventRecord, TributeReturnPending, View, ZoneId,
 };
 use crate::hash::{seed_digest, LastPlay, RngState, TributeState, ZoneEntry};
 use crate::patterns;
@@ -302,6 +302,8 @@ impl M0Engine {
             settle_step: None,
             tribute_resisted: false,
             tribute_events: Vec::new(),
+            tribute_pending_returns: Vec::new(),
+            tribute_leader: None,
             match_end: None,
             round_no: 1,
         };
@@ -385,6 +387,8 @@ impl M0Engine {
             settle_step: None,
             tribute_resisted: false,
             tribute_events: Vec::new(),
+            tribute_pending_returns: Vec::new(),
+            tribute_leader: None,
             match_end: None,
             round_no: prev.round_no.saturating_add(1),
         };
@@ -393,11 +397,15 @@ impl M0Engine {
 
     // ---------- 进贡 / 还贡 / 抗贡（§5.13 行 954–964、§6.3 行 1114–1116） ----------
 
-    /// 进贡相位自动执行（零动作相位，玩家不提交 `tribute`/`return`）。
+    /// 进贡相位：贡方自动交最大牌，受贡方停在 `tribute` 相位挑一张还贡。
     ///
     /// - `enabled=false`、无上局名次（首局口径）：`deal → play` 直转，第 7 段保持占位；
     /// - 抗贡成立：进贡与还贡均不发生、不发事件、`deal → play` 直转，`tribute_resisted=true`；
-    /// - 正常：按 `pairs[]` 的 `when` 分支逐对进贡 → 还贡，`deal → tribute → play`，首出 = 头游。
+    /// - 正常：按 `pairs[]` 的 `when` 分支逐对进贡，`deal → tribute`，受贡方依次提交
+    ///   [`Action::TributeReturn`]，还完最后一对才 `tribute → play`。
+    ///
+    /// 首出座位：贡牌最大者（双下两对时比较两张贡牌牌力，同力取先配对的一方）；
+    /// 抗贡 / 无进贡仍由上局头游首出。
     ///
     /// 双下两对的第 7 段（单组 vs 序列）编码冲突未裁决：这里只把第一对写入 `state.tribute`
     /// 哈希段，第二对仅落在 `tribute_events`（诊断、不进哈希），见批次挂账。
@@ -458,6 +466,8 @@ impl M0Engine {
 
         let ctx = self.rank_context(state);
         let wild = patterns::wildcard_ids(&self.ruleset, &ctx);
+        let mut pending: Vec<TributeReturnPending> = Vec::new();
+        let mut leader: Option<(u8, u32)> = None;
 
         for pair in active {
             let payer = rank_seat(pair.payer).ok_or_else(|| EngineError::Internal {
@@ -487,25 +497,24 @@ impl M0Engine {
                     card: Some(pay_card),
                 };
             }
-
-            let ret_card = self
-                .select_return_card(state, receiver, cfg)
-                .ok_or_else(|| EngineError::Internal {
-                    message: format!("seat {receiver} 无牌可还贡"),
-                })?;
-            self.move_card(state, receiver, payer, ret_card)?;
-            state.tribute_events.push(TributeEventRecord {
-                from: receiver,
-                to: payer,
-                card: ret_card,
-                is_return: true,
-            });
+            // 贡牌最大者首出；双下两张同力时，保留先配对的贡方。
+            let power = self.card_power(state, pay_card);
+            if leader.map_or(true, |(_, best)| power > best) {
+                leader = Some((payer, power));
+            }
+            pending.push(TributeReturnPending { payer, receiver });
         }
 
-        // 正常路径：deal → tribute → play；首出座位保持上局头游。
+        state.tribute_leader = leader.map(|(seat, _)| seat);
+        state.tribute_pending_returns = pending;
+
+        // 正常路径：deal → tribute，停在第一位受贡方的还贡动作上。
         self.transition(state, PHASE_TRIBUTE)?;
-        self.transition(state, PHASE_PLAY)?;
-        state.turn_seat = head_seat;
+        state.turn_seat = state
+            .tribute_pending_returns
+            .first()
+            .map(|p| p.receiver)
+            .unwrap_or_else(|| state.tribute_leader.unwrap_or(head_seat));
         Ok(())
     }
 
@@ -532,6 +541,97 @@ impl M0Engine {
             .copied()
             .filter(|c| !wild.contains(c))
             .max_by_key(|&c| (self.card_weight(c), u32::from(u16::MAX - c)))
+    }
+
+    /// 还贡可选牌：当前受贡方手里不大于 10 的牌；若一张都没有（极端手牌），
+    /// 退化为整手牌，避免还贡相位卡死。王不参与“≤10”候选。
+    pub fn tribute_return_cards(&self, state: &State) -> Vec<u16> {
+        let seat = state.turn_seat;
+        let Some(hand) = self.hand_cards(state, seat) else {
+            return Vec::new();
+        };
+        let ten_index = self
+            .ruleset
+            .deck
+            .ranks
+            .iter()
+            .position(|k| k.as_str() == "10")
+            .unwrap_or(8);
+        let under_ten: Vec<u16> = hand
+            .iter()
+            .copied()
+            .filter(|c| match self.card_rank_index(*c) {
+                Some(ri) => ri <= ten_index,
+                None => false,
+            })
+            .collect();
+        if under_ten.is_empty() {
+            hand.clone()
+        } else {
+            under_ten
+        }
+    }
+
+    /// 还贡默认牌：按规则集 `return` 口径选（默认不大于 10 的最小牌），bot / 托管用。
+    pub fn tribute_return_default(&self, state: &State) -> Option<u16> {
+        let cfg = self.ruleset.tribute.as_ref()?;
+        self.select_return_card(state, state.turn_seat, cfg)
+    }
+
+    /// 还贡动作：受贡方从手牌挑一张还给对应贡方；还完最后一对才进 play。
+    fn apply_tribute_return(
+        &self,
+        mut state: State,
+        action: Action,
+    ) -> Result<State, EngineError> {
+        let Action::TributeReturn { card } = action else {
+            return Err(EngineError::IllegalAction {
+                reason: "还贡相位只接受 TributeReturn 动作".to_owned(),
+            });
+        };
+        let Some(pending) = state.tribute_pending_returns.first().copied() else {
+            return Err(EngineError::IllegalAction {
+                reason: "当前没有待还贡的配对".to_owned(),
+            });
+        };
+        let seat = state.turn_seat;
+        if seat != pending.receiver {
+            return Err(EngineError::IllegalAction {
+                reason: format!(
+                    "还贡应由受贡方 seat {} 提交，当前 turnSeat={seat}",
+                    pending.receiver
+                ),
+            });
+        }
+        let allowed = self.tribute_return_cards(&state);
+        if !allowed.contains(&card) {
+            return Err(EngineError::IllegalAction {
+                reason: format!("牌 {card} 不在 seat {seat} 的可还贡牌中"),
+            });
+        }
+        self.move_card(&mut state, pending.receiver, pending.payer, card)?;
+        state.tribute_events.push(TributeEventRecord {
+            from: pending.receiver,
+            to: pending.payer,
+            card,
+            is_return: true,
+        });
+        state.tribute_pending_returns.remove(0);
+        self.bump_watermark(&mut state, seat);
+
+        if let Some(next) = state.tribute_pending_returns.first().copied() {
+            state.turn_seat = next.receiver;
+            return Ok(state);
+        }
+
+        let leader = state
+            .tribute_leader
+            .ok_or_else(|| EngineError::Internal {
+                message: "进贡完成却没有贡牌最大者".to_owned(),
+            })?;
+        self.transition(&mut state, PHASE_PLAY)?;
+        state.turn_seat = leader;
+        Ok(state)
     }
 
     /// 还贡选牌：`ceiling=under-ten` 取不大于 10 的牌；全大于 10 按 `fallback`
@@ -1025,6 +1125,13 @@ impl M0Engine {
     }
 
     fn legal_actions_impl(&self, state: &State) -> Result<Vec<Action>, EngineError> {
+        if state.phase == PHASE_TRIBUTE {
+            let cards = self.tribute_return_cards(state);
+            return Ok(cards
+                .into_iter()
+                .map(|card| Action::TributeReturn { card })
+                .collect());
+        }
         let out: Vec<Action> = Vec::new();
         if state.phase != PHASE_PLAY {
             return Ok(out);
@@ -1089,6 +1196,9 @@ impl M0Engine {
     // ---------- apply ----------
 
     fn apply_impl(&self, mut state: State, action: Action) -> Result<State, EngineError> {
+        if state.phase == PHASE_TRIBUTE {
+            return self.apply_tribute_return(state, action);
+        }
         if state.phase != PHASE_PLAY {
             return Err(EngineError::IllegalAction {
                 reason: "当前不在 play 相位".to_owned(),
@@ -1097,6 +1207,11 @@ impl M0Engine {
         let seat = state.turn_seat;
 
         match action {
+            Action::TributeReturn { .. } => {
+                return Err(EngineError::IllegalAction {
+                    reason: "还贡动作只能在 tribute 相位提交".to_owned(),
+                });
+            }
             Action::Play { cards } => {
                 // §5.9 第 203 行：出牌只传牌 id，`patternId` 由服务端判定。复检按牌结构
                 // 判定牌型并判定能否压过 lastPlay，不再要求提交的 cards 精确等于枚举清单。
@@ -1708,25 +1823,85 @@ mod tests {
 
         engine
             .resolve_tribute(&mut state, &prev)
-            .expect("进贡 / 还贡");
-
-        assert_eq!(state.phase, PHASE_PLAY);
-        assert_eq!(state.turn_seat, 0, "进贡后首出 = 上局头游");
-        assert!(!state.tribute_resisted);
-        assert_eq!(state.tribute_events.len(), 2);
+            .expect("进贡");
+        assert_eq!(state.phase, PHASE_TRIBUTE, "贡牌交完停在还贡相位");
+        assert_eq!(state.turn_seat, 0, "受贡方先挑还贡牌");
+        assert_eq!(state.tribute_events.len(), 1, "此时只记了进贡");
+        assert_eq!(state.tribute_pending_returns.len(), 1);
 
         let pay = &state.tribute_events[0];
         assert_eq!((pay.from, pay.to, pay.is_return), (3, 0, false));
         assert_eq!(pay.card, tcard(&engine, 11), "贡牌 = 除百搭外点数最大（K）");
 
+        state = engine
+            .apply(
+                state,
+                Action::TributeReturn {
+                    card: tcard(&engine, 0),
+                },
+            )
+            .expect("受贡方还 2");
+
+        assert_eq!(state.phase, PHASE_PLAY);
+        assert_eq!(state.turn_seat, 3, "贡牌最大者（seat3）先出");
+        assert!(!state.tribute_resisted);
+        assert_eq!(state.tribute_events.len(), 2);
+
         let ret = &state.tribute_events[1];
         assert_eq!((ret.from, ret.to, ret.is_return), (0, 3, true));
-        assert_eq!(ret.card, tcard(&engine, 0), "还贡 = under-ten 内最小（2）");
+        assert_eq!(ret.card, tcard(&engine, 0), "玩家可自选不大于 10 的牌（这里还 2）");
 
         assert_eq!(state.tribute.from_seat, 3);
         assert_eq!(state.tribute.to_seat, 0);
         assert_eq!(state.tribute.card, Some(tcard(&engine, 11)));
     }
+
+    #[test]
+    fn tribute_return_allows_any_under_ten_and_rejects_over_ten() {
+        // 受贡方手里 2、5、9、J：还贡可选任意不大于 10 的牌，J 不合法。
+        let engine = classic_engine();
+        let prev = settled_prev(&engine, vec![0, 1, 2, 3]);
+        let mut state = engine.build_round_state(&prev, M0_SEED).expect("续发骨架");
+        set_hand(
+            &engine,
+            &mut state,
+            3,
+            vec![tcard(&engine, 11), tcard(&engine, 12)],
+        );
+        set_hand(
+            &engine,
+            &mut state,
+            0,
+            vec![
+                tcard(&engine, 0),
+                tcard(&engine, 3),
+                tcard(&engine, 7),
+                tcard(&engine, 9),
+            ],
+        );
+        engine.resolve_tribute(&mut state, &prev).expect("进贡");
+
+        let legal = engine.legal_actions(&state).expect("还贡候选");
+        let allowed: Vec<u16> = legal
+            .into_iter()
+            .filter_map(|a| match a {
+                Action::TributeReturn { card } => Some(card),
+                _ => None,
+            })
+            .collect();
+        assert!(allowed.contains(&tcard(&engine, 0)));
+        assert!(allowed.contains(&tcard(&engine, 3)));
+        assert!(allowed.contains(&tcard(&engine, 7)));
+        assert!(!allowed.contains(&tcard(&engine, 9)), "J(9) 大于 10");
+
+        let chosen = tcard(&engine, 7);
+        state = engine
+            .apply(state, Action::TributeReturn { card: chosen })
+            .expect("自定义还贡 9");
+        assert_eq!(state.tribute_events.last().unwrap().card, chosen);
+        assert_eq!(state.phase, PHASE_PLAY);
+    }
+
 
     #[test]
     fn tribute_resist_two_big_jokers_skips_whole_segment() {
@@ -1781,14 +1956,14 @@ mod tests {
 
         engine
             .resolve_tribute(&mut state, &prev)
-            .expect("双下进贡 / 还贡");
-
-        assert_eq!(state.phase, PHASE_PLAY);
-        assert_eq!(state.turn_seat, 1, "头游 seat1 先出");
+            .expect("双下进贡");
+        assert_eq!(state.phase, PHASE_TRIBUTE);
+        assert_eq!(state.turn_seat, 1, "第一对受贡方先还贡");
         assert!(!state.tribute_resisted);
-        assert_eq!(state.tribute_events.len(), 4, "两对：各一贡一还");
+        assert_eq!(state.tribute_events.len(), 2, "两对先各交一张贡牌");
+        assert_eq!(state.tribute_pending_returns.len(), 2);
 
-        // 第一对：seat2 → seat1（K），还 2 回 seat2。
+        // 第一对：seat2 → seat1（K），seat1 还 2 回 seat2。
         assert_eq!(
             (
                 state.tribute_events[0].from,
@@ -1797,22 +1972,46 @@ mod tests {
             ),
             (2, 1, tcard(&engine, 11))
         );
+        state = engine
+            .apply(
+                state,
+                Action::TributeReturn {
+                    card: tcard(&engine, 0),
+                },
+            )
+            .expect("seat1 还贡");
+        assert_eq!(state.phase, PHASE_TRIBUTE);
+        assert_eq!(state.turn_seat, 3, "轮到第二对受贡方");
+        assert_eq!(state.tribute_events.len(), 3);
+
+        // 第二对：seat0 → seat3（A），seat3 还 2 回 seat0。
         assert_eq!(
             (
                 state.tribute_events[1].from,
                 state.tribute_events[1].to,
                 state.tribute_events[1].card
             ),
-            (1, 2, tcard(&engine, 0))
+            (0, 3, tcard(&engine, 12))
         );
-        // 第二对：seat0 → seat3（A），还 2 回 seat0。
+        state = engine
+            .apply(
+                state,
+                Action::TributeReturn {
+                    card: tcard(&engine, 0),
+                },
+            )
+            .expect("seat3 还贡");
+
+        assert_eq!(state.phase, PHASE_PLAY);
+        assert_eq!(state.turn_seat, 0, "贡牌最大者（A，seat0）先出");
+        assert_eq!(state.tribute_events.len(), 4, "两对：各一贡一还");
         assert_eq!(
             (
                 state.tribute_events[2].from,
                 state.tribute_events[2].to,
                 state.tribute_events[2].card
             ),
-            (0, 3, tcard(&engine, 12))
+            (1, 2, tcard(&engine, 0))
         );
         assert_eq!(
             (
@@ -1856,7 +2055,15 @@ mod tests {
 
         engine
             .resolve_tribute(&mut state, &prev)
-            .expect("进贡 / 还贡");
+            .expect("进贡");
+        state = engine
+            .apply(
+                state,
+                Action::TributeReturn {
+                    card: tcard(&engine, 0),
+                },
+            )
+            .expect("还贡 2");
 
         assert_eq!(
             total_before,
@@ -2517,6 +2724,7 @@ mod tests {
         let cards = match &action {
             Action::Play { cards } => cards.clone(),
             Action::Pass => unreachable!("领出候选不含 Pass"),
+            Action::TributeReturn { .. } => unreachable!("play 相位候选不含还贡"),
         };
         let hand_before = state
             .zones

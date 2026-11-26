@@ -26,6 +26,7 @@ fn pick(legal: &[Action]) -> Action {
         .min_by_key(|a| match a {
             Action::Play { cards } => cards.len(),
             Action::Pass => 0,
+            Action::TributeReturn { .. } => 1,
         })
         .cloned()
         .unwrap_or(Action::Pass)
@@ -54,6 +55,7 @@ fn main() {
                 let ids: Vec<String> = cards.iter().map(|c| c.to_string()).collect();
                 format!("{seat} {}", ids.join(","))
             }
+            Action::TributeReturn { card } => format!("{seat} return {card}"),
         };
         lines.push(line);
         state = engine.apply(state, action).expect("apply 失败");

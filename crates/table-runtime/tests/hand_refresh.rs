@@ -81,6 +81,18 @@ fn view_hands(room: &Room) -> Vec<Vec<u16>> {
         .collect()
 }
 
+/// 全 bot 桌把进贡的还贡动作跑完，停在 play 相位。
+fn finish_tribute(room: &mut Room, mut now_ms: u64) -> u64 {
+    while room.state().expect("有状态").phase == 1 {
+        match room.step(now_ms).expect("step 失败") {
+            StepOutcome::Applied { .. } => now_ms += 1000,
+            StepOutcome::Waiting { .. } => panic!("全 bot 桌还贡不应出现人类等待"),
+            other => panic!("还贡段出现非 Applied 结果：{other:?}"),
+        }
+    }
+    now_ms
+}
+
 fn hand_total(hands: &[Vec<u16>]) -> usize {
     hands.iter().map(|h| h.len()).sum()
 }
@@ -102,20 +114,24 @@ fn every_round_starts_with_27_cards_per_seat_even_after_tribute() {
         now = next_now + 1000;
         room.next_round(now).expect("续局失败");
         assert_eq!(room.state().expect("有状态").round_no, round);
-        // 断点在 next_round 之后、第一次 step 之前：此时可能仍停在进贡段（phase=1），
-        // 也可能抗贡/无进贡直接进 play（phase=2）。两种都不允许手牌张数变化。
+        // 断点在 next_round 之后、还贡动作之前：先只交贡牌，四家张数暂时不等；
+        // 全场 108 张仍守恒。还贡跑完后恢复每家 27 张。
         let phase = room.state().expect("有状态").phase;
         assert!(
             phase == 1 || phase == 2,
             "续局后相位应为进贡或出牌，实际 {phase}"
         );
         let hands = view_hands(&room);
+        assert_eq!(hand_total(&hands), 108, "两副牌 108 张必须全在四家手里");
+        if phase == 1 {
+            now = finish_tribute(&mut room, now);
+        }
+        let hands = view_hands(&room);
         assert_eq!(
             hands.iter().map(|h| h.len()).collect::<Vec<_>>(),
             vec![27, 27, 27, 27],
-            "第 {round} 局开局手牌应各 27 张（进贡只换牌不换张数）"
+            "第 {round} 局还贡完成后手牌应各 27 张（进贡只换牌不换张数）"
         );
-        assert_eq!(hand_total(&hands), 108, "两副牌 108 张必须全在四家手里");
     }
 }
 

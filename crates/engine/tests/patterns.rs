@@ -27,6 +27,15 @@ fn engine() -> M0Engine {
     M0Engine::new(fixture_body())
 }
 
+/// 指定初始级牌的同一套夹具（改 `levelTable.initial`），用于级牌 = A 等边界。
+fn engine_with_initial(initial: &str) -> M0Engine {
+    let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    p.push("tests/fixtures/guandan-classic/ruleset.yaml");
+    let src = fs::read_to_string(p).expect("夹具读取失败");
+    let src = src.replace("initial: \"2\"", &format!("initial: \"{initial}\""));
+    M0Engine::new(from_yaml(&src).expect("指定 initial 的夹具应构造成功"))
+}
+
 /// 变体夹具：调整 `deck.copies`（凑齐多张百搭），并同步 `perSeat` / `cardCount`
 /// 保持发牌守恒；`strip_bombs` 去掉 bomb-5..8 行，用于「未声明该张数炸弹」反例。
 /// 仅构造期用，不走 L1 值域校验。
@@ -468,6 +477,29 @@ fn level_single_beats_a() {
     assert!(
         plays_contain(&legal, &[c(&r, 0, 0, 0)]),
         "级牌单张应压过 A: {legal:?}"
+    );
+}
+
+#[test]
+fn level_a_single_stays_below_small_joker() {
+    let r = fixture_body();
+    let engine = engine_with_initial("A");
+    // 打 A 时 A 是级牌，但级牌仍在小王之下：A(13) < 小王(14) < 大王(15)。
+    let ace = c(&r, 12, 0, 0);
+    let little = joker_id(&engine.ruleset, false, 0);
+    let on_table = follow_state(&engine, vec![ace], "single", (1, 14), vec![little]);
+    let legal = engine.legal_actions(&on_table).expect("枚举合法动作失败");
+    assert!(
+        !plays_contain(&legal, &[ace]),
+        "A 级牌不得压小王: {legal:?}"
+    );
+    let on_table_rev = follow_state(&engine, vec![little], "single", (1, 13), vec![ace]);
+    let legal_rev = engine
+        .legal_actions(&on_table_rev)
+        .expect("枚举合法动作失败");
+    assert!(
+        plays_contain(&legal_rev, &[little]),
+        "小王必须能压 A 级牌: {legal_rev:?}"
     );
 }
 
@@ -951,8 +983,8 @@ fn flush_beats_bomb5_and_loses_to_bomb6() {
 
 // ---------- 四王炸 ----------
 
-/// 王炸**只有四张王**（两张小王 + 两张大王）才成立；1 / 2 / 3 张王都不是炸，
-/// 也不是对子或三张（王只出现在单张牌型里）。
+/// 王炸**只有四张王**（两张小王 + 两张大王）才成立；两张同王是普通对子，
+/// 一大一小不成对，三张王不成三张。
 #[test]
 fn joker_bomb_needs_all_four_jokers() {
     let r = fixture_body();
@@ -960,46 +992,44 @@ fn joker_bomb_needs_all_four_jokers() {
     let little = [joker_id(&r, false, 0), joker_id(&r, false, 1)];
     let big = [joker_id(&r, true, 0), joker_id(&r, true, 1)];
 
-    // 2 张与 3 张的四种组合：一次性出必须判非法，且领出态里不得出现「整体作为一条动作」。
-    let partial: Vec<Vec<u16>> = vec![
-        vec![little[0], little[1]],
-        vec![big[0], big[1]],
-        vec![little[0], big[0]],
-        vec![little[0], little[1], big[0]],
-        vec![little[0], big[0], big[1]],
-    ];
-    for cards in partial {
-        assert_illegal(
-            apply_play(&engine, cards.clone(), cards.clone()),
-            &format!("{} 张王 {:?} 不应成炸", cards.len(), cards),
+    // 两张同王：按普通对子落子，牌型不是王炸。
+    for (cards, key, name) in [
+        (vec![little[0], little[1]], 14, "两小王对"),
+        (vec![big[0], big[1]], 15, "两大王对"),
+    ] {
+        assert_played(
+            apply_play(&engine, cards.clone(), cards),
+            "pair",
+            (2, key),
+            name,
         );
+    }
+
+    // 一大一小不成对，三张王不成三张：整组出牌必须判非法。
+    let illegal: Vec<(Vec<u16>, &str)> = vec![
+        (vec![little[0], big[0]], "一大一小不成对"),
+        (vec![little[0], little[1], big[0]], "三张王不成三张"),
+        (vec![little[0], big[0], big[1]], "三张王不成三张"),
+    ];
+    for (cards, name) in illegal {
+        assert_illegal(apply_play(&engine, cards.clone(), cards.clone()), name);
         let state = state_with(&engine, cards.clone());
         let legal = engine.legal_actions(&state).expect("枚举合法动作失败");
         assert!(
             !legal.contains(&Action::Play {
                 cards: cards.clone()
             }),
-            "不足四张的王不应整体成一条动作: {legal:?}"
-        );
-        // 领出态里没有任何多张动作（不成炸、不成对、不成三张）；王只作单张，
-        // 且同型同键只列规范一条，故不必逐副本断言。
-        assert!(
-            legal.iter().all(|a| match a {
-                Action::Play { cards } => cards.len() == 1,
-                _ => true,
-            }),
-            "{} 张王不应产出任何多张动作: {legal:?}",
-            cards.len()
+            "{name}: 整组不应成为一条合法动作 {legal:?}"
         );
         assert!(
             legal
                 .iter()
                 .any(|a| matches!(a, Action::Play { cards } if cards.len() == 1)),
-            "王自身应可作单张: {legal:?}"
+            "{name}: 王自身仍应可作单张 {legal:?}"
         );
     }
 
-    // 对照：四张王成炸（同 `joker_bomb_four_jokers`，此处再确认一次「整组」合法）。
+    // 对照：四张王成炸。
     let four = vec![little[0], little[1], big[0], big[1]];
     assert_played(
         apply_play(&engine, four.clone(), four),
@@ -1088,12 +1118,17 @@ fn joker_bomb_rejects_three_jokers_plus_plain() {
 }
 
 #[test]
-fn joker_bomb_rejects_two_big_only() {
+fn two_big_jokers_are_pair_not_joker_bomb() {
     let engine = engine();
     let big0 = joker_id(&engine.ruleset, true, 0);
     let big1 = joker_id(&engine.ruleset, true, 1);
     let cards = vec![big0, big1];
-    assert_illegal(apply_play(&engine, cards.clone(), cards), "双大王不带小王");
+    assert_played(
+        apply_play(&engine, cards.clone(), cards),
+        "pair",
+        (2, 15),
+        "双大王对",
+    );
 }
 
 // ---------- 比较 ----------
@@ -1229,6 +1264,7 @@ fn enumerates_plate_steel_bomb_candidates() {
         .filter_map(|a| match a {
             Action::Play { cards } => Some(cards.clone()),
             Action::Pass => None,
+            Action::TributeReturn { .. } => None,
         })
         .collect();
     for p in plays.iter_mut() {
@@ -1315,6 +1351,7 @@ fn legal_actions_pair_lex_min_by_card_id() {
         .filter_map(|a| match a {
             Action::Play { cards } => Some(cards.clone()),
             Action::Pass => None,
+            Action::TributeReturn { .. } => None,
         })
         .collect();
     for p in plays.iter_mut() {
@@ -1610,6 +1647,7 @@ fn plays_contain(legal: &[Action], cards: &[u16]) -> bool {
             cc == target
         }
         Action::Pass => false,
+        Action::TributeReturn { .. } => false,
     })
 }
 

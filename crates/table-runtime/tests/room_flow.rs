@@ -320,10 +320,10 @@ fn reconnect_delta_falls_back_on_settled_or_cross_round() {
         .find(|s| room.seat_seq(*s).expect("水位查询失败") > 0)
         .expect("一局内必然有座位出过手");
     room.next_round(now_ms + 1000).expect("续局失败");
-    assert_eq!(
-        room.state().expect("有状态").phase,
-        gf_engine::engine::PHASE_PLAY,
-        "续局应直接进入出牌段"
+    let phase = room.state().expect("有状态").phase;
+    assert!(
+        phase == gf_engine::engine::PHASE_TRIBUTE || phase == gf_engine::engine::PHASE_PLAY,
+        "续局应进入进贡段或出牌段，实际 {phase}"
     );
     let mut cursor = now_ms + 2000;
     for _ in 0..5 {

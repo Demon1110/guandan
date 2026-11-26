@@ -19,6 +19,7 @@ use gf_table_runtime::HandPlan;
 pub(crate) fn action_cards(action: &Action) -> &[u16] {
     match action {
         Action::Play { cards } => cards,
+        Action::TributeReturn { .. } => &[],
         Action::Pass => &[],
     }
 }

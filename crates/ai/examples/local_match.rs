@@ -31,6 +31,9 @@ fn main() {
                     match action {
                         Action::Play { cards } => println!("座位 {seat} 出牌 {cards:?}"),
                         Action::Pass => println!("座位 {seat} 过牌"),
+                        Action::TributeReturn { card } => {
+                            println!("座位 {seat} 还贡 {card}")
+                        }
                     }
                     now_ms += 1000;
                 }

@@ -250,6 +250,11 @@ pub struct State {
     pub tribute_resisted: bool,
     /// 诊断字段，**不进 stateHash**：本局进贡 / 还贡逐条转移记录（§5.9 `TributeEvent`）。
     pub tribute_events: Vec<TributeEventRecord>,
+    /// 诊断字段，**不进 stateHash**：还贡相位待受贡方（`turn_seat`）从手牌挑一张还回去。
+    /// 每对进贡对应一条，按进贡配对顺序消费；空表即还贡完成、可转 play。
+    pub tribute_pending_returns: Vec<TributeReturnPending>,
+    /// 诊断字段，**不进 stateHash**：本局贡牌最大者（进贡完成后由他首出）。
+    pub tribute_leader: Option<u8>,
     /// 诊断字段，**不进 stateHash**：场次终止载波（过 A / 达安全上限 / 中止）；未终止为 `None`。
     pub match_end: Option<MatchEnd>,
 }
@@ -268,6 +273,15 @@ pub struct TributeEventRecord {
     pub card: u16,
     /// `true` = 还贡（受贡方→贡方）；`false` = 进贡（贡方→受贡方）。
     pub is_return: bool,
+}
+
+/// 还贡待办：受贡方 `receiver` 需把一张牌还回贡方 `payer`。
+///
+/// 诊断字段，**不进 `stateHash`**；由进贡相位逐对生成、还贡动作逐条消费。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TributeReturnPending {
+    pub payer: u8,
+    pub receiver: u8,
 }
 
 /// 场次终止原因（§5.13 行 1008、§6.5 `match_record.end_reason`）。取值以设计既有定义为准，
@@ -315,6 +329,8 @@ pub enum Action {
     Play { cards: Vec<u16> },
     /// 过牌：空结构体。
     Pass,
+    /// 还贡：只在 `tribute` 相位、由当前受贡方提交一张手牌（通常不得大于 10）。
+    TributeReturn { card: u16 },
 }
 
 /// 下发视图：`view` 是 bytes，内容为 canonical JSON（§5.9 / §5.12）。

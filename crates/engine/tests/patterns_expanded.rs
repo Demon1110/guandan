@@ -162,6 +162,46 @@ fn triple_pair_rejects_four_main_cards() {
 }
 
 #[test]
+fn same_joker_pair_is_pair_and_beats_ace_pair() {
+    let engine = engine();
+    let r = &engine.ruleset;
+    let big = vec![joker(r, true, 0), joker(r, true, 1)];
+    let small = vec![joker(r, false, 0), joker(r, false, 1)];
+
+    // 领出：两张同王应识别为普通对子，而不是只能单张 / 王炸。
+    let next = play_lead(&engine, big.clone()).expect("两大王应成对");
+    assert_eq!(next.last_play.expect("桌面记录").pattern_id, "pair");
+
+    // 造一对 A 压场，再由两大王 / 两小王跟牌；对王应高于对 A。
+    let aces = vec![c(r, 12, 0, 0), c(r, 12, 1, 0)];
+    let lead_state = state_with(&engine, aces.clone(), None);
+    let lead_next = engine
+        .apply(lead_state, Action::Play { cards: aces })
+        .expect("对 A 应合法");
+    let mut last = lead_next.last_play.expect("桌面记录");
+    last.seat = 1;
+
+    let state = state_with(&engine, big.clone(), Some(last.clone()));
+    let legal = engine.legal_actions(&state).expect("合法动作");
+    assert!(
+        legal
+            .iter()
+            .any(|a| matches!(a, Action::Play { cards } if cards == &big)),
+        "对 A 压场时，两大王对必须出现在合法动作里"
+    );
+    assert!(
+        engine.apply(state, Action::Play { cards: big }).is_ok(),
+        "两大王对必须压过对 A"
+    );
+
+    let state = state_with(&engine, small.clone(), Some(last));
+    assert!(
+        engine.apply(state, Action::Play { cards: small }).is_ok(),
+        "两小王对也必须压过对 A"
+    );
+}
+
+#[test]
 fn follow_compare_handles_both_directions() {
     let engine = engine();
     let r = &engine.ruleset;

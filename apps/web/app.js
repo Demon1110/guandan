@@ -266,13 +266,15 @@ const room = {
     return JSON.parse(cstr(ex.gf_room_step(BigInt(at))));
   },
   submit(seat, at, action) {
+    const code = action.tributeReturn ? 2 : action.pass ? 1 : 0;
     return withCards(action.cards ?? [], (ptr, len) =>
-      JSON.parse(cstr(ex.gf_room_submit(seat, BigInt(at), action.pass ? 1 : 0, ptr, len))),
+      JSON.parse(cstr(ex.gf_room_submit(seat, BigInt(at), code, ptr, len))),
     );
   },
   replay(rec) {
+    const code = rec.tributeReturn ? 2 : rec.pass ? 1 : 0;
     return withCards(rec.cards ?? [], (ptr, len) =>
-      ex.gf_room_replay_action(rec.seat, rec.pass ? 1 : 0, ptr, len) === 1,
+      ex.gf_room_replay_action(rec.seat, code, ptr, len) === 1,
     );
   },
   nextRound(at) {
@@ -296,7 +298,14 @@ const room = {
   lastRecord() {
     const raw = JSON.parse(cstr(ex.gf_room_last_record()));
     if (!raw) return null;
-    return { seq: raw.roomSeq, roundNo: raw.roundNo, seat: raw.seat, pass: raw.action.pass, cards: raw.action.cards ?? [] };
+    return {
+      seq: raw.roomSeq,
+      roundNo: raw.roundNo,
+      seat: raw.seat,
+      pass: raw.action.pass,
+      tributeReturn: !!raw.action.tributeReturn,
+      cards: raw.action.cards ?? [],
+    };
   },
   // 当前行动座位的合法动作集（wasm 新增导出；旧产物没有时退化为空表）。
   legal() {
@@ -339,7 +348,13 @@ const state = {
   waitingSeat: null,
   deadline: 0,
   running: false,
-  phase: 'idle', // idle | play | settle | ended
+  phase: 'idle', // idle | tribute | play | settle | ended
+  // 本局进贡状态（gf_room_info.tribute）：active / resisted / leader / pending / events
+  tribute: null,
+  tributeSeen: new Set(),
+  tributeQueue: [],
+  tributeBusy: false,
+  tributeDrain: null,
   speed: 240,
   showIds: false,
   showLog: true,
@@ -514,12 +529,22 @@ function renderSeats() {
     else if (rankName) tag = `<span class="tag rank">${rankName}</span>`;
     else tag = `<span class="tag">${mine ? '本家' : ally ? '我方' : '对方'}</span>`;
     const body = `${mine ? '本家' : ally ? '我方' : '对方'} · 手牌 ${si.hand} 张` + (!mine && last ? `<br/>最近：${last}` : '');
+    // 结算 / 场次结束时把每家剩下的手牌摊在座位上；出完的座位给出明确说明，
+    // 不再只剩一个「手牌 0 张」让人误以为还没打完。
+    let handHtml = '';
+    if (state.phase === 'settle' || state.phase === 'ended') {
+      const left = room.view(s.seat).hand?.cards ?? [];
+      handHtml = `<div class="seat-cards">${left.length
+        ? left.map((id) => miniCardHtml(id)).join('')
+        : '<span class="seat-empty">已出完</span>'}</div>`;
+    }
     box.innerHTML = `
       <div class="seat-head">
         <span>座位 ${s.seat} ${mine ? '· 你' : s.human ? '· 玩家' : '· AI'}</span>
         ${tag}
       </div>
       <div class="seat-body">${body}</div>
+      ${handHtml}
     `;
   }
 }
@@ -529,38 +554,44 @@ function renderScoreboard() {
   const levels = info.levels ?? [];
   const myTeam = state.humanSeat % 2;
   const attack = info.attackingTeam;
-  const turnTeam = Number.isFinite(info.turnSeat) ? info.turnSeat % 2 : -1;
   const mine = levels[myTeam];
   const theirs = levels[1 - myTeam];
+  // 左上角只区分「我方 / 对方」和打级方：文字在上、级牌在下，不再用箭头标当前行动方。
   const side = (team, label, level) => {
-    const cls = [
-      'score-side',
-      attack === team ? 'attack' : '',
-      turnTeam === team ? 'turn' : '',
-    ].filter(Boolean).join(' ');
-    const hint = [attack === team ? '打级方' : '', turnTeam === team ? '当前行动' : '']
-      .filter(Boolean).join(' · ');
-    return `<div class="${cls}" title="${hint}">${turnTeam === team ? '▶ ' : ''}${label} <b>${levelLabel(level)}</b></div>`;
+    const cls = ['score-side', attack === team ? 'attack' : ''].filter(Boolean).join(' ');
+    const hint = attack === team ? '打级方' : '';
+    return `<div class="${cls}" title="${hint}"><span class="score-label">${label}</span><b>${levelLabel(level)}</b></div>`;
   };
   el('scoreboard').innerHTML = side(myTeam, '我方', mine) + side(1 - myTeam, '对方', theirs);
+}
+
+function miniCardHtml(id) {
+  const svg = state.themeSkin ? theme.svg(id, levelRankLabel()) : null;
+  if (svg) return `<span class="mini-card themed">${svg}</span>`;
+  const f = cardFace(id);
+  return `<span class="mini-card${f.red ? ' red' : ''}">${f.rank}${f.suit}</span>`;
 }
 
 function renderPlayZones() {
   const v = room.view(state.humanSeat);
   const wrap = el('play-zones');
-  // 本墩结束 / 还没人出牌：四个方位一起清空，等下一墩重新落牌。
-  if (!v.lastPlay) {
+  const ended = state.phase === 'settle' || state.phase === 'ended';
+  // 结算时把出牌区清空：最后一手已经打出去了，不能再钉在牌桌上；
+  // 手牌区也已经同步为 0，不会让人误以为牌还在手里。
+  const source = ended ? {} : state.trickBySeat;
+  if (ended || !v.lastPlay) {
+    // 本墩结束 / 还没人出牌 / 已经结算：四个方位一起清空。
     state.trickBySeat = {};
     wrap.innerHTML = '';
     return;
   }
   // 兜底：页面刚恢复、日志里还没补到这一手时，至少把当前压场的一手放出来。
-  if (!state.trickBySeat[v.lastPlay.seat]) rememberTrickPlay(v.lastPlay);
+  if (!ended && !source[v.lastPlay.seat]) rememberTrickPlay(v.lastPlay);
   const names = ['你', '右家', '对家', '左家'];
   const parts = [];
   for (let rel = 0; rel < 4; rel += 1) {
     const seat = (state.humanSeat + rel) % 4;
-    const ent = state.trickBySeat[seat];
+    const ent = source[seat];
     if (!ent) continue;
     const who = names[rel];
     const tag = ent.patternId ? ` · ${patternName(ent.patternId)}` : '';
@@ -570,12 +601,7 @@ function renderPlayZones() {
     } else {
       const cards = [...ent.cards].sort((a, b) => columnKey(b, levelRankLabel()) - columnKey(a, levelRankLabel())
         || suitIndexOf(a) - suitIndexOf(b));
-      body = `<div class="last-play">${cards.map((id) => {
-        const svg = state.themeSkin ? theme.svg(id, levelRankLabel()) : null;
-        if (svg) return `<span class="mini-card themed">${svg}</span>`;
-        const f = cardFace(id);
-        return `<span class="mini-card${f.red ? ' red' : ''}">${f.rank}${f.suit}</span>`;
-      }).join('')}</div>`;
+      body = `<div class="last-play">${cards.map((id) => miniCardHtml(id)).join('')}</div>`;
     }
     parts.push(`<div class="play-zone" data-rel="${rel}"><div class="play-who">${who}${tag}</div>${body}</div>`);
   }
@@ -951,6 +977,10 @@ function renderAll() {
   try {
     state.legalSeq = room.meta().roomSeq;
   } catch { /* 未开局 */ }
+  document.querySelector('.board')?.classList.toggle(
+    'settling',
+    state.phase === 'settle' || state.phase === 'ended',
+  );
   renderSeats();
   renderScoreboard();
   renderPlayZones();
@@ -996,17 +1026,28 @@ async function record(rec) {
 }
 
 function toRecord(s) {
-  return { seq: s.roomSeq, roundNo: s.roundNo, seat: s.seat, pass: s.action.pass, cards: s.action.cards ?? [] };
+  return {
+    seq: s.roomSeq,
+    roundNo: s.roundNo,
+    seat: s.seat,
+    pass: s.action.pass,
+    tributeReturn: !!s.action.tributeReturn,
+    patternId: s.action.patternId,
+    cards: s.action.cards ?? [],
+  };
 }
 
 function describe(rec) {
+  if (rec.tributeReturn) {
+    return `还贡 ${(rec.cards ?? []).slice(0, 1).map(cardLabel).join(' ')}`;
+  }
   return rec.pass ? '过牌' : '出 ' + (rec.cards ?? []).map(cardLabel).join(' ');
 }
 
-/** 记住某座位本墩最近一手：出牌存卡片 id，过牌只存状态。 */
+/** 记住某座位本墩最近一手：出牌存卡片 id，过牌只存状态；还贡不是出牌，不进牌桌。 */
 function rememberTrickPlay(rec) {
   const seat = rec.seat;
-  if (seat === null || seat === undefined) return;
+  if (seat === null || seat === undefined || rec.tributeReturn) return;
   state.lastBySeat[seat] = describe(rec);
   state.trickBySeat[seat] = rec.pass
     ? { seat, pass: true, cards: [] }
@@ -1021,6 +1062,9 @@ function rememberTrickPlay(rec) {
 function showSettle(summary, ended) {
   state.phase = ended ? 'ended' : 'settle';
   state.selected.clear();
+  // 结算直接清空桌上的出牌区：最后一手已经打出去了，
+  // 不再把它留在桌面上冒充「还没出完」。
+  state.trickBySeat = {};
   const ranks = summary?.ranks ?? [];
   const rows = el('settle-rows');
   rows.innerHTML = '';

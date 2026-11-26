@@ -374,6 +374,10 @@ pub fn action_line(match_id: &str, record: &ActionRecord) -> String {
             ("play", format!("{{\"cards\":[{}]}}", cards.join(",")))
         }
         Action::Pass => ("pass", "{}".to_owned()),
+        Action::TributeReturn { card } => (
+            "tribute-return",
+            format!("{{\"card\":{card}}}"),
+        ),
     };
     format!(
         "{{\"matchId\":{},\"seatSeq\":{},\"roomSeq\":{},\"roundNo\":{},\"seat\":{},\

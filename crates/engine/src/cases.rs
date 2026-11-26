@@ -184,6 +184,12 @@ fn run_golden(engine: M0Engine, min_steps: usize) -> Result<GoldenOutcome, Strin
                 cards: Vec::new(),
                 round_no: state.round_no,
             },
+            Action::TributeReturn { card } => ActionLogEntry {
+                seat: state.turn_seat,
+                kind: "tribute-return".to_owned(),
+                cards: vec![*card],
+                round_no: state.round_no,
+            },
         };
         state = engine.apply(state, action).map_err(|e| e.to_string())?;
         if state.phase == PHASE_SETTLE {

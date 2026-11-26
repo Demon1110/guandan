@@ -108,44 +108,49 @@ header .dot { opacity: .5; }
 .seat .tag.gold { background: rgba(242, 193, 78, .18); color: var(--gold); }
 .seat .tag.rank { background: rgba(127, 194, 255, .16); color: var(--blue); }
 .seat .tag.finished { background: #24405a; color: #cfe4ff; }
+/* 结算摊牌：每家余牌缩成小牌，贴在座位卡下方；出完的座位给明确文案 */
+.seat-cards { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; }
+.seat-cards .mini-card { min-width: 22px; height: 30px; padding: 0 2px; font-size: 10px; border-radius: 4px; }
+.seat-cards .mini-card.themed { width: 22px; height: 30px; }
+.seat-empty { font-size: 10px; color: var(--muted); letter-spacing: 1px; }
 
 .slot-top { top: 16px; left: 50%; transform: translateX(-50%); }
 .slot-left { left: 16px; top: 22%; }
 .slot-right { right: 16px; top: 34%; }
 .slot-bottom { left: 16px; top: calc(22% + 180px); min-height: 92px; }
 
-/* 左上角：双方级牌 + 打级方高亮 */
+/* 左上角：文字在上、级牌在下；只高亮打级方，不用箭头标当前行动 */
 .scoreboard {
   position: absolute;
   left: 14px;
   top: 12px;
   display: flex;
-  gap: 6px;
+  gap: 8px;
   z-index: 3;
 }
 .score-side {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
+  gap: 2px;
+  min-width: 54px;
+  padding: 5px 10px 6px;
   border-radius: 9px;
   background: rgba(8, 26, 20, .82);
   border: 1px solid var(--line);
   font-size: 12px;
+  line-height: 1.05;
   color: var(--muted);
 }
-.score-side b { font-size: 17px; color: var(--text); font-weight: 700; }
+.score-label { font-size: 10px; letter-spacing: 1px; }
+.score-side b { font-size: 20px; color: var(--text); font-weight: 700; }
 .score-side.attack {
   border-color: var(--gold);
   color: var(--gold);
   box-shadow: 0 0 0 1px rgba(242, 193, 78, .35), 0 0 18px rgba(242, 193, 78, .18);
 }
+.score-side.attack .score-label { color: var(--gold); }
 .score-side.attack b { color: var(--gold); }
-.score-side.turn {
-  background: rgba(242, 193, 78, .14);
-  border-color: rgba(242, 193, 78, .55);
-  color: #ffe7ae;
-}
 
 /* 出牌区：四个方位各一块，铺在各自座位靠近桌心的一侧。
    下方（自己）放在手牌区上方；右家放在其座位卡左侧；上方放在其座位卡下方；左家放在其座位卡右侧。 */
@@ -368,6 +373,8 @@ header .dot { opacity: .5; }
   .card .suit { font-size: 13px; }
   .hand { justify-content: flex-start; min-height: 104px; }
   .scoreboard { left: 8px; top: 6px; }
+  /* 窄屏侧栏是浮层，结算时先让开，免得把右家和牌桌盖住 */
+  .board.settling ~ .side { display: none; }
   .lobby { margin-top: 5vh; padding: 22px; }
   .lobby-fields { grid-template-columns: 1fr; }
 }

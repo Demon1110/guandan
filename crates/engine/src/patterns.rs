@@ -127,11 +127,12 @@ impl RankContext {
         order.remove(pos);
         let insert_at = match r.level_insert {
             LevelInsert::AboveA => {
-                let a = r.deck.ranks.last().expect("deck.ranks 非空");
+                // above-A 的插入点是「全部普通点数之后、大小王之前」。
+                // 级牌本身是 A 时，A 已从 order 里被移除，不能再拿 deck.ranks.last()
+                // 去找插入位，否则会落到大小王之后，把 A 级牌顶成比王还大。
                 order
                     .iter()
-                    .position(|k| **k == *a)
-                    .map(|p| p + 1)
+                    .position(|k| k.is_joker())
                     .unwrap_or(order.len())
             }
             LevelInsert::Below2 => 0,
@@ -426,7 +427,7 @@ fn match_same_rank(
 ) -> Option<Recognized> {
     let k = count as usize;
 
-    // 王只在单张牌型里出现；百搭不能代王。
+    // 王只在单张 / 同王对里出现；百搭不能代王。
     if !g.little.is_empty() || !g.big.is_empty() {
         if k == 1 && g.base.is_empty() && g.wild.is_empty() {
             if g.little.len() == 1 && g.big.is_empty() {
@@ -434,6 +435,15 @@ fn match_same_rank(
             }
             if g.big.len() == 1 && g.little.is_empty() {
                 return Some(build_rec(def, 1, ctx.joker_key(r, true), g.big.clone()));
+            }
+        }
+        // 两张同王成对：对大王 > 对小王，均高于对级牌；一大一小仍不成对。
+        if k == 2 && g.base.is_empty() && g.wild.is_empty() {
+            if g.little.len() == 2 && g.big.is_empty() {
+                return Some(build_rec(def, 2, ctx.joker_key(r, false), g.little.clone()));
+            }
+            if g.big.len() == 2 && g.little.is_empty() {
+                return Some(build_rec(def, 2, ctx.joker_key(r, true), g.big.clone()));
             }
         }
         return None;
@@ -931,6 +941,19 @@ fn same_rank_candidates(
             }
         }
     } else {
+        // 同王对也是普通对子：对大王 > 对小王 > 对级牌 > 对 A。
+        if count == 2 {
+            if g.little.len() >= 2 {
+                if let Some(rec) = recognize(ladder, r, ctx, &g.little[..2]) {
+                    out.push(rec);
+                }
+            }
+            if g.big.len() >= 2 {
+                if let Some(rec) = recognize(ladder, r, ctx, &g.big[..2]) {
+                    out.push(rec);
+                }
+            }
+        }
         for bucket in g.base.values() {
             let need = count.saturating_sub(bucket.len());
             if need <= g.wild.len() {
@@ -1399,6 +1422,19 @@ pub(crate) mod legacy_ref {
                             }
                         }
                     } else {
+                        // 同王对：与生产路径同口径，两张小王 / 两张大王各成一对。
+                        if count == 2 {
+                            if g.little.len() >= 2 {
+                                if let Some(rec) = recognize_legacy(r, ctx, &g.little[..2]) {
+                                    push(rec);
+                                }
+                            }
+                            if g.big.len() >= 2 {
+                                if let Some(rec) = recognize_legacy(r, ctx, &g.big[..2]) {
+                                    push(rec);
+                                }
+                            }
+                        }
                         for bucket in g.base.values() {
                             let need = count.saturating_sub(bucket.len());
                             if need <= g.wild.len() {

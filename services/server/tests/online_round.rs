@@ -46,6 +46,9 @@ fn play_msg(seat: u8, seq: u64, request_id: &str, action: &Action) -> pb::Submit
             kind: pb::ActionKind::Pass as i32,
             payload: Some(pb::submit_action::Payload::Pass(pb::PassPayload {})),
         },
+        Action::TributeReturn { .. } => {
+            unreachable!("v1 协议没有还贡动作；本测试只跑首局")
+        }
     }
 }
 

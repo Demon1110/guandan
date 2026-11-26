@@ -30,6 +30,7 @@ fn is_joker(card: u16) -> bool {
 pub fn cards_of(action: &Action) -> &[u16] {
     match action {
         Action::Play { cards } => cards,
+        Action::TributeReturn { .. } => &[],
         Action::Pass => &[],
     }
 }

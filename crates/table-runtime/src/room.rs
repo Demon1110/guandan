@@ -10,7 +10,7 @@
 //! 端口 / 协议 / 联机均不在此层：本层只保证「一桌纯本地 bot 局可无人值守跑完并续局」。
 
 use gf_engine::contract::{Action, Engine, MatchEnd, Seat, State};
-use gf_engine::engine::{M0Engine, PHASE_PLAY, PHASE_SETTLE};
+use gf_engine::engine::{M0Engine, PHASE_PLAY, PHASE_SETTLE, PHASE_TRIBUTE};
 use gf_engine::ruleset::from_yaml;
 use gf_engine::view::view_hash;
 
@@ -558,7 +558,7 @@ impl Room {
             return Err(RoomError::NotHuman(seat));
         }
         let state = self.state.as_ref().ok_or(RoomError::NotStarted)?;
-        if state.phase != PHASE_PLAY {
+        if state.phase != PHASE_PLAY && state.phase != PHASE_TRIBUTE {
             return Err(RoomError::NotInPlay);
         }
         if state.turn_seat != seat {
@@ -577,7 +577,7 @@ impl Room {
     pub fn replay_apply(&mut self, seat: u8, action: Action) -> Result<StepOutcome, RoomError> {
         let idx = self.seat_index(seat)?;
         let state = self.state.as_ref().ok_or(RoomError::NotStarted)?;
-        if state.phase != PHASE_PLAY {
+        if state.phase != PHASE_PLAY && state.phase != PHASE_TRIBUTE {
             return Err(RoomError::NotInPlay);
         }
         if state.turn_seat != seat {
@@ -605,6 +605,40 @@ impl Room {
             }
             let summary = self.settle_summary().expect("settle 态必有摘要");
             return Ok(StepOutcome::Settled(summary));
+        }
+        if state.phase == PHASE_TRIBUTE {
+            let seat = state.turn_seat;
+            let idx = self.seat_index(seat)?;
+            let deadline = self.turn_deadline_ms.unwrap_or(now_ms);
+            if self.status[idx] == PlayerStatus::Offline {
+                let since = self.offline_since[idx].unwrap_or(now_ms);
+                let grace_deadline = since.saturating_add(self.grace_ms);
+                if now_ms >= grace_deadline {
+                    return self.auto_play(idx, now_ms, AutoReason::Offline);
+                }
+                return Ok(StepOutcome::Waiting {
+                    seat,
+                    deadline_ms: grace_deadline,
+                });
+            }
+            if self.players[idx] == PlayerKind::Bot {
+                // bot 还贡走规则集默认口径（不大于 10 的最小牌），不走出牌推荐。
+                let default_card = self
+                    .engine()
+                    .tribute_return_default(self.state()?)
+                    .map(|card| Action::TributeReturn { card });
+                let action = default_card
+                    .or_else(|| self.legal_normalized().ok().and_then(|l| l.into_iter().next()))
+                    .unwrap_or(Action::TributeReturn { card: 0 });
+                return self.apply_action(idx, action, now_ms, None);
+            }
+            if now_ms >= deadline {
+                return self.auto_play(idx, now_ms, AutoReason::Timeout);
+            }
+            return Ok(StepOutcome::Waiting {
+                seat,
+                deadline_ms: deadline,
+            });
         }
         if state.phase != PHASE_PLAY {
             return Err(RoomError::NotInPlay);
@@ -737,7 +771,7 @@ impl Room {
     ) -> Result<Option<(u64, Vec<ReplayedStep>)>, RoomError> {
         self.seat_index(seat)?;
         let state = self.state.as_ref().ok_or(RoomError::NotStarted)?;
-        if state.phase != PHASE_PLAY {
+        if state.phase != PHASE_PLAY && state.phase != PHASE_TRIBUTE {
             return Ok(None);
         }
         let ReconnectDecision::Delta {
@@ -844,7 +878,7 @@ impl Room {
         let in_play = self
             .state
             .as_ref()
-            .map(|s| s.phase == PHASE_PLAY)
+            .map(|s| s.phase == PHASE_PLAY || s.phase == PHASE_TRIBUTE)
             .unwrap_or(false);
         self.turn_deadline_ms = if in_play {
             Some(now_ms.saturating_add(self.turn_ms))
@@ -948,6 +982,7 @@ impl Room {
                     matches!(self.engine.preview_play(state, cards), Ok((_, true)))
                 }
                 Action::Pass => false,
+                Action::TributeReturn { .. } => false,
             });
         if acceptable {
             return self.apply_action(idx, candidate, now_ms, None);
@@ -987,6 +1022,7 @@ impl Room {
                     matches!(self.engine.preview_play(state, cards), Ok((_, true)))
                 }),
                 Action::Pass => false,
+                Action::TributeReturn { .. } => false,
             };
             if !allow {
                 return Err(RoomError::Engine(format!(
@@ -1051,6 +1087,7 @@ pub fn normalize_action(action: Action) -> Action {
             Action::Play { cards }
         }
         Action::Pass => Action::Pass,
+        Action::TributeReturn { card } => Action::TributeReturn { card },
     }
 }
 

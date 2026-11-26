@@ -207,6 +207,7 @@ fn different_first_play_changes_state_hash_to_settle() {
         let c = match a {
             Action::Play { cards } => cards[0],
             Action::Pass => continue,
+            Action::TributeReturn { .. } => continue,
         };
         let st = engine.apply(s0.clone(), a.clone()).expect("落子失败");
         let (h, _) = run_to_settle(&engine, st);

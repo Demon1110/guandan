@@ -55,6 +55,7 @@ fn plays_of(actions: &[Action]) -> Vec<Vec<u16>> {
         .filter_map(|a| match a {
             Action::Play { cards } => Some(cards.clone()),
             Action::Pass => None,
+            Action::TributeReturn { .. } => None,
         })
         .collect()
 }

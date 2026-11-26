@@ -114,6 +114,9 @@ fn action_json(action: &Action) -> String {
             s.push_str("]}");
             s
         }
+        Action::TributeReturn { card } => {
+            format!("{{\"pass\":false,\"tributeReturn\":true,\"cards\":[{card}]}}")
+        }
     }
 }
 
@@ -135,6 +138,7 @@ fn action_json_patterned(action: &Action, pattern_id: &str) -> String {
             s.push_str("]}");
             s
         }
+        Action::TributeReturn { .. } => action_json(action),
     }
 }
 
@@ -174,17 +178,28 @@ fn summary_json(r: &Room) -> String {
     )
 }
 
+fn phase_name(phase: u16) -> &'static str {
+    match phase {
+        0 => "deal",
+        1 => "tribute",
+        2 => "play",
+        3 => "settle",
+        _ => "unknown",
+    }
+}
+
 fn outcome_json(r: &Room, diff: StepOutcome) -> String {
     let round_no = r.state().map(|s| s.round_no).unwrap_or(0);
+    let phase = r.state().map(|s| phase_name(s.phase)).unwrap_or("idle");
     // 本条动作的真实 `roomSeq`（`ActionRecord.room_seq`）；`r.room_seq()` 是**下一条**序号，
     // 直接拿它会让「逐手记录」与「结算补记（lastRecord 的真实序号）」差 1，同键覆盖丢一手。
     let action_seq = r.log().last().map(|rec| rec.room_seq).unwrap_or(0);
     match diff {
         StepOutcome::Waiting { seat, deadline_ms } => format!(
-            "{{\"kind\":\"waiting\",\"seat\":{seat},\"deadlineMs\":{deadline_ms},\"roundNo\":{round_no}}}"
+            "{{\"kind\":\"waiting\",\"phase\":\"{phase}\",\"seat\":{seat},\"deadlineMs\":{deadline_ms},\"roundNo\":{round_no}}}"
         ),
         StepOutcome::Applied { seat, action, auto } => format!(
-            "{{\"kind\":\"applied\",\"seat\":{},\"action\":{},\"auto\":{},\"roundNo\":{},\"roomSeq\":{}}}",
+            "{{\"kind\":\"applied\",\"phase\":\"{phase}\",\"seat\":{},\"action\":{},\"auto\":{},\"roundNo\":{},\"roomSeq\":{}}}",
             seat,
             action_json(&action),
             auto_json(auto),
@@ -192,13 +207,13 @@ fn outcome_json(r: &Room, diff: StepOutcome) -> String {
             action_seq
         ),
         StepOutcome::Settled(_) => format!(
-            "{{\"kind\":\"settled\",\"roundNo\":{},\"roomSeq\":{},\"summary\":{}}}",
+            "{{\"kind\":\"settled\",\"phase\":\"{phase}\",\"roundNo\":{},\"roomSeq\":{},\"summary\":{}}}",
             round_no,
             action_seq,
             summary_json(r)
         ),
         StepOutcome::MatchEnded(end) => format!(
-            "{{\"kind\":\"matchEnd\",\"roundNo\":{},\"winnerTeam\":{},\"summary\":{}}}",
+            "{{\"kind\":\"matchEnd\",\"phase\":\"{phase}\",\"roundNo\":{},\"winnerTeam\":{},\"summary\":{}}}",
             round_no,
             opt_u8(end.winner_team),
             summary_json(r)
@@ -215,10 +230,13 @@ fn read_cards(ptr: *const u16, len: usize) -> Vec<u16> {
 }
 
 fn make_action(is_pass: u8, cards: Vec<u16>) -> Action {
-    if is_pass != 0 {
-        Action::Pass
-    } else {
-        Action::Play { cards }
+    match is_pass {
+        1 => Action::Pass,
+        // 2 = 还贡：cards[0] 为选中的还贡牌（wasm 入参保持标量 + 数组，不引入 JSON）。
+        2 => Action::TributeReturn {
+            card: cards.first().copied().unwrap_or(0),
+        },
+        _ => Action::Play { cards },
     }
 }
 
@@ -577,7 +595,7 @@ pub extern "C" fn gf_room_plan() -> *mut u8 {
 }
 
 /// 桌面公开信息（不进座位视图、不影响 `stateHash`）：相位、行动座位、连续过牌数、
-/// 双方级牌、打级队，以及各家手牌数与已锁定名次（1=头游 … 4=末游，0=未出完）。
+/// 双方级牌、打级队、各家手牌数与已锁定名次，以及本局进贡 / 还贡事件与待还贡牌。
 #[no_mangle]
 pub extern "C" fn gf_room_info() -> *mut u8 {
     let Some(r) = room() else {
@@ -616,20 +634,51 @@ pub extern "C" fn gf_room_info() -> *mut u8 {
         ));
     }
     let levels: Vec<String> = state.levels.iter().map(u8::to_string).collect();
-    let phase = match state.phase {
-        0 => "deal",
-        1 => "tribute",
-        2 => "play",
-        _ => "settle",
-    };
+    let phase = phase_name(state.phase);
+    let mut pending = String::new();
+    for (i, p) in state.tribute_pending_returns.iter().enumerate() {
+        if i > 0 {
+            pending.push(',');
+        }
+        let eligible: Vec<String> = if p.receiver == state.turn_seat {
+            r.engine()
+                .tribute_return_cards(state)
+                .into_iter()
+                .map(|c| c.to_string())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        pending.push_str(&format!(
+            "{{\"receiver\":{},\"payer\":{},\"eligible\":[{}]}}",
+            p.receiver,
+            p.payer,
+            eligible.join(",")
+        ));
+    }
+    let mut events = String::new();
+    for (i, e) in state.tribute_events.iter().enumerate() {
+        if i > 0 {
+            events.push(',');
+        }
+        events.push_str(&format!(
+            "{{\"from\":{},\"to\":{},\"card\":{},\"return\":{}}}",
+            e.from, e.to, e.card, e.is_return
+        ));
+    }
     out(format!(
-        "{{\"phase\":\"{phase}\",\"roundNo\":{},\"turnSeat\":{},\"passesSince\":{},\"levels\":[{}],\"attackingTeam\":{},\"seats\":[{}]}}",
+        "{{\"phase\":\"{phase}\",\"roundNo\":{},\"turnSeat\":{},\"passesSince\":{},\"levels\":[{}],\"attackingTeam\":{},\"seats\":[{}],\"tribute\":{{\"active\":{},\"resisted\":{},\"leader\":{},\"pending\":[{}],\"events\":[{}]}}}}",
         state.round_no,
         state.turn_seat,
         state.passes_since_last_play,
         levels.join(","),
         state.attacking_team,
-        seats
+        seats,
+        state.phase == 1,
+        state.tribute_resisted,
+        opt_u8(state.tribute_leader),
+        pending,
+        events
     ))
 }
 
