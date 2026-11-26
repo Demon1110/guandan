@@ -321,7 +321,7 @@ guandan/
 | --- | --- | --- |
 | M0 | ✅ 已收口 | 契约锁定、双端 `stateHash` 一致、断线恢复原型、非法 RuleSet 反证、空转与包体实测 |
 | M1 | ✅ 已收口 | 牌型全表、枚举路径重构、结算两批、进贡/还贡/抗贡、跨局携带、快照 wire、组牌推荐、房间主干（含计时/托管/断线恢复/再来一局）、AI-L0/L1/L2（跟牌/留牌/记牌/队友配合）、Web 端（牌桌/大厅/结算/设置）+ IndexedDB 续局、校验器 L2–L4、CI 双产物 gate、性能与容量 gate（353.3µs / 3,952–7,904 房间）、接风与进贡后手牌刷新专项；覆盖率门禁按 **行 ≥90% 且区域 ≥90%**（实测行 92.23% / 区域 91.61%，函数 89.95%，分支 85.05% 作观测项），口径与缺口见 `docs/assets/m1-coverage-baseline.md` |
-| M2 | 🟡 进行中 | 已落地：`apps/server` 联机骨架（入座/开局/动作/结算）、传输帧头（`gf_protocol::wire`）、快照 `roundNo` 补齐、增量重连（`ReconnectBuffer` → `RoomDelta`，跨局/结算落快照重置）、房间码与匹配队列（内存态）、手机号账号与短信验证码（测试白名单 + 座位绑定）；待做：PG/Redis 落库、第 24 周联机内测、桌面壳三端产物、回放只读观战 |
+| M2 | 🟡 进行中 | 已落地：`apps/server` 联机骨架（入座/开局/动作/结算）、传输帧头（`gf_protocol::wire`）、快照 `roundNo` 补齐、增量重连（`ReconnectBuffer` → `RoomDelta`，跨局/结算落快照重置）、房间码与匹配队列（内存态）、手机号账号与短信验证码（测试白名单 + 座位绑定）、PG/Redis 落库（战绩/账号/快照/动作流/队列镜像）；待做：第 24 周联机内测、桌面壳三端产物、回放只读观战 |
 | M3 / M4 | 未开始 | 见 `docs/开发计划.md` |
 
 **M1 目前的硬账**
@@ -364,7 +364,7 @@ cargo run --bin gf-server
 cargo test
 ```
 
-环境变量：`GF_BIND`、`GF_MIN_CLIENT_VERSION`（空串表示不校验）、`GF_TICK_MS`（默认 50）、`GF_NEXT_DEAL_MS`（结算后自动续局间隔，默认 5000）、`GF_HEARTBEAT_TIMEOUT_MS`（默认 30000）、`GF_ROOM_CODE_TTL_MS`（房间码有效期，默认 24h）、`GF_MATCH_TIMEOUT_MS`（匹配等待上限，默认 30s）、`GF_AUTH_SALT` / `GF_JWT_SECRET`（手机号哈希盐与 token 签名密钥，默认值是开发串、启动会告警）、`GF_SMS_TEST_WHITELIST` / `GF_SMS_TEST_CODE`（短信未报备前的测试白名单与固定码）、`GF_REQUIRE_AUTH`（强制玩家侧接口与 WS 带 token）。
+环境变量：`GF_BIND`、`GF_MIN_CLIENT_VERSION`（空串表示不校验）、`GF_TICK_MS`（默认 50）、`GF_NEXT_DEAL_MS`（结算后自动续局间隔，默认 5000）、`GF_HEARTBEAT_TIMEOUT_MS`（默认 30000）、`GF_ROOM_CODE_TTL_MS`（房间码有效期，默认 24h）、`GF_MATCH_TIMEOUT_MS`（匹配等待上限，默认 30s）、`GF_AUTH_SALT` / `GF_JWT_SECRET`（手机号哈希盐与 token 签名密钥，默认值是开发串、启动会告警）、`GF_SMS_TEST_WHITELIST` / `GF_SMS_TEST_CODE`（短信未报备前的测试白名单与固定码）、`GF_REQUIRE_AUTH`（强制玩家侧接口与 WS 带 token）、`GF_DATABASE_URL` / `GF_REDIS_URL`（PG/Redis 连接串，不填即纯内存运行）。
 
 **接口**
 
@@ -401,11 +401,12 @@ S→C 11 JoinAck | 12 RoomSnapshot | 13 RoomDelta | 14 ActionAck | 15 PhaseChang
 - 大厅：房间码 6 位（去易混字符、大小写不敏感、24h 有效）、凭码预占座位（`reserve()`，60s TTL）；匹配队列按 `(gameId, mode)` FIFO 分池，满四人撮合成同一场次，v1 不推 WS 匹配事件。
 - 账号：手机号 + 短信验证码登录；手机号只存 `HMAC-SHA256(盐, 号)` + 尾号 4 位；access 是 15 分钟 HS256 JWT，refresh 30 天单端轮换；短信通道未批前 `GF_SMS_TEST_WHITELIST` 走固定测试码；带 token 的预占与入座把座位绑定到玩家，重连校验同一玩家。
 
-**本切片明确没做**（按开发计划 §3 M2 顺序）：PG/Redis 落库、回放导出与观战、桌面壳三端产物、第 24 周联机内测。
+**本切片明确没做**（按开发计划 §3 M2 顺序）：结算重试与死信补偿、回放导出与观战、桌面壳三端产物、第 24 周联机内测。
 
 **三个待裁口径**（代码里留了 TODO 常量）
 
 - `M2-OPEN-01`：联机「再来一局」由谁触发（会动 `actions.kind` 闭集）——当前服务端定时续局。
 - `M2-GAP-proto-04`：玩家误点被引擎拒绝时 `ActionAck.reason` 无 §5.7 表内码——暂用 `ILLEGAL_ACTION` 占位，裁决后替换。
 - `M2-GAP-05`：邀请码/票号不存在在 §5.7 表里无对应码——暂用 `RS_SCHEMA_INVALID` + `detail`（`INVITE_CODE_UNKNOWN` / `TICKET_UNKNOWN` 等），裁决后替换。
+
 

@@ -181,14 +181,20 @@ impl Lobby {
 
     /// 退队：只允许 `waiting` 的票退，已配对的票退不掉（已经成房）。
     pub fn cancel(&mut self, ticket_id: &str, now_ms: u64) -> bool {
+        self.cancel_with_mode(ticket_id, now_ms).0
+    }
+
+    /// 退队并带回该票的模式（清 Redis 镜像时要用）。
+    pub fn cancel_with_mode(&mut self, ticket_id: &str, now_ms: u64) -> (bool, Option<Mode>) {
         match self.tickets.get_mut(ticket_id) {
             Some(ticket) if ticket.state == TicketState::Waiting => {
+                let mode = ticket.mode;
                 ticket.state = TicketState::Timeout;
                 ticket.changed_ms = now_ms;
                 self.queue.retain(|id| id != ticket_id);
-                true
+                (true, Some(mode))
             }
-            _ => false,
+            _ => (false, None),
         }
     }
 
@@ -202,9 +208,12 @@ impl Lobby {
         self.expire_waiting(now_ms, timeout_ms);
         let ticket = self.tickets.get(ticket_id)?;
         Some(match &ticket.state {
-            TicketState::Matched { match_id } => {
-                (TicketState::Matched { match_id: match_id.clone() }, Some(match_id.clone()))
-            }
+            TicketState::Matched { match_id } => (
+                TicketState::Matched {
+                    match_id: match_id.clone(),
+                },
+                Some(match_id.clone()),
+            ),
             state => (state.clone(), None),
         })
     }
@@ -228,9 +237,9 @@ impl Lobby {
             .queue
             .iter()
             .filter(|id| {
-                self.tickets
-                    .get(*id)
-                    .is_some_and(|t| t.state == TicketState::Waiting && t.game_id == game_id && t.mode == mode)
+                self.tickets.get(*id).is_some_and(|t| {
+                    t.state == TicketState::Waiting && t.game_id == game_id && t.mode == mode
+                })
             })
             .cloned()
             .collect();
@@ -361,8 +370,7 @@ mod tests {
             let code = lobby.issue_code(&format!("m-{i}"), 0, DEFAULT_CODE_TTL_MS);
             assert_eq!(code.len(), CODE_LEN);
             assert!(
-                code.chars()
-                    .all(|c| CODE_ALPHABET.contains(&(c as u8))),
+                code.chars().all(|c| CODE_ALPHABET.contains(&(c as u8))),
                 "码字符必须来自安全字母表：{code}"
             );
             assert!(seen.insert(code), "房间码必须唯一");
@@ -376,7 +384,12 @@ mod tests {
         let again = lobby.issue_code("m-a", 10, 1_000);
         assert_eq!(first, again, "同一房间必须复用同一份码");
 
-        assert_eq!(lobby.resolve_code(&first.to_ascii_lowercase(), 999).as_deref(), Some("m-a"));
+        assert_eq!(
+            lobby
+                .resolve_code(&first.to_ascii_lowercase(), 999)
+                .as_deref(),
+            Some("m-a")
+        );
         assert_eq!(lobby.resolve_code(&first, 1_000), None, "到期即失效");
         assert_eq!(lobby.code_count(), 0, "过期码必须被回收");
         assert_eq!(lobby.resolve_code("ZZZZZZ", 0), None);
@@ -392,27 +405,13 @@ mod tests {
 
         assert!(
             lobby
-                .form_group(
-                    "guandan",
-                    Mode::Casual,
-                    4,
-                    0,
-                    DEFAULT_QUEUE_TIMEOUT_MS,
-                    &[],
-                )
+                .form_group("guandan", Mode::Casual, 4, 0, DEFAULT_QUEUE_TIMEOUT_MS, &[],)
                 .is_none(),
             "三张票不够开桌"
         );
         let e = lobby.enqueue("guandan", Mode::Casual, 0);
         let (match_id, group) = lobby
-            .form_group(
-                "guandan",
-                Mode::Casual,
-                4,
-                0,
-                DEFAULT_QUEUE_TIMEOUT_MS,
-                &[],
-            )
+            .form_group("guandan", Mode::Casual, 4, 0, DEFAULT_QUEUE_TIMEOUT_MS, &[])
             .expect("四张同模式票应当成房");
         assert_eq!(group, vec![a, c, d, e], "必须按入队顺序取前四张");
         assert!(!group.contains(&b), "ranked 票不得混进 casual 房");
@@ -420,7 +419,12 @@ mod tests {
         for id in &group {
             assert_eq!(
                 lobby.poll(id, 0, DEFAULT_QUEUE_TIMEOUT_MS),
-                Some((TicketState::Matched { match_id: match_id.clone() }, Some(match_id.clone())))
+                Some((
+                    TicketState::Matched {
+                        match_id: match_id.clone()
+                    },
+                    Some(match_id.clone())
+                ))
             );
         }
         assert_eq!(lobby.waiting("guandan", Mode::Casual), 0);
@@ -461,24 +465,26 @@ mod tests {
         let a = lobby.enqueue("guandan", Mode::Casual, 0);
         assert!(lobby.cancel(&a, 1));
         assert!(!lobby.cancel(&a, 2), "已退队的票不能再退");
-        assert_eq!(lobby.poll(&a, 2, DEFAULT_QUEUE_TIMEOUT_MS).map(|(s, _)| s), Some(TicketState::Timeout));
+        assert_eq!(
+            lobby.poll(&a, 2, DEFAULT_QUEUE_TIMEOUT_MS).map(|(s, _)| s),
+            Some(TicketState::Timeout)
+        );
 
         let mut ids = Vec::new();
         for _ in 0..4 {
             ids.push(lobby.enqueue("guandan", Mode::Casual, 0));
         }
-        assert!(
-            lobby
-                .form_group("guandan", Mode::Casual, 4, 0, DEFAULT_QUEUE_TIMEOUT_MS, &[])
-                .is_some()
-        );
+        assert!(lobby
+            .form_group("guandan", Mode::Casual, 4, 0, DEFAULT_QUEUE_TIMEOUT_MS, &[])
+            .is_some());
         assert!(!lobby.cancel(&ids[0], 2), "已配对的票不得退队");
     }
 
     #[test]
     fn poll_unknown_ticket_is_none() {
         let mut lobby = Lobby::new();
-        assert!(lobby.poll("t-deadbeef", 0, DEFAULT_QUEUE_TIMEOUT_MS).is_none());
+        assert!(lobby
+            .poll("t-deadbeef", 0, DEFAULT_QUEUE_TIMEOUT_MS)
+            .is_none());
     }
 }
-

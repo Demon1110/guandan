@@ -2,7 +2,7 @@
 
 use std::net::SocketAddr;
 
-use gf_server::{App, ServerConfig};
+use gf_server::{App, ServerConfig, Store};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,7 +19,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("提示：GF_SMS_TEST_WHITELIST 为空，短信通道未报备前只有匿名本机联调可用。");
     }
     let addr: SocketAddr = cfg.bind.parse()?;
+    let store = Store::connect(cfg.database_url.as_deref(), cfg.redis_url.as_deref()).await;
     let app = App::new(cfg);
+    app.attach_store(store).await;
     println!("gf-server 启动，房间主循环 20Hz");
     gf_server::serve_on(app, addr).await?;
     Ok(())

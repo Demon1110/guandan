@@ -23,6 +23,7 @@ use gf_table_runtime::{
 use tokio::sync::{mpsc, Mutex, RwLock};
 
 use crate::events;
+use crate::store::{RoundRow, StorageEvent};
 
 /// 掼蛋经典四人座。
 pub const SEATS: u8 = 4;
@@ -82,12 +83,16 @@ pub struct RoomHost {
     reserved: Mutex<HashMap<u8, Reservation>>,
     /// 已入座的座位属于哪个玩家（账号阶段用于重连时校验身份）。
     owners: RwLock<HashMap<u8, String>>,
+    /// 存档出口：结算 / 场次终止时投递（不阻塞房间锁）。
+    recorder: std::sync::Mutex<Option<mpsc::UnboundedSender<StorageEvent>>>,
     ack_cache: Mutex<HashMap<(u8, String), Vec<u8>>>,
     started_at: Instant,
     opts: RoomOptions,
     started: AtomicBool,
     next_deal_at: AtomicU64,
     announced_settle: AtomicU64,
+    /// 本局发牌时刻（墙钟毫秒），结算行要用。
+    round_start_ms: AtomicU64,
     closed: AtomicBool,
 }
 
@@ -111,12 +116,14 @@ impl RoomHost {
             out: RwLock::new(HashMap::new()),
             reserved: Mutex::new(HashMap::new()),
             owners: RwLock::new(HashMap::new()),
+            recorder: std::sync::Mutex::new(None),
             ack_cache: Mutex::new(HashMap::new()),
             started_at: Instant::now(),
             opts,
             started: AtomicBool::new(false),
             next_deal_at: AtomicU64::new(0),
             announced_settle: AtomicU64::new(0),
+            round_start_ms: AtomicU64::new(0),
             closed: AtomicBool::new(false),
         });
 
@@ -181,7 +188,11 @@ impl RoomHost {
             Some(seat) if seat < SEATS && !occupied.contains(&seat) => {
                 if let Some(reservation) = reserved.get(&seat) {
                     // 预留者若不是本人（且预留带了身份），不得抢占。
-                    if reservation.owner.as_deref().is_some_and(|o| Some(o) != owner_ref) {
+                    if reservation
+                        .owner
+                        .as_deref()
+                        .is_some_and(|o| Some(o) != owner_ref)
+                    {
                         return Err(JoinError::SeatTaken {
                             available: free_for(&occupied, &reserved, owner_ref),
                         });
@@ -197,16 +208,14 @@ impl RoomHost {
             }
             None => {
                 // 有身份的入座优先兑现自己那条预留。
-                let mine = owner_ref
-                    .and_then(|o| {
-                        reserved
-                            .iter()
-                            .find(|(s, r)| !occupied.contains(s) && r.owner.as_deref() == Some(o))
-                            .map(|(s, _)| *s)
-                    });
+                let mine = owner_ref.and_then(|o| {
+                    reserved
+                        .iter()
+                        .find(|(s, r)| !occupied.contains(s) && r.owner.as_deref() == Some(o))
+                        .map(|(s, _)| *s)
+                });
                 match mine.or_else(|| {
-                    (0..SEATS)
-                        .find(|s| !occupied.contains(s) && !reserved.contains_key(s))
+                    (0..SEATS).find(|s| !occupied.contains(s) && !reserved.contains_key(s))
                 }) {
                     Some(seat) => {
                         reserved.remove(&seat);
@@ -232,6 +241,37 @@ impl RoomHost {
     /// 该座位绑定的玩家（未带 token 入座的座位为 `None`）。
     pub async fn seat_owner(&self, seat: u8) -> Option<String> {
         self.owners.read().await.get(&seat).cloned()
+    }
+
+    /// 挂上存档通道（`App` 启动时挂一次；不挂时结算不落库）。
+    pub fn attach_recorder(&self, tx: mpsc::UnboundedSender<StorageEvent>) {
+        *self
+            .recorder
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(tx);
+    }
+
+    /// 投递一条存档事件；通道满/无接收者都直接丢弃（对局不因落库失败卡住）。
+    fn record(&self, event: StorageEvent) {
+        let recorder = self
+            .recorder
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(tx) = recorder.as_ref() {
+            let _ = tx.send(event);
+        }
+    }
+
+    /// 房间快照的元信息（`roomSeq`、`roundNo`、`stateHash`、相位），供 Redis 快照任务用。
+    pub async fn snapshot_meta(&self) -> Option<(u64, u16, [u8; 32], u16)> {
+        let room = self.room.lock().await;
+        let state = room.state().ok()?;
+        Some((
+            room.room_seq(),
+            state.round_no,
+            room.state_hash().ok()?,
+            state.phase,
+        ))
     }
 
     /// 预占一个空座位（房间码 / 匹配成房后由 HTTP 返回给客户端）。
@@ -277,6 +317,8 @@ impl RoomHost {
             let mut room = self.room.lock().await;
             if room.state().is_err() {
                 let _ = room.start(now);
+                self.round_start_ms
+                    .store(crate::now_unix_ms(), Ordering::Relaxed);
             }
             self.started.store(true, Ordering::Relaxed);
             let deadline = room.turn_deadline_ms().unwrap_or(now);
@@ -325,10 +367,7 @@ impl RoomHost {
                     false,
                     Some("TOO_LATE"),
                 )
-            } else if room
-                .seat_seq(seat)
-                .is_ok_and(|next| msg.seat_seq < next)
-            {
+            } else if room.seat_seq(seat).is_ok_and(|next| msg.seat_seq < next) {
                 // 座位水位：低于「下一条动作序号」即 STALE_SEQ（§6.2）。
                 events::action_ack_frame(
                     &request_id,
@@ -361,22 +400,37 @@ impl RoomHost {
                             ));
                         }
                         if let Some(reason) = auto {
-                            frames.push((acted, events::trustee_frame(acted, auto_reason_str(reason))));
+                            frames.push((
+                                acted,
+                                events::trustee_frame(acted, auto_reason_str(reason)),
+                            ));
                         }
                         events::action_ack_frame(
-                            &request_id, ack_seat_seq, ack_room_seq, true, None,
+                            &request_id,
+                            ack_seat_seq,
+                            ack_room_seq,
+                            true,
+                            None,
                         )
                     }
                     Ok(StepOutcome::Settled(summary)) => {
                         broadcast.extend(self.settle_frames(&room, &before, &summary, now));
                         events::action_ack_frame(
-                            &request_id, ack_seat_seq, ack_room_seq, true, None,
+                            &request_id,
+                            ack_seat_seq,
+                            ack_room_seq,
+                            true,
+                            None,
                         )
                     }
                     // 人类提交只在行动窗口内合法；走到这两个分支按竞态落败处理。
                     Ok(StepOutcome::Waiting { .. }) | Ok(StepOutcome::MatchEnded(_)) => {
                         events::action_ack_frame(
-                            &request_id, ack_seat_seq, ack_room_seq, false, Some("TOO_LATE"),
+                            &request_id,
+                            ack_seat_seq,
+                            ack_room_seq,
+                            false,
+                            Some("TOO_LATE"),
                         )
                     }
                     Err(err) => {
@@ -387,7 +441,11 @@ impl RoomHost {
                             _ => REASON_ILLEGAL_ACTION,
                         };
                         events::action_ack_frame(
-                            &request_id, ack_seat_seq, ack_room_seq, false, Some(reason),
+                            &request_id,
+                            ack_seat_seq,
+                            ack_room_seq,
+                            false,
+                            Some(reason),
                         )
                     }
                 };
@@ -412,11 +470,7 @@ impl RoomHost {
     /// - 快照重置：其余情况 → 只发 `snapshotReset = true` 的快照，客户端丢弃本地状态。
     ///
     /// 返回的帧按发送顺序排列，调用方必须顺序下发（增量在快照之前）。
-    pub async fn reconnect(
-        &self,
-        seat: u8,
-        last_seat_seq: u64,
-    ) -> Result<Vec<Vec<u8>>, RoomError> {
+    pub async fn reconnect(&self, seat: u8, last_seat_seq: u64) -> Result<Vec<Vec<u8>>, RoomError> {
         let mut room = self.room.lock().await;
         let delta = room.reconnect_delta(seat, last_seat_seq)?;
         let plan = room.reconnect(seat, last_seat_seq)?;
@@ -529,6 +583,8 @@ impl RoomHost {
                 // 结算后定时续局（M2-OPEN-01：触发方待裁定）。
                 if room.next_round(now).is_ok() {
                     self.next_deal_at.store(0, Ordering::Relaxed);
+                    self.round_start_ms
+                        .store(crate::now_unix_ms(), Ordering::Relaxed);
                     let deadline = room.turn_deadline_ms().unwrap_or(now);
                     if let Ok(state) = room.state().cloned() {
                         for seat in 0..SEATS {
@@ -542,11 +598,7 @@ impl RoomHost {
             } else {
                 let _ = room.tick(now);
                 match room.step(now) {
-                    Ok(StepOutcome::Applied {
-                        seat,
-                        action,
-                        auto,
-                    }) => {
+                    Ok(StepOutcome::Applied { seat, action, auto }) => {
                         if let Ok(state) = room.state().cloned() {
                             let deadline = room.turn_deadline_ms().unwrap_or(now);
                             let room_seq = room
@@ -557,16 +609,24 @@ impl RoomHost {
                             let events = events::events_for(&before, &state, &action, deadline);
                             broadcast.push(events::delta_frame(&self.match_id, room_seq, events));
                             if let Some(reason) = auto {
-                                per_seat
-                                    .push((seat, events::trustee_frame(seat, auto_reason_str(reason))));
+                                per_seat.push((
+                                    seat,
+                                    events::trustee_frame(seat, auto_reason_str(reason)),
+                                ));
                             }
                         }
                     }
                     Ok(StepOutcome::Settled(summary)) => {
                         broadcast.extend(self.settle_frames(&room, &before, &summary, now));
                     }
-                    Ok(StepOutcome::MatchEnded(_)) => {
+                    Ok(StepOutcome::MatchEnded(end)) => {
                         self.closed.store(true, Ordering::Relaxed);
+                        self.record(StorageEvent::MatchEnded {
+                            match_id: self.match_id.clone(),
+                            winner_team: end.winner_team,
+                            end_reason: end.reason.code_str(),
+                            ended_at_ms: now,
+                        });
                     }
                     Ok(StepOutcome::Waiting { .. }) | Err(_) => {}
                 }
@@ -608,8 +668,33 @@ impl RoomHost {
             self.opts.next_deal_ms,
         ));
         frames.push(events::phase_frame(PHASE_SETTLE, 0));
-        self.next_deal_at
-            .store(now.saturating_add(self.opts.next_deal_ms), Ordering::Relaxed);
+
+        // 结算事实投给存档任务：players 由 App 按座位归属补，房间不碰账号。
+        let actions: Vec<_> = room
+            .log()
+            .iter()
+            .filter(|record| record.round_no == summary.round_no)
+            .cloned()
+            .collect();
+        self.record(StorageEvent::RoundSettled {
+            match_id: self.match_id.clone(),
+            row: RoundRow {
+                match_id: self.match_id.clone(),
+                round_no: summary.round_no,
+                players: Vec::new(),
+                ranks: summary.ranks.clone(),
+                result_json: events::settle_json(summary),
+                levels_after: levels,
+                ruleset_version: gf_table_runtime::DEFAULT_RULESET_VERSION.to_owned(),
+                started_at_ms: self.round_start_ms.load(Ordering::Relaxed),
+                ended_at_ms: crate::now_unix_ms(),
+            },
+            actions,
+        });
+        self.next_deal_at.store(
+            now.saturating_add(self.opts.next_deal_ms),
+            Ordering::Relaxed,
+        );
         frames
     }
 
@@ -643,10 +728,12 @@ fn free_for(
 ) -> Vec<u8> {
     (0..SEATS)
         .filter(|seat| !occupied.contains(seat))
-        .filter(|seat| match reserved.get(seat).and_then(|r| r.owner.as_deref()) {
-            None => true,
-            Some(owner) => requester == Some(owner),
-        })
+        .filter(
+            |seat| match reserved.get(seat).and_then(|r| r.owner.as_deref()) {
+                None => true,
+                Some(owner) => requester == Some(owner),
+            },
+        )
         .collect()
 }
 
@@ -750,7 +837,10 @@ mod tests {
     #[tokio::test]
     async fn reservation_binds_to_owner() {
         let host = RoomHost::spawn("m-owner", 7, RoomOptions::default()).expect("建桌");
-        let seat = host.reserve_for(Some("p-1".to_owned())).await.expect("预留");
+        let seat = host
+            .reserve_for(Some("p-1".to_owned()))
+            .await
+            .expect("预留");
         let (tx, _rx) = mpsc::unbounded_channel();
 
         let other = host

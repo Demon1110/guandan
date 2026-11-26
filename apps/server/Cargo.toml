@@ -31,6 +31,8 @@ hmac = "0.12"
 sha2 = "0.10"
 base64 = "0.22"
 rand = "0.9"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+redis = { version = "0.27", default-features = false, features = ["tokio-comp"] }
 
 [dev-dependencies]
 tokio-tungstenite = "0.29"

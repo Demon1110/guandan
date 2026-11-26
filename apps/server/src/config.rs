@@ -32,6 +32,10 @@ pub struct ServerConfig {
     pub sms_test_code: String,
     /// 是否强制所有玩家侧接口与 WS 入座都带 access token。
     pub require_auth: bool,
+    /// PostgreSQL 连接串（缺省不落库）。
+    pub database_url: Option<String>,
+    /// Redis 连接串（缺省不写快照/动作流/队列镜像）。
+    pub redis_url: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -50,6 +54,8 @@ impl Default for ServerConfig {
             sms_test_whitelist: Vec::new(),
             sms_test_code: crate::auth::DEFAULT_TEST_CODE.to_owned(),
             require_auth: false,
+            database_url: None,
+            redis_url: None,
         }
     }
 }
@@ -68,6 +74,8 @@ impl ServerConfig {
     /// - `GF_SMS_TEST_WHITELIST`（逗号分隔的 11 位手机号）
     /// - `GF_SMS_TEST_CODE`
     /// - `GF_REQUIRE_AUTH`（`1`/`true` 强制玩家侧接口与 WS 带 token）
+    /// - `GF_DATABASE_URL`（PostgreSQL；缺省不落库）
+    /// - `GF_REDIS_URL`（Redis；缺省不写快照/动作流/队列镜像）
     pub fn from_env() -> Self {
         let mut cfg = Self::default();
         if let Ok(v) = env::var("GF_BIND") {
@@ -113,12 +121,23 @@ impl ServerConfig {
         if let Ok(v) = env::var("GF_REQUIRE_AUTH") {
             cfg.require_auth = matches!(v.trim(), "1" | "true" | "TRUE" | "True" | "yes");
         }
+        if let Ok(v) = env::var("GF_DATABASE_URL") {
+            if !v.trim().is_empty() {
+                cfg.database_url = Some(v);
+            }
+        }
+        if let Ok(v) = env::var("GF_REDIS_URL") {
+            if !v.trim().is_empty() {
+                cfg.redis_url = Some(v);
+            }
+        }
         cfg
     }
 
     /// 是否还在用开发默认密钥（生产启动时应告警）。
     pub fn uses_dev_secrets(&self) -> bool {
-        self.auth_salt == "gf-dev-salt-change-me" || self.jwt_secret == "gf-dev-jwt-secret-change-me"
+        self.auth_salt == "gf-dev-salt-change-me"
+            || self.jwt_secret == "gf-dev-jwt-secret-change-me"
     }
 
     /// 客户端版本是否满足下限（§5.16）。下限为空表示不校验。
@@ -126,7 +145,10 @@ impl ServerConfig {
         if self.min_client_version.trim().is_empty() {
             return true;
         }
-        match (parse_version(&self.min_client_version), parse_version(client_version)) {
+        match (
+            parse_version(&self.min_client_version),
+            parse_version(client_version),
+        ) {
             (Some(min), Some(v)) => v >= min,
             // 下限写了但客户端版本解析不出来：按 CLIENT_TOO_OLD 处理（失败闭合）。
             _ => false,
@@ -168,7 +190,10 @@ mod tests {
         assert!(cfg.accepts_version("1.10.0"));
         assert!(cfg.accepts_version("1.11.2"));
         assert!(!cfg.accepts_version("1.9.9"), "字典序会误判 1.9 > 1.10");
-        assert!(!cfg.accepts_version("not-a-version"), "解析失败必须失败闭合");
+        assert!(
+            !cfg.accepts_version("not-a-version"),
+            "解析失败必须失败闭合"
+        );
     }
 
     #[test]
