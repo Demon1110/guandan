@@ -175,18 +175,26 @@ pub fn render(theme: &Theme, face: Face, level: Option<LevelState>) -> SvgString
 
 ## 5. 主题目录
 
+主题源、打包产物、脚本全部收在本 crate 下，仓库根不再有 `themes/`：
+
 ```
-themes/
-├── defaults/                  # 内置主题（源目录，入 git）
-│   ├── theme.json
-│   ├── base.svg
-│   ├── suits/{spade,heart,diamond,club}.svg
-│   ├── ranks/{1..13}.svg      # 或 ranks.png + ranks.json
-│   ├── jokers/{small,big}.svg
-│   ├── back.svg
-│   └── badges/{level,wild}.svg
-└── emerald.gfdeck             # 打包产物（分发用，可加密）
+crates/deckart/
+├── themes/                    # 主题源：一个主题一个目录（入 git）
+│   └── defaults/
+│       ├── theme.json
+│       ├── base.svg
+│       ├── suits/{spade,heart,diamond,club}.svg
+│       ├── ranks/{1..13}.svg  # 或 ranks.png + ranks.json
+│       ├── jokers/{small,big}.svg
+│       ├── back.svg
+│       └── badges/{level,wild}.svg
+├── pkgs/                      # 打包产物：themes/<id>/ → <id>.gfdeck
+│   └── defaults.gfdeck
+└── scripts/
+    └── pack-all.ps1           # 一键打包 themes/ 下所有主题
 ```
+
+新主题在 `themes/` 下建目录（目录名即包名），`theme.json` 的 `id` 保持 `[a-z0-9-]`；打完的 `<id>.gfdeck` 落在 `pkgs/`。
 
 ### `theme.json`（现行 schema）
 
@@ -283,6 +291,8 @@ themes/
 
 命令都在**仓库根目录**执行，`gfdeck` 是 `crates/deckart` 的二进制，统一用 `cargo run -p gf-deckart --bin gfdeck --` 调起。
 
+路径约定已固定下来：主题源在 `crates/deckart/themes/<id>/`，打包产物落 `crates/deckart/pkgs/<id>.gfdeck`，构建脚本在 `crates/deckart/scripts/`。仓库根不再有 `themes/`。
+
 两个 feature 先说清楚（见 `crates/deckart/Cargo.toml`）：
 
 | feature | 作用 | 什么时候要开 |
@@ -296,7 +306,7 @@ themes/
 
 ```powershell
 # 54 面 + 牌背，一次全出；--level 决定哪一档打级牌高亮（2..A，或 none 表示不出级牌层）
-cargo run -p gf-deckart --bin gfdeck -- render-all --theme themes/defaults --level 2 -o target/faces
+cargo run -p gf-deckart --bin gfdeck -- render-all --theme crates/deckart/themes/defaults --level 2 -o target/faces
 ```
 
 角标倍率不写 `--corner` 时**用 `theme.json` 里声明的 `cornerScale`**（defaults 声明了 2.2，也就是 220%），想按素材原样出图就显式 `--corner 100`。
@@ -318,16 +328,16 @@ cargo run -p gf-deckart --bin gfdeck -- render-all --theme themes/defaults --lev
 要换字号就加 `--corner`，整包 54 张一起改（压过主题默认）：
 
 ```powershell
-cargo run -p gf-deckart --bin gfdeck -- render-all --theme themes/defaults --corner 240 -o target/faces-big
-cargo run -p gf-deckart --bin gfdeck -- render-all --theme themes/defaults --corner 100 -o target/faces-plain
+cargo run -p gf-deckart --bin gfdeck -- render-all --theme crates/deckart/themes/defaults --corner 240 -o target/faces-big
+cargo run -p gf-deckart --bin gfdeck -- render-all --theme crates/deckart/themes/defaults --corner 100 -o target/faces-plain
 ```
 
 ### 8.2 单张调试 / 转 PNG
 
 ```powershell
 # 单张：--face 用牌面编码（S2 / H10 / CA / JOKER-B），--level 可省，--corner 用百分比
-cargo run -p gf-deckart --bin gfdeck -- render --theme themes/defaults --face H8 --level 8 -o target/H8.svg
-cargo run -p gf-deckart --bin gfdeck -- render --theme themes/defaults --face H8 --level 8 --corner 240 -o target/H8-big.svg
+cargo run -p gf-deckart --bin gfdeck -- render --theme crates/deckart/themes/defaults --face H8 --level 8 -o target/H8.svg
+cargo run -p gf-deckart --bin gfdeck -- render --theme crates/deckart/themes/defaults --face H8 --level 8 --corner 240 -o target/H8-big.svg
 
 # SVG → PNG（要 --features png；--scale 2 = 1000×1400，文本层「级牌」靠系统字体渲染）
 cargo run -p gf-deckart --bin gfdeck --features png -- png target/H8.svg --scale 2 -o target/H8@2x.png
@@ -336,8 +346,8 @@ cargo run -p gf-deckart --bin gfdeck --features png -- png target/H8.svg --scale
 ### 8.3 打包成 `.gfdeck`（客户端只认这个）
 
 ```powershell
-cargo run -p gf-deckart --bin gfdeck -- pack themes/defaults `
-  -o apps/client/themes/defaults.gfdeck `
+cargo run -p gf-deckart --bin gfdeck -- pack crates/deckart/themes/defaults `
+  -o crates/deckart/pkgs/defaults.gfdeck `
   --key-id builtin-v1 `
   --sign-key 1111111111111111111111111111111111111111111111111111111111111111 `
   --pub-key-out target/pub.hex
@@ -356,10 +366,13 @@ cargo run -p gf-deckart --bin gfdeck -- pack themes/defaults `
 
 **注意**：`pack` 总是加密（没有 `--encrypt` 开关，加密是这个格式本身的一部分）；包里存的是 `theme.json` 的副本 + 23 个素材，**不存预览图**（预览由客户端现场合成，见 14.1）。
 
-发布到客户端只需要这两步，**不用重编 wasm**：
+发布到客户端**不用重编 wasm**，也不用再往 `apps/client/` 拷一份：
 
-1. 把 `defaults.gfdeck` 放进 `apps/client/themes/`；
-2. `apps/client/app.js` 里的 `THEME_PUBKEY` 换成 `--pub-key-out` 打出来的公钥（换签钥才需要；沿用内置密钥就不用动）。
+1. 包直接打在 `crates/deckart/pkgs/<id>.gfdeck`；
+2. `apps/client/serve.ps1` 把 `/pkgs/` 映射到这个目录，`app.js` 的 `THEME_PACK_URL` 是 `pkgs/defaults.gfdeck`；
+3. 换签钥时才要改 `apps/client/app.js` 里的 `THEME_PUBKEY`（沿用内置密钥不用动）。
+
+独立部署（不用 `serve.ps1`）时把 `pkgs/` 一起带上，放到静态根的同级 `/pkgs/` 即可。
 
 刷新页面即生效（浏览器缓存里旧的包要先强刷一次），牌桌读的是包里那份 `theme.json`，**改了源目录的 `theme.json` 必须重新 `pack`**，否则客户端看到的还是旧副本。
 
@@ -367,27 +380,49 @@ cargo run -p gf-deckart --bin gfdeck -- pack themes/defaults `
 
 ```powershell
 # 只看包头：themeId@version、license、条目数、字节数、是否加密/签名、keyId
-cargo run -p gf-deckart --bin gfdeck -- info apps/client/themes/defaults.gfdeck
+cargo run -p gf-deckart --bin gfdeck -- info crates/deckart/pkgs/defaults.gfdeck
 
 # 完整校验：逐条解密 + 比对 sha256 + 验签 + 54 面能渲染
 $pub = (Get-Content target/pub.hex).Trim()
-cargo run -p gf-deckart --bin gfdeck -- verify apps/client/themes/defaults.gfdeck --verify-key $pub
+cargo run -p gf-deckart --bin gfdeck -- verify crates/deckart/pkgs/defaults.gfdeck --verify-key $pub
 
 # 解包回目录（签名包必须给 --verify-key，否则直接 DK-PACK-SIGNATURE；输出目录不能已存在）
-cargo run -p gf-deckart --bin gfdeck -- unpack apps/client/themes/defaults.gfdeck -o target/unpacked --verify-key $pub
+cargo run -p gf-deckart --bin gfdeck -- unpack crates/deckart/pkgs/defaults.gfdeck -o target/unpacked --verify-key $pub
 ```
 
 错误码都印在 stderr，脚本里可直接判：`DK-PACK-SIGNATURE`（签名不符 / 换钥 / 被改一字节）、`DK-PACK-DECRYPT`（密钥不对）、`DK-PACK-EXISTS`（`unpack` 的输出目录已存在，**不覆盖**，先删再解）、`DK-ASSET-MISSING`（少素材）、`DK-THEME-INVALID`（`theme.json` 不合 schema）、`DK-FACE-INVALID`（牌面编码或 `--corner` 越界）。
 
 `pack` 的输出文件可以直接覆盖（每次加密用的 nonce 随机，同样输入打出来的字节不完全一致，但解密后的内容一致）；`unpack` 反过来，输出目录存在就拒绝。
 
-### 8.5 一条命令跑完全程
+### 8.5 一键打包所有主题（`scripts/pack-all.ps1`）
+
+```powershell
+# 遍历 crates/deckart/themes/*/theme.json，逐个打到 crates/deckart/pkgs/<id>.gfdeck
+pwsh -File crates/deckart/scripts/pack-all.ps1
+
+# 只打一个 / 换输出目录 / 复用已编好的二进制 / 换签钥
+pwsh -File crates/deckart/scripts/pack-all.ps1 -Theme defaults
+pwsh -File crates/deckart/scripts/pack-all.ps1 -OutDir D:\tmp\pkgs -SkipBuild
+pwsh -File crates/deckart/scripts/pack-all.ps1 -KeyId studio-v1 -SignKey <64位hex>
+```
+
+脚本内部顺序：`cargo build -q -p gf-deckart --bin gfdeck --release`（`-SkipBuild` 可跳过）→ 收集主题目录 → 每个主题 `pack` 一次（公钥落 `target/theme-build/<id>.pub.hex`）→ 立刻 `info` + `verify` → 打印一张表。任一步非 0 退出即中断，不会再打后面的包。
+
+| 参数 | 缺省 | 说明 |
+| --- | --- | --- |
+| `-Theme` | 全部 | 只打指定目录名，可传多个；名字不存在直接报错 |
+| `-OutDir` | `crates/deckart/pkgs` | 产物目录，不存在自动建 |
+| `-KeyId` | `builtin-v1` | 与客户端 `themeKey` 表对应，换密钥必须换 id |
+| `-SignKey` | `0x11 × 32` | Ed25519 私钥种子（64 位 hex），与 `apps/client/app.js` 的 `THEME_PUBKEY` 成对 |
+| `-SkipBuild` | 关 | 直接用手上已有的 `target/release/gfdeck` |
+
+手动等价（只打一份、顺带出图）：
 
 ```powershell
 # 产物统一落在 target/theme-build/：faces（SVG）、faces-big（大字角标）、defaults.gfdeck、pub.hex
-cargo run -p gf-deckart --bin gfdeck --features png -- render-all --theme themes/defaults --level 2 -o target/theme-build/faces
-cargo run -p gf-deckart --bin gfdeck --features png -- render-all --theme themes/defaults --level 2 --corner 240 -o target/theme-build/faces-big
-cargo run -p gf-deckart --bin gfdeck --features png -- pack themes/defaults -o target/theme-build/defaults.gfdeck --key-id builtin-v1 --sign-key 1111111111111111111111111111111111111111111111111111111111111111 --pub-key-out target/theme-build/pub.hex
+cargo run -p gf-deckart --bin gfdeck --features png -- render-all --theme crates/deckart/themes/defaults --level 2 -o target/theme-build/faces
+cargo run -p gf-deckart --bin gfdeck --features png -- render-all --theme crates/deckart/themes/defaults --level 2 --corner 240 -o target/theme-build/faces-big
+cargo run -p gf-deckart --bin gfdeck --features png -- pack crates/deckart/themes/defaults -o target/theme-build/defaults.gfdeck --key-id builtin-v1 --sign-key 1111111111111111111111111111111111111111111111111111111111111111 --pub-key-out target/theme-build/pub.hex
 cargo run -p gf-deckart --bin gfdeck --features png -- verify target/theme-build/defaults.gfdeck --verify-key (Get-Content target/theme-build/pub.hex).Trim()
 ```
 
@@ -408,7 +443,7 @@ verify --verify-key <pub>        → 校验通过：defaults@2，24 条目，54 
 unpack --verify-key <pub>        → 还原 24 个文件（theme.json + 23 素材），可直接 Theme::load_dir
 ```
 
-（`apps/client/themes/defaults.gfdeck` 已按上面命令重打过：17,312 字节，包里有 `preview` 块、`cornerScale: 2.2` 与 `classic.pipInset`。）
+（`crates/deckart/pkgs/defaults.gfdeck` 已按上面命令重打过：17,312 字节，包里有 `preview` 块、`cornerScale: 2.2` 与 `classic.pipInset`。）
 
 ---
 
@@ -457,12 +492,15 @@ crates/deckart/
 │   ├── png.rs        SVG → PNG（feature = png）
 │   ├── error.rs      统一错误码 DK-*
 │   └── bin/gfdeck.rs CLI
+├── themes/            主题源（每个主题一个目录）
+├── pkgs/              打包产物 *.gfdeck
+├── scripts/           pack-all.ps1 等构建脚本
 └── tests/
     ├── render.rs     54 面 + 徽章 + 自包含性 + 预览配置
     └── pack.rs       往返 / 错钥 / 篡改 / 签名 / 坏包 / 字节入口
 ```
 
-主题源目录在仓库根：`themes/defaults/`（theme.json + 23 个素材）。
+主题源目录在本 crate 内：`crates/deckart/themes/defaults/`（theme.json + 23 个素材）；打包产物在 `pkgs/`。
 
 ---
 
@@ -508,10 +546,10 @@ cargo test --features png  # 额外可用 PNG 子命令
 下面按命令简写记录结果（实际调用形如 `cargo run -p gf-deckart --bin gfdeck -- render-all …`，完整命令见第 8 节）：
 
 ```powershell
-gfdeck render-all --theme themes/defaults --level 8 -o target/deckout
+gfdeck render-all --theme crates/deckart/themes/defaults --level 8 -o target/deckout
   → 55 张（54 面 + 牌背）、manifest.json 6507 字节、单张 766~2789 字节（带文本层的级牌最大）
      （角标走主题默认 220%；要看素材原样加 --corner 100）
-gfdeck pack themes/defaults -o defaults.gfdeck --sign-key <hex32>
+gfdeck pack crates/deckart/themes/defaults -o defaults.gfdeck --sign-key <hex32>
   → 24 条目（theme.json 5160B 的 pretty 序列化 + 23 素材）、17312 字节、加密 + 签名、keyId=builtin-v1
      （上一版是 17,137 字节、包里没有 `preview` 块与 `cornerScale`；加 `preview` 后 17,266，加 `cornerScale: 2.2` 是 17,288，再加 `pipInset` 与 classic 新参数是 17,312）
 gfdeck info   → defaults@2，license=CC0-1.0，加密=true，签名=true
@@ -547,7 +585,7 @@ gfdeck png H8.svg --scale 2      → 151767 字节（1000×1400），「级牌�
 商店/列表页那种**封面图**（PNG、进后台接口）是另一条链路，用 CLI 出图即可，不进客户端包：
 
 ```powershell
-gfdeck render-all --theme themes/defaults --level 2 -o target/preview
+gfdeck render-all --theme crates/deckart/themes/defaults --level 2 -o target/preview
 gfdeck png target/preview/C2.svg -o cover-c2.png --scale 2
 ```
 

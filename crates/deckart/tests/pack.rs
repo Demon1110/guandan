@@ -7,7 +7,7 @@ use gf_deckart::pack::{builtin_key, open, pack_dir, pack_theme, read_info, unpac
 use gf_deckart::{Face, LevelState, Rank, Suit, Theme};
 
 fn theme_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../themes/defaults")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("themes/defaults")
 }
 
 fn tmp(tag: &str) -> PathBuf {

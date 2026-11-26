@@ -11,7 +11,7 @@
 //! ```
 //! use gf_deckart::{render_face, Face, LevelState, Rank, Suit, Theme};
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../themes/defaults");
+//! let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("themes/defaults");
 //! let theme = Theme::load_dir(&dir)?;
 //! let face = Face::normal(Suit::Spade, Rank::new(8)?);
 //! let svg = render_face(&theme, face, Some(LevelState::new(Rank::new(8)?)))?;

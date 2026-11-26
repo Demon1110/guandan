@@ -250,8 +250,9 @@ textarea.area{min-height:112px}
     <p class="hint">上传任意尺寸的 SVG，会自动等比缩进目标框并居中（花色 100×100、点数 100×140、其余 500×700）。关掉就用素材原始尺寸，位置会整体走样。</p>
     <div id="assetList"></div>
     <div class="row" style="margin-top:8px"><button class="tiny ghost" id="btnResetAssets">全部还原内置素材</button></div>
-    <p class="hint">替换只影响本页预览与导出路径；打包时把上传的 SVG 按上面的路径放进主题目录，再运行
-      <code>gfdeck pack 主题目录 -o xxx.gfdeck --key-id … --sign-key …</code>。</p>
+    <p class="hint">替换只影响本页预览与导出路径；打包时把上传的 SVG 按上面的路径放进
+      <code>crates/deckart/themes/&lt;id&gt;/</code>，再运行
+      <code>pwsh -File crates/deckart/scripts/pack-all.ps1 -Theme &lt;id&gt;</code>（或手动 <code>gfdeck pack</code>），产物落在 <code>crates/deckart/pkgs/</code>。</p>
   </section>
 
   <section>
@@ -288,7 +289,7 @@ textarea.area{min-height:112px}
       <li>左侧改参数，右边 15 张牌立刻重画 —— 预览是照 <code>render.rs</code> 的摆放公式算的，不是贴图。</li>
       <li>级联项按需出现：选 <code>classic</code> 才露花阵参数，勾「启用文字」才露字体与位置，角标花色选「右侧」就把失效的 x/y 变灰。</li>
       <li>换素材：在「素材」里传 SVG，会自动等比缩进目标框；导出 JSON 前确认路径名与你要放进主题目录的文件名一致。</li>
-      <li>导出后拿 <code>gfdeck pack</code> 打成 <code>.gfdeck</code>，再丢给客户端或 wasm 运行时。</li>
+      <li>导出后放进 <code>crates/deckart/themes/&lt;id&gt;/</code>，用 <code>pwsh -File crates/deckart/scripts/pack-all.ps1 -Theme &lt;id&gt;</code> 打成 <code>.gfdeck</code>，落在 <code>crates/deckart/pkgs/</code>，客户端和 wasm 直接读。</li>
     </ol>
     <p class="hint">草稿自动存在本机浏览器（localStorage）；「恢复默认」会一并清掉。</p>
   </div>
@@ -348,7 +349,7 @@ ASSETS.ranks.forEach((a, i) => { BUILTIN['rank' + (i + 1)] = a; });
 const ART = {};
 SPEC.forEach((s) => { ART[s.key] = { ...BUILTIN[s.key], fromFile:null }; });
 
-/* ===== 默认主题 = themes/defaults/theme.json ===== */
+/* ===== 默认主题 = crates/deckart/themes/defaults/theme.json ===== */
 const DEFAULTS = {
   id:'defaults', version:2, name:'默认（深绿）', license:'CC0-1.0',
   canvas:{ width:500, height:700, cornerRadius:36 },

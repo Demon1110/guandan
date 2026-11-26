@@ -4,11 +4,14 @@ param([int]$Port = 8123)
 
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path $PSScriptRoot).Path
+# 主题包不再拷进 apps/client：/pkgs/ 直接映射到 crates/deckart/pkgs
+$repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+$pkgs = Join-Path $repo 'crates\deckart\pkgs'
 
 $listener = [System.Net.HttpListener]::new()
 $listener.Prefixes.Add("http://127.0.0.1:$Port/")
 $listener.Start()
-Write-Host "serving $root at http://127.0.0.1:$Port/"
+Write-Host "serving $root at http://127.0.0.1:$Port/  (pkgs → $pkgs)"
 
 $types = @{
     '.html' = 'text/html; charset=utf-8'
@@ -17,6 +20,7 @@ $types = @{
     '.wasm' = 'application/wasm'
     '.mjs'  = 'text/javascript; charset=utf-8'
     '.json' = 'application/json; charset=utf-8'
+    '.gfdeck' = 'application/octet-stream'
 }
 
 try {
@@ -24,7 +28,12 @@ try {
         $ctx = $listener.GetContext()
         $rel = $ctx.Request.Url.AbsolutePath.TrimStart('/')
         if ([string]::IsNullOrEmpty($rel)) { $rel = 'index.html' }
-        $path = Join-Path $root $rel
+        if ($rel -like 'pkgs/*') {
+            $path = Join-Path $pkgs $rel.Substring(5)
+        }
+        else {
+            $path = Join-Path $root $rel
+        }
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
             $ctx.Response.StatusCode = 404
             $ctx.Response.Close()

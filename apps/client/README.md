@@ -60,7 +60,7 @@ http://127.0.0.1:8123/index.html?seed=0x51EDA101&seat=2&level=1
 
 ## 主题牌面（`.gfdeck` 运行时合成）
 
-主题包 `themes/defaults.gfdeck`（签名版）由 wasm 现场解密 + 验签 + 逐张合成 SVG，**包里不存任何预览图**。
+主题包 `crates/deckart/pkgs/defaults.gfdeck`（签名版，静态服务把 `/pkgs/` 映射到该目录）由 wasm 现场解密 + 验签 + 逐张合成 SVG，**包里不存任何预览图**。
 `defaults.gfdeck` 怎么生成、怎么重打、怎么校验，命令都在 `crates/deckart/README.md` 第 8 节（`render-all` 出 54 面 → `pack` 签名 → `verify`）。换包不用重编 wasm。
 
 - URL 开关：`?theme=1` 用主题牌面（不填 `hand` 时默认走横排 `fan`）、`?hand=fan|cols` 手动指定手牌排布、
@@ -138,7 +138,7 @@ node apps/client/verify_wasm_hash.mjs
   `cornerSuit.x/y` 变灰、取消全部角标会有告警。
 - **素材补录**：23 个 SVG 位都能替换，上传后按目标框（花色 100×100、点数 100×140、其余 500×700）
   等比缩进并居中；关掉自适应就按素材原始尺寸摆，位置会走样。
-- **进出配置**：默认值即 `themes/defaults/theme.json`，可导入已有 `theme.json` 继续改，导出/复制新配置。
+- **进出配置**：默认值即 `crates/deckart/themes/defaults/theme.json`，可导入已有 `theme.json` 继续改，导出/复制新配置。
   导出只给 JSON，素材文件仍需按 JSON 里的路径放进主题目录，再 `gfdeck pack` 打成 `.gfdeck`。
 
 ## 已知边界

@@ -1,12 +1,12 @@
 //! `gfdeck` 命令行：render / render-all / pack / unpack / info / verify / png。
 //!
-//! 用法示例：
+//! 用法示例（路径相对仓库根；主题源在 `crates/deckart/themes/`，产物在 `crates/deckart/pkgs/`）：
 //! ```text
-//! gfdeck render --theme themes/defaults --face H8 --level 8 -o out/H8.svg
-//! gfdeck render-all --theme themes/defaults --level 8 -o out
-//! gfdeck pack themes/defaults -o themes/defaults.gfdeck --sign-key <hex32>
-//! gfdeck unpack themes/defaults.gfdeck -o /tmp/defaults
-//! gfdeck info themes/defaults.gfdeck
+//! gfdeck render --theme crates/deckart/themes/defaults --face H8 --level 8 -o out/H8.svg
+//! gfdeck render-all --theme crates/deckart/themes/defaults --level 8 -o out
+//! gfdeck pack crates/deckart/themes/defaults -o crates/deckart/pkgs/defaults.gfdeck --sign-key <hex32>
+//! gfdeck unpack crates/deckart/pkgs/defaults.gfdeck -o /tmp/defaults
+//! gfdeck info crates/deckart/pkgs/defaults.gfdeck
 //! ```
 
 use std::path::{Path, PathBuf};

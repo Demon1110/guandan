@@ -382,7 +382,7 @@ pub struct Theme {
 }
 
 impl Theme {
-    /// 从磁盘目录加载（`themes/defaults`）。
+    /// 从磁盘目录加载（如 `crates/deckart/themes/defaults`）。
     pub fn load_dir(dir: &Path) -> Result<Theme, DeckError> {
         let meta_path = dir.join("theme.json");
         let meta_json = std::fs::read_to_string(&meta_path)
@@ -709,9 +709,10 @@ fn check_svg(rel: &str, text: &str) -> Result<(), DeckError> {
     Ok(())
 }
 
-/// 主题根目录（默认 `themes/`，可用 `GF_DECKART_THEMES` 覆盖）。
+/// 主题根目录（默认 crate 内的 `themes/`，可用 `GF_DECKART_THEMES` 覆盖）。
+/// 主题源与本 crate 放一起，仓库根目录不再留 `themes/`。
 pub fn themes_root() -> PathBuf {
     std::env::var_os("GF_DECKART_THEMES")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("themes"))
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("themes"))
 }

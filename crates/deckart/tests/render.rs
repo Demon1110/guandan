@@ -7,7 +7,7 @@ use gf_deckart::{
 };
 
 fn theme_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../themes/defaults")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("themes/defaults")
 }
 
 fn theme() -> Theme {

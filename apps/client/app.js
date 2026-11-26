@@ -176,7 +176,7 @@ function withCards(cards, fn) {
 // `.gfdeck` 只装 theme.json + 23 个分层素材；这里解密后逐张要 SVG，与 CLI 输出逐字节一致。
 // 加载失败（包损坏 / 签名不符）一律回退到原来的字卡渲染，牌桌不阻塞。
 
-const THEME_PACK_URL = 'themes/defaults.gfdeck';
+const THEME_PACK_URL = 'pkgs/defaults.gfdeck';
 // 开发期签名公钥（私钥种子全 0x11）；正式分发换成后台下发的公钥。
 const THEME_PUBKEY = 'd04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737';
 const CODE_SUIT = ['S', 'H', 'D', 'C'];
