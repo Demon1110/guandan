@@ -1,0 +1,21 @@
+[package]
+name = "gf-deckart"
+version = "0.1.0"
+description = "掼蛋牌面主题工具包：分层合成 54 张牌面 SVG、主题素材包打包/解包"
+edition = "2021"
+rust-version = "1.77"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# 独立 workspace：本 crate 尚未并入根 workspace（见 README「待确认项」）。
+# 并入后需删除本段，并同步 coverage.ps1 的排除口径。
+[workspace]
+
+[dependencies]
+# 依赖清单见 README「依赖计划」，按确认后的方案再落：
+# serde / serde_json            主题与包元数据
+# thiserror                     错误类型
+# aes-gcm 或 chacha20poly1305   素材包加密（方案 A/B）
+# sha2                          条目摘要与完整性
+# ed25519-dalek                 主题签名（可选）
+# resvg + tiny-skia             SVG → PNG（CLI/服务端预览；不进 wasm）

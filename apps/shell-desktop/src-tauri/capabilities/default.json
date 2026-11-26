@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "桌面壳默认权限集合（只放 core:default，业务能力一律不走 IPC）",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
