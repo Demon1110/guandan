@@ -2,7 +2,7 @@
 
 一套**规则驱动**的掼蛋引擎与多端框架：玩法写进 YAML（RuleSet DSL），引擎只解释规则，不做硬编码分支；同一份 Rust 代码同时编出 **native**（服务端 / 测试）与 **wasm**（客户端）两个产物，两端对同一动作序列必须算出**逐字节相同**的 `stateHash`。
 
-> 当前阶段：**M2 进行中**（M1 已收口）。M2 首个切片已落地：`apps/server` 联机骨架（axum + tokio，protobuf over WS，入座→发牌→动作→结算→重连），协议层补了传输帧头与快照 `roundNo`。
+> 当前阶段：**M2 进行中**（M1 已收口）。M2 首个切片已落地：`services/server` 联机骨架（axum + tokio，protobuf over WS，入座→发牌→动作→结算→重连），协议层补了传输帧头与快照 `roundNo`。
 > M0 五条硬 gate 已全部收口；M1 的牌型全表、枚举路径重构、结算两批、进贡/还贡/抗贡、跨局携带、房间快照 wire、组牌推荐（第三十七次变更）、房间主干（建桌→发牌→行动窗口→出牌→结算→再来一局）、AI-L0/L1/L2（跟牌、留牌、记牌、队友配合）、Web 端（牌桌/大厅/结算/设置）+ IndexedDB 杀进程续局、校验器 L2–L4、接风与进贡后手牌刷新专项均已落地；覆盖率门禁按「行 ≥90% 且区域 ≥90%」实测行 **92.23%** / 区域 **91.61%**，已过线。
 > 设计口径的唯一权威是 `docs/designs/2026-11-23-guandan-multiplatform/design_draft.md`（已签署冻结）；本文只做导览，不承载任何设计结论。
 
@@ -13,12 +13,12 @@
 | 项 | 值 |
 | --- | --- |
 | 语言 / 工具链 | Rust（`rust-toolchain.toml` 钉 `stable`，组件 `rustfmt` + `clippy`，target `wasm32-unknown-unknown`） |
-| 工作区 | 6 个 crate：`gf-engine`、`gf-protocol`、`gf-runtime-spike`、`gf-table-runtime`、`gf-ai`、`gf-client-wasm`；外加静态 Web 端 `apps/client` |
+| 工作区 | 根 workspace 8 个成员：7 个共享 crate（`gf-engine`、`gf-protocol`、`gf-table-runtime`、`gf-ai`、`gf-client-wasm`、`gf-deckart`、`gf-runtime-spike`）+ 后端 `gf-server`；前端 `apps/web`、桌面壳 `apps/desktop` 不入 workspace |
 | 规则载体 | YAML RuleSet（牌型原语/组合、牌力序、阶段表、进贡、结算、AI 推荐权重） |
 | 确定性 | 判定链零浮点、零随机、零 IO、不依赖 `HashMap` 迭代序；排序键全部显式 |
 | 双产物 | native `rlib` + wasm `cdylib`（裸产物、零 import，Node 可直接加载） |
 | 文档 | `docs/`（设计稿、变更台账、施工计划、实测资产） |
-| 测试现状 | `cargo test --workspace` **292 通过 / 0 失败**（2026-11-25） |
+| 测试现状 | `cargo test --workspace` **516 通过 / 0 失败**（2026-11-26，含 `gf-server`） |
 
 **玩法要点（v1 已冻结口径，速查）**
 
@@ -37,9 +37,10 @@
 依赖是**单向**的：引擎不知道网络形状，协议不知道引擎内部。
 
 ```
-        ┌────────────────────────── apps（M1 之后才建）──────────────────────────┐
-        │  apps/client(Web/PixiJS, 内嵌 wasm 引擎)   apps/server    apps/shell   │
-        └───────────────┬───────────────────────────────────────┬──────────────┘
+        ┌──────────────────────────── 交付层 ─────────────────────────────┐
+        │ apps/web（Web/PixiJS，内嵌 wasm）  apps/desktop（Tauri 壳）        │
+        │                     services/server（联机服）                    │
+        └───────────────┬───────────────────────────────────────┬──────────┘
                         │  帧消息                                │  入座/发牌/计时/托管
                  ┌──────▼───────┐                        ┌───────▼──────────┐
                  │ gf-protocol  │  proto → prost 生成代码 │ gf-table-runtime │
@@ -284,23 +285,29 @@ $env:Path = "C:\Program Files\Git\cmd;$env:Path"
 
 ```
 guandan/
-├─ Cargo.toml                 # workspace（6 个 crate）
+├─ Cargo.toml                 # workspace：7 个共享 crate + 1 个后端服务
 ├─ rust-toolchain.toml        # stable + rustfmt/clippy + wasm32-unknown-unknown
-├─ crates/
+├─ crates/                    # 共享库（不含 IO、不含服务）
 │  ├─ engine/                 # 规则引擎（核心）
 │  │  ├─ src/                 # contract / engine / ruleset / patterns / hash / view / settlement / recommend
 │  │  ├─ tests/               # 黄金、牌型全表、L1–L4 闸门、推荐、fixtures、wasm 脚本
 │  │  ├─ benches/             # m0_bench / idle_1500 / classic_bench / recommend_bench
 │  │  └─ examples/            # m0_golden / recommend_golden / classic_golden（L4 黄金生成）
-│  ├─ protocol/               # proto + prost 生成代码（入库）
-│  ├─ runtime-spike/          # M0 断线恢复原型（recovery 已迁入 table-runtime，只剩 harness 夹具）
+│  ├─ protocol/               # proto + prost 生成代码（入库）；服务端与 wasm 共用
 │  ├─ table-runtime/          # 房间主干（建桌/发牌/行动窗口/托管/断线恢复/续局重演）+ 快照 wire
-│  ├─ ai/                     # AI-L0/L1/L2（view(seat) + 合法集 + partner.state：L0 最小牌 / L1 跟牌留牌 / L2 记牌与炸弹时机）
-│  └─ client-wasm/            # 浏览器 wasm 绑定层（零 import，裸加载）
-├─ apps/client/               # Web 端（静态站点 + IndexedDB 动作存档 + 杀进程续局）
-├─ apps/server/               # 联机服务端（M2；独立 workspace，axum + tokio，protobuf over WS）
-├─ apps/shell-desktop/        # Tauri 2 桌面壳（M2；独立 workspace）
-├─ scripts/                   # verify_dual_hash.ps1：native/wasm 双产物同解 gate
+│  ├─ ai/                     # AI-L0/L1/L2（view(seat) + 合法集 + partner.state）
+│  ├─ client-wasm/            # 浏览器 wasm 绑定层（零 import，裸加载）
+│  ├─ deckart/                # 牌面主题工具包（矢量素材 → 54 面 SVG / .gfdeck 包）
+│  │  ├─ themes/              # 主题源
+│  │  ├─ pkgs/                # 打包产物 *.gfdeck
+│  │  └─ scripts/             # pack-all.ps1
+│  └─ runtime-spike/          # M0 断线恢复原型（只剩 harness 夹具）
+├─ services/                  # 后端服务（进程、IO、网络）
+│  └─ server/                 # gf-server：axum + tokio，protobuf over WS（根 workspace 成员）
+├─ apps/                      # 面向用户的端
+│  ├─ web/                    # 浏览器端（纯静态站点 + IndexedDB 存档 + 杀进程续局）
+│  └─ desktop/                # Tauri 2 桌面壳（独立 workspace，打包时复用 apps/web）
+├─ scripts/                   # 仓库级脚本：verify_dual_hash.ps1、coverage.ps1
 ├─ .github/workflows/ci.yml   # 单元 + 集成、双产物 stateHash 同解、Web 续局 gate
 ├─ docs/
 │  ├─ 开发计划.md              # 排期、任务分解、验收勾选（项目方维护）
@@ -313,6 +320,8 @@ guandan/
 └─ target/                    # 构建产物（不入库）
 ```
 
+分层规矩（评审时按这条卡）：`crates/` 只放可复用的库，不碰文件系统/网络；`services/` 放会起进程、连外部依赖的服务；`apps/` 放交付给用户的前端与壳。新增东西先归位，不往仓库根堆。
+
 ---
 
 ## 11. 路线图
@@ -321,7 +330,7 @@ guandan/
 | --- | --- | --- |
 | M0 | ✅ 已收口 | 契约锁定、双端 `stateHash` 一致、断线恢复原型、非法 RuleSet 反证、空转与包体实测 |
 | M1 | ✅ 已收口 | 牌型全表、枚举路径重构、结算两批、进贡/还贡/抗贡、跨局携带、快照 wire、组牌推荐、房间主干（含计时/托管/断线恢复/再来一局）、AI-L0/L1/L2（跟牌/留牌/记牌/队友配合）、Web 端（牌桌/大厅/结算/设置）+ IndexedDB 续局、校验器 L2–L4、CI 双产物 gate、性能与容量 gate（353.3µs / 3,952–7,904 房间）、接风与进贡后手牌刷新专项；覆盖率门禁按 **行 ≥90% 且区域 ≥90%**（实测行 92.23% / 区域 91.61%，函数 89.95%，分支 85.05% 作观测项），口径与缺口见 `docs/assets/m1-coverage-baseline.md` |
-| M2 | 🟡 进行中 | 已落地：`apps/server` 联机骨架（入座/开局/动作/结算）、传输帧头（`gf_protocol::wire`）、快照 `roundNo` 补齐、增量重连（`ReconnectBuffer` → `RoomDelta`，跨局/结算落快照重置）、房间码与匹配队列（内存态）、手机号账号与短信验证码（测试白名单 + 座位绑定）、PG/Redis 落库（战绩/账号/快照/动作流/队列镜像）；待做：第 24 周联机内测、桌面壳三端产物、回放只读观战 |
+| M2 | 🟡 进行中 | 已落地：`services/server` 联机骨架（入座/开局/动作/结算）、传输帧头（`gf_protocol::wire`）、快照 `roundNo` 补齐、增量重连（`ReconnectBuffer` → `RoomDelta`，跨局/结算落快照重置）、房间码与匹配队列（内存态）、手机号账号与短信验证码（测试白名单 + 座位绑定）、PG/Redis 落库（战绩/账号/快照/动作流/队列镜像）；待做：第 24 周联机内测、桌面壳三端产物、回放只读观战 |
 | M3 / M4 | 未开始 | 见 `docs/开发计划.md` |
 
 **M1 目前的硬账**
@@ -351,17 +360,16 @@ guandan/
 
 ---
 
-## 13. 联机服务端（`apps/server`，M2）
+## 13. 联机服务端（`services/server`，M2）
 
-独立 workspace（与 `apps/shell-desktop` 同一处理方式）：`cargo test --workspace` 不会把 axum/tokio 依赖树算进根 workspace 的测试与覆盖率。
+根 workspace 成员（`gf-server`）：同仓同锁、`cargo fmt/clippy/test --workspace` 都会管到它；只想动服务端就用 `-p gf-server` 收窄，覆盖率统计仍按 crate 分开算。桌面壳 `apps/desktop` 引 Tauri 依赖树太重，保持独立 workspace。
 
 ```powershell
 # 起服务（默认 127.0.0.1:8080）
-cd apps/server
-cargo run --bin gf-server
+cargo run -p gf-server --bin gf-server
 
-# 测试（24 条单测 + 6 条房间闭环 + 6 条大厅 HTTP + 6 条账号 HTTP + 2 条 WS 冒烟）
-cargo test
+# 测试（29 条单测 + 6 条房间闭环 + 6 条大厅 HTTP + 6 条账号 HTTP + 1 条落库 + 2 条 WS 冒烟）
+cargo test -p gf-server
 ```
 
 环境变量：`GF_BIND`、`GF_MIN_CLIENT_VERSION`（空串表示不校验）、`GF_TICK_MS`（默认 50）、`GF_NEXT_DEAL_MS`（结算后自动续局间隔，默认 5000）、`GF_HEARTBEAT_TIMEOUT_MS`（默认 30000）、`GF_ROOM_CODE_TTL_MS`（房间码有效期，默认 24h）、`GF_MATCH_TIMEOUT_MS`（匹配等待上限，默认 30s）、`GF_AUTH_SALT` / `GF_JWT_SECRET`（手机号哈希盐与 token 签名密钥，默认值是开发串、启动会告警）、`GF_SMS_TEST_WHITELIST` / `GF_SMS_TEST_CODE`（短信未报备前的测试白名单与固定码）、`GF_REQUIRE_AUTH`（强制玩家侧接口与 WS 带 token）、`GF_DATABASE_URL` / `GF_REDIS_URL`（PG/Redis 连接串，不填即纯内存运行）。

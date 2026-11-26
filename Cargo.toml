@@ -1,3 +1,14 @@
 [workspace]
-members = ["crates/engine", "crates/protocol", "crates/runtime-spike", "crates/table-runtime", "crates/ai", "crates/client-wasm", "crates/deckart"]
+members = [
+    # 共享库
+    "crates/engine",
+    "crates/protocol",
+    "crates/table-runtime",
+    "crates/ai",
+    "crates/client-wasm",
+    "crates/deckart",
+    "crates/runtime-spike",
+    # 后端服务
+    "services/server",
+]
 resolver = "2"

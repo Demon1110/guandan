@@ -485,7 +485,10 @@ fn corner_scale_one_is_byte_identical_to_plain_render() {
         },
     )
     .unwrap();
-    assert_eq!(plain, with_one, "倍率 1.0 必须与旧入口逐字节一致（向后兼容）");
+    assert_eq!(
+        plain, with_one,
+        "倍率 1.0 必须与旧入口逐字节一致（向后兼容）"
+    );
 }
 
 #[test]
@@ -564,14 +567,20 @@ fn corner_scale_survives_classic_layout() {
     .unwrap();
     let rank_base = layer_scale(&base, "<g id=\"L3-rank\">");
     let rank_big = layer_scale(&big, "<g id=\"L3-rank\">");
-    assert!((rank_big / rank_base - 2.0).abs() < 1e-6, "四角点数应为 2 倍");
+    assert!(
+        (rank_big / rank_base - 2.0).abs() < 1e-6,
+        "四角点数应为 2 倍"
+    );
 }
 
 #[test]
 fn theme_declares_default_corner_scale() {
     // 客户端滑块没被手动调过时读它；CLI 不给 --corner 时也读它
     let t = theme();
-    assert!(t.has_corner_scale(), "默认主题应声明 cornerScale 作为默认角标");
+    assert!(
+        t.has_corner_scale(),
+        "默认主题应声明 cornerScale 作为默认角标"
+    );
     assert!((t.corner_scale() - 2.2).abs() < 1e-9, "默认应声明 220%");
 }
 
@@ -582,7 +591,10 @@ fn theme_corner_scale_is_optional_and_bounded() {
 
     // 省略 → 主题不给意见，按素材原样（1.0）
     let obj = base.as_object_mut().unwrap();
-    assert!(obj.remove("cornerScale").is_some(), "默认主题应声明 cornerScale");
+    assert!(
+        obj.remove("cornerScale").is_some(),
+        "默认主题应声明 cornerScale"
+    );
     let meta = gf_deckart::ThemeMeta::parse(&serde_json::to_string(&base).unwrap()).unwrap();
     assert_eq!(meta.corner_scale, None, "cornerScale 可省");
 
@@ -624,7 +636,11 @@ fn corners_config_limits_marks_in_both_layouts() {
         )
     });
     let svg = render_face(&only_tl, face, None).unwrap();
-    assert_eq!(svg.matches("rotate(180)").count(), 0, "只留左上就没有镜像角标");
+    assert_eq!(
+        svg.matches("rotate(180)").count(),
+        0,
+        "只留左上就没有镜像角标"
+    );
     assert!(svg.contains("<g id=\"L3-rank\">"));
 
     // classic 默认四角：花色 3 处 + 点数 3 处旋转（左上不转）
@@ -656,7 +672,13 @@ fn corners_config_is_validated() {
     // 重复 / 超过 4 项 → 加载期报错；未知名字由 serde 直接拒
     for bad in [
         serde_json::json!(["topLeft", "topLeft"]),
-        serde_json::json!(["topLeft", "topRight", "bottomLeft", "bottomRight", "topLeft"]),
+        serde_json::json!([
+            "topLeft",
+            "topRight",
+            "bottomLeft",
+            "bottomRight",
+            "topLeft"
+        ]),
         serde_json::json!(["left"]),
     ] {
         let mut v = base.clone();
@@ -778,7 +800,10 @@ fn classic_pips_clear_corner_marks_when_corners_are_huge() {
             );
             assert!(*x + 100.0 * s <= 500.0 - inset + 0.01, "点位右缘越界");
             assert!(*y >= inset * (700.0 / 500.0) - 0.01, "点位顶缘越界");
-            assert!(*y + 100.0 * s <= 700.0 - inset * (700.0 / 500.0) + 0.01, "点位底缘越界");
+            assert!(
+                *y + 100.0 * s <= 700.0 - inset * (700.0 / 500.0) + 0.01,
+                "点位底缘越界"
+            );
         }
 
         // 两列不能粘在一起
@@ -854,8 +879,14 @@ fn corner_suit_can_be_placed_right_of_the_rank() {
     let rank_right = 30.0 + 100.0 * rank_scale;
     let rank_top = 34.0;
     let rank_bottom = rank_top + 140.0 * rank_scale;
-    assert!(sx >= rank_right + 9.0, "花色应排在点数右侧：{sx} vs {rank_right}");
-    assert!(sy > rank_top && sy + 100.0 * ss < rank_bottom, "花色应落在点数的高度范围内");
+    assert!(
+        sx >= rank_right + 9.0,
+        "花色应排在点数右侧：{sx} vs {rank_right}"
+    );
+    assert!(
+        sy > rank_top && sy + 100.0 * ss < rank_bottom,
+        "花色应落在点数的高度范围内"
+    );
     let suit_center = sy + 50.0 * ss;
     let rank_center = rank_top + 70.0 * rank_scale;
     assert!(
@@ -908,4 +939,3 @@ fn corner_suit_placement_rejects_unknown_value() {
         );
     }
 }
-

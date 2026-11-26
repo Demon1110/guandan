@@ -55,26 +55,38 @@ fn expect_l1(name: &str, src: &str, loc: &str) {
 
 #[test]
 fn schema_rejects_bad_rank_key_and_unknown_keys() {
-    let rank = one(
-        M0,
-        r#"naturalOrder: ["2""#,
-        r#"naturalOrder: ["1""#,
-    );
+    let rank = one(M0, r#"naturalOrder: ["2""#, r#"naturalOrder: ["1""#);
     let e = parse_err("RankKey 非枚举字面值", &rank);
     assert!(e.message.contains("unknown RankKey"), "{}", e.message);
 
-    let unknown_field = one(M0, "{ id: single, primitiveId", "{ foo: 1, id: single, primitiveId");
+    let unknown_field = one(
+        M0,
+        "{ id: single, primitiveId",
+        "{ foo: 1, id: single, primitiveId",
+    );
     parse_err("pattern 未知键", &unknown_field);
 
     // 非字符串键走 `as_str()` 为 None 的 continue 分支，不应报未知键。
-    let numeric_key = one(M0, "{ id: single, primitiveId", "{ 3: x, id: single, primitiveId");
+    let numeric_key = one(
+        M0,
+        "{ id: single, primitiveId",
+        "{ 3: x, id: single, primitiveId",
+    );
     let body = from_yaml(&numeric_key).expect("数字键应被跳过而非拒绝");
     assert_eq!(body.patterns.len(), 1);
 
-    let action_unknown = one(M0, "{ kind: pass, primitive: action.pass", "{ kind: pass, bar: 1, primitive: action.pass");
+    let action_unknown = one(
+        M0,
+        "{ kind: pass, primitive: action.pass",
+        "{ kind: pass, bar: 1, primitive: action.pass",
+    );
     parse_err("action 未知键", &action_unknown);
 
-    let action_numeric = one(M0, "{ kind: pass, primitive", "{ 7: x, kind: pass, primitive");
+    let action_numeric = one(
+        M0,
+        "{ kind: pass, primitive",
+        "{ 7: x, kind: pass, primitive",
+    );
     from_yaml(&action_numeric).expect("action 数字键应被跳过");
 }
 
@@ -179,15 +191,25 @@ fn schema_covers_wildcard_rank_and_compose_shape() {
 #[test]
 fn schema_covers_bad_enum_literals() {
     parse_err("action kind 非法", &one(M0, "kind: pass", "kind: fly"));
-    parse_err("levelInsert 非法", &one(M0, "levelInsert: above-A", "levelInsert: mid-A"));
-    parse_err("zone scope 非法", &one(M0, "scope: shared", "scope: everyone"));
+    parse_err(
+        "levelInsert 非法",
+        &one(M0, "levelInsert: above-A", "levelInsert: mid-A"),
+    );
+    parse_err(
+        "zone scope 非法",
+        &one(M0, "scope: shared", "scope: everyone"),
+    );
 }
 
 // ---------- 校验期：L1 finding ----------
 
 #[test]
 fn l1_covers_seats_timing_and_caps() {
-    expect_l1("seats.count 越界", &one(CLASSIC, "count: 4, teams", "count: 1, teams"), "seats.count");
+    expect_l1(
+        "seats.count 越界",
+        &one(CLASSIC, "count: 4, teams", "count: 1, teams"),
+        "seats.count",
+    );
 
     let timing = one(
         CLASSIC,
@@ -195,22 +217,38 @@ fn l1_covers_seats_timing_and_caps() {
         "timing: { turnTimeSec: 1, graceSec: 1, offlineAllSec: 1 }\nmatchCap: { rounds: 12 }",
     );
     let locs = l1_locs(&timing);
-    for want in ["timing.turnTimeSec", "timing.graceSec", "timing.offlineAllSec"] {
+    for want in [
+        "timing.turnTimeSec",
+        "timing.graceSec",
+        "timing.offlineAllSec",
+    ] {
         assert!(locs.iter().any(|l| l == want), "应报 {want}，实际 {locs:?}");
     }
 
-    expect_l1("matchCap 0 轮", &one(CLASSIC, "rounds: 12", "rounds: 0"), "matchCap.rounds");
+    expect_l1(
+        "matchCap 0 轮",
+        &one(CLASSIC, "rounds: 12", "rounds: 0"),
+        "matchCap.rounds",
+    );
 
     expect_l1(
         "ladder 混入插入型",
-        &one(CLASSIC, "bomb-8, joker-bomb]", "bomb-8, joker-bomb, straight-flush-5]"),
+        &one(
+            CLASSIC,
+            "bomb-8, joker-bomb]",
+            "bomb-8, joker-bomb, straight-flush-5]",
+        ),
         "compare.ladder",
     );
 }
 
 #[test]
 fn l1_covers_team_sizes_and_level_table() {
-    expect_l1("空队伍集", &one(CLASSIC, "teams: [[0,2],[1,3]]", "teams: []"), "seats.teams");
+    expect_l1(
+        "空队伍集",
+        &one(CLASSIC, "teams: [[0,2],[1,3]]", "teams: []"),
+        "seats.teams",
+    );
     expect_l1(
         "队伍规模不一致",
         &one(CLASSIC, "teams: [[0,2],[1,3]]", "teams: [[0,2],[1]]"),
@@ -237,21 +275,38 @@ fn l1_covers_level_table_variants() {
     );
     expect_l1("rank-combo 缺 upgrade", &no_upgrade, "levelTable.upgrade");
 
-    let with_scores = one(CLASSIC, "  upgrade: [ {", "  rankScores: [10,20,30,40]\n  upgrade: [ {");
+    let with_scores = one(
+        CLASSIC,
+        "  upgrade: [ {",
+        "  rankScores: [10,20,30,40]\n  upgrade: [ {",
+    );
     let locs = l1_locs(&with_scores);
     assert!(
-        locs.iter().any(|l| l == "levelTable.rankScores" || l == "levelTable.upgrade"),
+        locs.iter()
+            .any(|l| l == "levelTable.rankScores" || l == "levelTable.upgrade"),
         "两个 basis 键集混用应报错，实际 {locs:?}"
     );
 
-    let dup = one(CLASSIC, "{ teamRanks: [1,3], step: 2 }", "{ teamRanks: [1,2], step: 2 }");
+    let dup = one(
+        CLASSIC,
+        "{ teamRanks: [1,3], step: 2 }",
+        "{ teamRanks: [1,2], step: 2 }",
+    );
     expect_l1("teamRanks 重复", &dup, "levelTable.upgrade[1].teamRanks");
 
-    let bad_step = one(CLASSIC, "{ teamRanks: [1,4], step: 1 }", "{ teamRanks: [1,4], step: 4 }");
+    let bad_step = one(
+        CLASSIC,
+        "{ teamRanks: [1,4], step: 1 }",
+        "{ teamRanks: [1,4], step: 4 }",
+    );
     expect_l1("upgrade step 越界", &bad_step, "levelTable.upgrade[2].step");
 
     let bad_len = one(CLASSIC, "[1,2], step: 3 }", "[1,2,3], step: 3 }");
-    expect_l1("teamRanks 长度≠teamSize", &bad_len, "levelTable.upgrade[0].teamRanks");
+    expect_l1(
+        "teamRanks 长度≠teamSize",
+        &bad_len,
+        "levelTable.upgrade[0].teamRanks",
+    );
 }
 
 #[test]
@@ -287,16 +342,32 @@ fn l1_covers_level_pass() {
 
 #[test]
 fn l1_covers_deck_and_deal() {
-    expect_l1("jokers≠2", &one(CLASSIC, "jokers: 2, exclude", "jokers: 3, exclude"), "deck.jokers");
+    expect_l1(
+        "jokers≠2",
+        &one(CLASSIC, "jokers: 2, exclude", "jokers: 3, exclude"),
+        "deck.jokers",
+    );
     expect_l1(
         "ranks 含王",
-        &one(CLASSIC, r#"ranks: ["2","3""#, r#"ranks: ["2","little-joker","3""#),
+        &one(
+            CLASSIC,
+            r#"ranks: ["2","3""#,
+            r#"ranks: ["2","little-joker","3""#,
+        ),
         "deck.ranks",
     );
-    expect_l1("perSeat 越界", &one(CLASSIC, "perSeat: 27", "perSeat: 200"), "flow.deal.perSeat");
+    expect_l1(
+        "perSeat 越界",
+        &one(CLASSIC, "perSeat: 27", "perSeat: 200"),
+        "flow.deal.perSeat",
+    );
 
     let uneven = one(
-        &one(CLASSIC, "deal:   { zone: hand, perSeat: 27, reveal: false }", "deal:   { zone: hand, reveal: false }"),
+        &one(
+            CLASSIC,
+            "deal:   { zone: hand, perSeat: 27, reveal: false }",
+            "deal:   { zone: hand, reveal: false }",
+        ),
         "copies: 2, ranks",
         "copies: 1, ranks",
     );
@@ -311,9 +382,17 @@ fn l1_covers_deck_and_deal() {
         "  - { id: discard,",
         "  - { id: hidden, scope: private, capacity: 27 }\n  - { id: discard,",
     );
-    expect_l1("两个 private 区且未声明落点", &two_private, "flow.deal.zone");
+    expect_l1(
+        "两个 private 区且未声明落点",
+        &two_private,
+        "flow.deal.zone",
+    );
 
-    expect_l1("rng stream 越界", &one(CLASSIC, "rng:    { stream: 0 }", "rng:    { stream: 9 }"), "flow.rng.stream");
+    expect_l1(
+        "rng stream 越界",
+        &one(CLASSIC, "rng:    { stream: 0 }", "rng:    { stream: 9 }"),
+        "flow.rng.stream",
+    );
     expect_l1(
         "minPlayers 越界",
         &one(CLASSIC, "minPlayers: 4", "minPlayers: 0"),
@@ -325,7 +404,11 @@ fn l1_covers_deck_and_deal() {
 fn l1_covers_lifecycle_and_tribute() {
     expect_l1(
         "lifecycle 少一段",
-        &one(CLASSIC, "lifecycle: [deal, tribute, play, settle]", "lifecycle: [deal, play, settle]"),
+        &one(
+            CLASSIC,
+            "lifecycle: [deal, tribute, play, settle]",
+            "lifecycle: [deal, play, settle]",
+        ),
         "lifecycle",
     );
 
@@ -333,12 +416,24 @@ fn l1_covers_lifecycle_and_tribute() {
     expect_l1("tribute 缺 trigger", &no_trigger, "tribute.trigger");
 
     let pairs_block = "  pairs:\n    - { payer: 4, receiver: 1, when: single-loss }\n    - { payer: 4, receiver: 1, when: double-loss }\n    - { payer: 3, receiver: 2, when: double-loss }\n";
-    expect_l1("tribute 缺 pairs", &one(CLASSIC, pairs_block, ""), "tribute.pairs");
-    expect_l1("tribute pairs 空表", &one(CLASSIC, pairs_block, "  pairs: []\n"), "tribute.pairs");
+    expect_l1(
+        "tribute 缺 pairs",
+        &one(CLASSIC, pairs_block, ""),
+        "tribute.pairs",
+    );
+    expect_l1(
+        "tribute pairs 空表",
+        &one(CLASSIC, pairs_block, "  pairs: []\n"),
+        "tribute.pairs",
+    );
 
     expect_l1(
         "tribute 缺 return",
-        &one(CLASSIC, "  return: { ceiling: under-ten, count: 1, fallback: smallest }\n", ""),
+        &one(
+            CLASSIC,
+            "  return: { ceiling: under-ten, count: 1, fallback: smallest }\n",
+            "",
+        ),
         "tribute.return",
     );
     expect_l1(
@@ -348,12 +443,20 @@ fn l1_covers_lifecycle_and_tribute() {
     );
     expect_l1(
         "payer 越界",
-        &one(CLASSIC, "{ payer: 4, receiver: 1, when: single-loss }", "{ payer: 9, receiver: 1, when: single-loss }"),
+        &one(
+            CLASSIC,
+            "{ payer: 4, receiver: 1, when: single-loss }",
+            "{ payer: 9, receiver: 1, when: single-loss }",
+        ),
         "tribute.pairs[0].payer",
     );
     expect_l1(
         "receiver 越界",
-        &one(CLASSIC, "receiver: 1, when: single-loss", "receiver: 9, when: single-loss"),
+        &one(
+            CLASSIC,
+            "receiver: 1, when: single-loss",
+            "receiver: 9, when: single-loss",
+        ),
         "tribute.pairs[0].receiver",
     );
 }
@@ -472,7 +575,11 @@ fn l1_covers_duplicate_shape_reserved_and_legal_from() {
     );
     expect_l1(
         "legalFrom=turn",
-        &one(CLASSIC, "legalFrom: play,     params: {}", "legalFrom: turn,     params: {}"),
+        &one(
+            CLASSIC,
+            "legalFrom: play,     params: {}",
+            "legalFrom: turn,     params: {}",
+        ),
         "actions[1].legalFrom",
     );
 }

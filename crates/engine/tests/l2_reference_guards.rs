@@ -40,9 +40,7 @@ fn teams_out_of_range_and_duplicate_and_missing() {
     );
     assert!(codes(&v).contains(&ErrorCode::RsTeamCoverageInvalid));
     assert!(
-        v.findings
-            .iter()
-            .any(|f| f.message.contains("越界")),
+        v.findings.iter().any(|f| f.message.contains("越界")),
         "越界应写进 message：{:?}",
         v.findings
     );
@@ -71,16 +69,17 @@ fn ladder_and_zone_references_missing() {
     );
     assert!(codes(&v).contains(&ErrorCode::RsRefMissing));
     assert!(
-        v.findings
-            .iter()
-            .any(|f| f.location == "compare.ladder[0]"),
+        v.findings.iter().any(|f| f.location == "compare.ladder[0]"),
         "位置应精确到 ladder 下标：{:?}",
         v.findings
     );
 
     // 动作 legalFrom 指向不存在的区。
     let v = l2_of(
-        &with("legalFrom: play,     params: {}", "legalFrom: ghost-zone, params: {}"),
+        &with(
+            "legalFrom: play,     params: {}",
+            "legalFrom: ghost-zone, params: {}",
+        ),
         "legalFrom 悬空",
     );
     assert!(codes(&v).contains(&ErrorCode::RsRefMissing));
@@ -92,9 +91,7 @@ fn ladder_and_zone_references_missing() {
     );
     assert!(codes(&v).contains(&ErrorCode::RsRefMissing));
     assert!(
-        v.findings
-            .iter()
-            .any(|f| f.location == "flow.deal.zone"),
+        v.findings.iter().any(|f| f.location == "flow.deal.zone"),
         "位置应为 flow.deal.zone：{:?}",
         v.findings
     );
@@ -117,7 +114,10 @@ fn lifecycle_play_without_entry() {
 fn deck_formula_mismatch_and_capacity_overflow() {
     // 声明总张数与公式不符。
     let v = l2_of(
-        &with("assert: { minPlayers: 4, cardCount: 108 }", "assert: { minPlayers: 4, cardCount: 100 }"),
+        &with(
+            "assert: { minPlayers: 4, cardCount: 108 }",
+            "assert: { minPlayers: 4, cardCount: 100 }",
+        ),
         "cardCount 不符",
     );
     assert!(codes(&v).contains(&ErrorCode::RsDeckCountMismatch));
@@ -130,10 +130,7 @@ fn deck_formula_mismatch_and_capacity_overflow() {
     );
 
     // 手牌区容量不足：27→20（4 座 ×20 = 80 < 108）。
-    let v = l2_of(
-        &with("capacity: 27 }", "capacity: 20 }"),
-        "容量不足",
-    );
+    let v = l2_of(&with("capacity: 27 }", "capacity: 20 }"), "容量不足");
     assert!(codes(&v).contains(&ErrorCode::RsDeckCountMismatch));
     assert!(
         v.findings.iter().any(|f| f.location == "zones"),
@@ -198,6 +195,9 @@ fn parse_golden_rejects_broken_fixtures() {
     assert_eq!(ok.seed, 1);
     assert_eq!(ok.ruleset_id, "guandan-classic");
     assert_eq!(ok.actions.len(), 2);
-    assert!(matches!(ok.actions[0], gf_engine::contract::Action::Play { .. }));
+    assert!(matches!(
+        ok.actions[0],
+        gf_engine::contract::Action::Play { .. }
+    ));
     assert!(matches!(ok.actions[1], gf_engine::contract::Action::Pass));
 }

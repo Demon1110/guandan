@@ -6,8 +6,8 @@ param([string]$Seed = '0x51EDA101')
 $ErrorActionPreference = 'Stop'
 
 $root = Join-Path $PSScriptRoot '..'
-$buildScript = Join-Path $root 'apps' 'client' 'build.ps1'
-$wasmRunner = Join-Path $root 'apps' 'client' 'verify_wasm_hash.mjs'
+$buildScript = Join-Path $root 'apps' 'web' 'build.ps1'
+$wasmRunner = Join-Path $root 'apps' 'web' 'verify_wasm_hash.mjs'
 
 Push-Location $root
 try {

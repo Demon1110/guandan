@@ -16,7 +16,7 @@ param(
     # 包内密钥标识；换密钥必须换 id，客户端按它选密钥
     [string]$KeyId = 'builtin-v1',
 
-    # Ed25519 私钥种子（64 位 hex）。缺省用内置开发密钥（种子全 0x11），与 apps/client 的公钥成对
+    # Ed25519 私钥种子（64 位 hex）。缺省用内置开发密钥（种子全 0x11），与 apps/web 的公钥成对
     [string]$SignKey = ('11' * 32),
 
     # 跳过 cargo build，直接用手上已有的 gfdeck 二进制

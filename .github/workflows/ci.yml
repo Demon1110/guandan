@@ -39,4 +39,4 @@ jobs:
       - name: M1 房间 + AI-L2 bot 双产物同解（两局 stateHash 逐字节相等）
         run: pwsh -NoProfile -File scripts/verify_dual_hash.ps1
       - name: Web 端续局 gate（存档 → 丢弃实例 → 回放，哈希自证）
-        run: node apps/client/test_restore.mjs
+        run: node apps/web/test_restore.mjs

@@ -127,7 +127,12 @@ mod tests {
 
     #[test]
     fn kind_directions_do_not_overlap() {
-        for k in [kind::JOIN_ROOM, kind::RECONNECT, kind::SUBMIT_ACTION, kind::HEARTBEAT] {
+        for k in [
+            kind::JOIN_ROOM,
+            kind::RECONNECT,
+            kind::SUBMIT_ACTION,
+            kind::HEARTBEAT,
+        ] {
             assert!(is_client_kind(k), "C→S 类型 {k} 应合法");
             assert!(!is_server_kind(k), "C→S 类型 {k} 不应被判为服务端帧");
         }

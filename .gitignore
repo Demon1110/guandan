@@ -27,5 +27,5 @@ rustc-ice-*.txt
 # 打包产物（scripts/package-windows.ps1 与发布流水线都写到这里）
 dist/
 
-# Web 端 wasm 构建产物（由 apps/client/build.ps1 生成，不入库）
-apps/client/gf_client_wasm.wasm
+# Web 端 wasm 构建产物（由 apps/web/build.ps1 生成，不入库）
+apps/web/gf_client_wasm.wasm

@@ -10,7 +10,7 @@ use gf_ai::shape::{
 use gf_ai::view_scan::{
     discard_cards, hand_cards, last_play_cards, last_play_pattern_id, last_play_seat,
 };
-use gf_ai::{L0Bot};
+use gf_ai::L0Bot;
 use gf_engine::contract::Action;
 use gf_table_runtime::room::BotPolicy;
 
@@ -29,7 +29,9 @@ fn bomb_shape_four_jokers_is_bomb() {
 #[test]
 fn bomb_shape_same_rank_five_and_eight() {
     // rank 0 的全部 8 个 id：suit×26 + copy。
-    let rank0: Vec<u16> = (0..4u16).flat_map(|suit| (0..2u16).map(move |copy| suit * 26 + copy)).collect();
+    let rank0: Vec<u16> = (0..4u16)
+        .flat_map(|suit| (0..2u16).map(move |copy| suit * 26 + copy))
+        .collect();
     assert_eq!(rank0.len(), 8);
     assert!(is_bomb_shape(&play(rank0[..4].to_vec())));
     assert!(is_bomb_shape(&play(rank0[..5].to_vec())));
@@ -100,7 +102,10 @@ fn discard_without_cards_array_or_overflow() {
     // 无 `"discard":` → 空。
     assert!(discard_cards(br#"{"seat":0}"#).is_empty());
     // 数字溢出 u16 被跳过。
-    assert_eq!(discard_cards(br#"{"discard":{"cards":[99999,4]}}"#), vec![4]);
+    assert_eq!(
+        discard_cards(br#"{"discard":{"cards":[99999,4]}}"#),
+        vec![4]
+    );
 }
 
 #[test]
@@ -143,6 +148,7 @@ fn l0_lead_plays_smallest_single() {
     // 空手牌：过牌。
     assert_eq!(bot.decide(br#"{"hand":{"cards":[]}}"#, 0), Action::Pass);
     // 跟牌（lastPlay 来自他座）：过牌。
-    let follow = br#"{"hand":{"cards":[9,3]},"lastPlay":{"seat":2,"patternId":"single","cards":[5]}}"#;
+    let follow =
+        br#"{"hand":{"cards":[9,3]},"lastPlay":{"seat":2,"patternId":"single","cards":[5]}}"#;
     assert_eq!(bot.decide(follow, 0), Action::Pass);
 }

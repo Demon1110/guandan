@@ -110,7 +110,12 @@ fn joker_bomb_and_bombs() {
     let plays = plays_of(&engine.legal_actions(&state).expect("枚举失败"));
     let mut bomb_cards = four_jokers.clone();
     bomb_cards.sort_unstable();
-    let r2 = engine.apply(state.clone(), Action::Play { cards: bomb_cards.clone() });
+    let r2 = engine.apply(
+        state.clone(),
+        Action::Play {
+            cards: bomb_cards.clone(),
+        },
+    );
     assert!(r2.is_ok(), "王炸应可出：{:?}", r2.err());
     let _ = &plays;
     assert!(
@@ -142,11 +147,12 @@ fn wheel_straight_and_flush() {
     let (engine, state) = lead_with(flush.clone());
     let plays = plays_of(&engine.legal_actions(&state).expect("枚举失败"));
     assert!(
-        plays.iter().any(|c| c == &{
-            let mut v = flush.clone();
-            v.sort_unstable();
-            v
-        }),
+        plays.iter().any(|c| c
+            == &{
+                let mut v = flush.clone();
+                v.sort_unstable();
+                v
+            }),
         "同花顺应被枚举，实际 {plays:?}"
     );
 }

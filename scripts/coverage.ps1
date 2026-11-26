@@ -8,7 +8,9 @@
 #      只被测试调用，不是业务路径；
 #   3. `runtime-spike`：性能原型 crate，不进发布产物；
 #   4. `crates/deckart`：牌面主题工具包（素材拼 SVG + 素材包加解密），自带单测但属表现层资产，
-#      不参与 M1 的引擎覆盖率门禁（接入条件见基线文档）。
+#      不参与 M1 的引擎覆盖率门禁（接入条件见基线文档）；
+#   5. `services/server`：联机服务端（axum/tokio/进程与外部存储），按自己的集成用例验收，
+#      不并进引擎覆盖率分母。
 # 断言的反向分支（`if 条件不成立 { panic }`）与 `#[cfg(test)]` 参照实现无法按文件排除，
 # 仍留在分母里，属统计固有噪声，口径说明见 `docs/assets/m1-coverage-baseline.md`。
 
@@ -20,7 +22,7 @@ try {
     if (Test-Path 'D:\soft\anaconda3\Library\bin\protoc.exe') {
         $env:PROTOC = 'D:\soft\anaconda3\Library\bin\protoc.exe'
     }
-    $exclude = if ($args.Count -gt 0) { $args[0] } else { '(client-wasm|generated|engine[\\/]src[\\/]cases\.rs|runtime-spike|crates[\\/]deckart)' }
+    $exclude = if ($args.Count -gt 0) { $args[0] } else { '(client-wasm|generated|engine[\\/]src[\\/]cases\.rs|runtime-spike|crates[\\/]deckart|services[\\/]server)' }
     Write-Host "[coverage] 排除口径：$exclude（分支覆盖需要 nightly + llvm-tools-preview）"
     & cargo +nightly llvm-cov --workspace --branch --summary-only --ignore-filename-regex $exclude
     if ($LASTEXITCODE -ne 0) { throw "覆盖率统计失败（$LASTEXITCODE）" }

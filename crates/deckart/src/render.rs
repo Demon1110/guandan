@@ -74,11 +74,7 @@ pub fn render_face(
 }
 
 /// 单个牌面，带角标尺寸倍率。
-pub fn render_face_opts(
-    theme: &Theme,
-    face: Face,
-    opts: FaceOptions,
-) -> Result<String, DeckError> {
+pub fn render_face_opts(theme: &Theme, face: Face, opts: FaceOptions) -> Result<String, DeckError> {
     let corner = opts.corner_scale;
     if !corner.is_finite() || !(CORNER_SCALE_MIN..=CORNER_SCALE_MAX).contains(&corner) {
         return Err(DeckError::FaceInvalid(format!(
@@ -227,8 +223,8 @@ fn render_normal_compact(
         CornerSuitPlacement::Right => {
             // 右侧摆放：贴着点数的右缘，纵向居中对齐点数（中央没有花阵，不用担心挤压）
             suit_slot.x = slot.x + rank_frag.width * slot.scale + CORNER_GAP * corner;
-            suit_slot.y = slot.y
-                + (rank_frag.height * slot.scale - suit_frag.height * suit_slot.scale) / 2.0;
+            suit_slot.y =
+                slot.y + (rank_frag.height * slot.scale - suit_frag.height * suit_slot.scale) / 2.0;
         }
     }
 
@@ -326,19 +322,16 @@ fn render_normal_classic(
     }
     match meta.corner_suit_placement() {
         CornerSuitPlacement::Below if (corner_scale - 1.0).abs() > f64::EPSILON => {
-            corner_suit.y = corner_rank.y
-                + rank_frag.height * corner_rank.scale
-                + CORNER_GAP * corner_scale;
+            corner_suit.y =
+                corner_rank.y + rank_frag.height * corner_rank.scale + CORNER_GAP * corner_scale;
         }
         CornerSuitPlacement::Below => {}
         CornerSuitPlacement::Right => {
             // 右侧摆放靠点数本身占位，花色到这儿的间距不再跟着倍率涨（否则花阵没地方站）
             let gap = CORNER_GAP;
-            corner_suit.x =
-                corner_rank.x + rank_frag.width * corner_rank.scale + gap;
+            corner_suit.x = corner_rank.x + rank_frag.width * corner_rank.scale + gap;
             corner_suit.y = corner_rank.y
-                + (rank_frag.height * corner_rank.scale
-                    - suit_frag.height * corner_suit.scale)
+                + (rank_frag.height * corner_rank.scale - suit_frag.height * corner_suit.scale)
                     / 2.0;
         }
     }
@@ -637,10 +630,7 @@ pub fn render_all(
 }
 
 /// 54 面全量出图，带角标尺寸倍率（出「大字角标」整包时用）。
-pub fn render_all_opts(
-    theme: &Theme,
-    opts: FaceOptions,
-) -> Result<Vec<RenderedFace>, DeckError> {
+pub fn render_all_opts(theme: &Theme, opts: FaceOptions) -> Result<Vec<RenderedFace>, DeckError> {
     let mut out = Vec::with_capacity(54);
     for face in crate::card::all_faces() {
         out.push(RenderedFace {

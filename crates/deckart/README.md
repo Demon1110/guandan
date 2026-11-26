@@ -13,7 +13,7 @@
 | --- | --- |
 | 分层合成牌面、级牌/逢人配徽章、主题加载与校验 | 牌型判定、逢人配展开（属 `crates/engine`，`recognize` 枚举 13 种替代角色） |
 | 素材包打包/解包/加密/签名/完整性校验 | 协议帧、`viewSchemaVersion` 定义（属 `crates/protocol`） |
-| SVG 输出与 PNG 转换 | 牌桌布局、动画、点击判定（属 `apps/client`） |
+| SVG 输出与 PNG 转换 | 牌桌布局、动画、点击判定（属 `apps/web`） |
 | 素材许可与元数据登记 | 主题市场、用户自定义皮肤（v1 不做） |
 
 三条既有约束（`docs/开发计划.md` M2 段，2026-11-24 裁定）必须遵守：
@@ -366,11 +366,11 @@ cargo run -p gf-deckart --bin gfdeck -- pack crates/deckart/themes/defaults `
 
 **注意**：`pack` 总是加密（没有 `--encrypt` 开关，加密是这个格式本身的一部分）；包里存的是 `theme.json` 的副本 + 23 个素材，**不存预览图**（预览由客户端现场合成，见 14.1）。
 
-发布到客户端**不用重编 wasm**，也不用再往 `apps/client/` 拷一份：
+发布到客户端**不用重编 wasm**，也不用再往 `apps/web/` 拷一份：
 
 1. 包直接打在 `crates/deckart/pkgs/<id>.gfdeck`；
-2. `apps/client/serve.ps1` 把 `/pkgs/` 映射到这个目录，`app.js` 的 `THEME_PACK_URL` 是 `pkgs/defaults.gfdeck`；
-3. 换签钥时才要改 `apps/client/app.js` 里的 `THEME_PUBKEY`（沿用内置密钥不用动）。
+2. `apps/web/serve.ps1` 把 `/pkgs/` 映射到这个目录，`app.js` 的 `THEME_PACK_URL` 是 `pkgs/defaults.gfdeck`；
+3. 换签钥时才要改 `apps/web/app.js` 里的 `THEME_PUBKEY`（沿用内置密钥不用动）。
 
 独立部署（不用 `serve.ps1`）时把 `pkgs/` 一起带上，放到静态根的同级 `/pkgs/` 即可。
 
@@ -413,7 +413,7 @@ pwsh -File crates/deckart/scripts/pack-all.ps1 -KeyId studio-v1 -SignKey <64位h
 | `-Theme` | 全部 | 只打指定目录名，可传多个；名字不存在直接报错 |
 | `-OutDir` | `crates/deckart/pkgs` | 产物目录，不存在自动建 |
 | `-KeyId` | `builtin-v1` | 与客户端 `themeKey` 表对应，换密钥必须换 id |
-| `-SignKey` | `0x11 × 32` | Ed25519 私钥种子（64 位 hex），与 `apps/client/app.js` 的 `THEME_PUBKEY` 成对 |
+| `-SignKey` | `0x11 × 32` | Ed25519 私钥种子（64 位 hex），与 `apps/web/app.js` 的 `THEME_PUBKEY` 成对 |
 | `-SkipBuild` | 关 | 直接用手上已有的 `target/release/gfdeck` |
 
 手动等价（只打一份、顺带出图）：

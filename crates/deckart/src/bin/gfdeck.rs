@@ -101,7 +101,9 @@ fn parse_corner(args: &[String]) -> Result<Option<f64>, DeckError> {
                 .parse()
                 .map_err(|_| DeckError::FaceInvalid(format!("--corner 无效: {v}")))?;
             let scale = pct / 100.0;
-            if !scale.is_finite() || !(gf_deckart::CORNER_SCALE_MIN..=gf_deckart::CORNER_SCALE_MAX).contains(&scale) {
+            if !scale.is_finite()
+                || !(gf_deckart::CORNER_SCALE_MIN..=gf_deckart::CORNER_SCALE_MAX).contains(&scale)
+            {
                 return Err(DeckError::FaceInvalid(format!(
                     "--corner 越界（合法 {:.0}%..={:.0}%）",
                     gf_deckart::CORNER_SCALE_MIN * 100.0,

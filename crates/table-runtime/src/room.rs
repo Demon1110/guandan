@@ -760,11 +760,7 @@ impl Room {
         let last_room_seq = events.last().map(|r| r.room_seq);
         let mut cursor = base;
         let mut steps = Vec::with_capacity(events.len());
-        for record in self
-            .log
-            .iter()
-            .filter(|r| r.round_no == state.round_no)
-        {
+        for record in self.log.iter().filter(|r| r.round_no == state.round_no) {
             if last_room_seq.is_some_and(|last| record.room_seq > last) {
                 break;
             }

@@ -288,9 +288,7 @@ fn reconnect_delta_steps_chain_before_after_states() {
         "增量必须严格晚于客户端水位"
     );
     assert!(
-        steps
-            .windows(2)
-            .all(|pair| pair[0].after == pair[1].before),
+        steps.windows(2).all(|pair| pair[0].after == pair[1].before),
         "前后状态必须首尾相接，断裂即重放口径分叉"
     );
     let tail = steps.last().expect("非空已断言");
@@ -332,9 +330,7 @@ fn reconnect_delta_falls_back_on_settled_or_cross_round() {
         room.step(cursor).expect("step 失败");
         cursor += 1000;
     }
-    let cross = room
-        .reconnect_delta(seat, watermark)
-        .expect("增量查询失败");
+    let cross = room.reconnect_delta(seat, watermark).expect("增量查询失败");
     assert!(
         cross.is_none(),
         "跨局增量表达不了新局手牌，必须退回快照重置"

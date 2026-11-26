@@ -6,7 +6,9 @@
 
 use gf_engine::contract::{Action, ErrorCode, Level, Validation};
 use gf_engine::ruleset::parse::from_yaml;
-use gf_engine::ruleset::validate_deep::{builtin_golden, validate_l3, validate_l4, ValidateOptions};
+use gf_engine::ruleset::validate_deep::{
+    builtin_golden, validate_l3, validate_l4, ValidateOptions,
+};
 
 const CLASSIC: &str = include_str!("fixtures/guandan-classic/ruleset.yaml");
 
@@ -21,22 +23,30 @@ fn fresh() -> Validation {
 #[test]
 fn l3_passes_with_default_options() {
     let body = classic();
-    let mut opts = ValidateOptions::default();
-    opts.l3_rounds = 2;
+    let opts = ValidateOptions {
+        l3_rounds: 2,
+        ..Default::default()
+    };
     let mut v = fresh();
     let stats = validate_l3(&body, &opts, &mut v);
     assert_eq!(stats.rounds_run, 2, "两局都应跑完");
     assert!(stats.steps_total > 0, "应累计动作步数");
-    assert!(v.findings.is_empty(), "默认配置不应报 findings：{:?}", v.findings);
+    assert!(
+        v.findings.is_empty(),
+        "默认配置不应报 findings：{:?}",
+        v.findings
+    );
     assert!(v.ran_levels.contains(&Level::L3));
 }
 
 #[test]
 fn l3_step_cap_reports_no_termination() {
     let body = classic();
-    let mut opts = ValidateOptions::default();
-    opts.l3_rounds = 1;
-    opts.l3_step_cap = 1;
+    let opts = ValidateOptions {
+        l3_rounds: 1,
+        l3_step_cap: 1,
+        ..Default::default()
+    };
     let mut v = fresh();
     let stats = validate_l3(&body, &opts, &mut v);
     assert_eq!(stats.rounds_run, 0, "超步数上限的局不计入跑完");
@@ -49,9 +59,11 @@ fn l3_step_cap_reports_no_termination() {
 #[test]
 fn l3_candidate_cap_reports_no_termination() {
     let body = classic();
-    let mut opts = ValidateOptions::default();
-    opts.l3_rounds = 1;
-    opts.l3_candidate_cap = 1;
+    let opts = ValidateOptions {
+        l3_rounds: 1,
+        l3_candidate_cap: 1,
+        ..Default::default()
+    };
     let mut v = fresh();
     let stats = validate_l3(&body, &opts, &mut v);
     assert_eq!(stats.rounds_run, 0);
@@ -89,9 +101,7 @@ fn l4_rejects_illegal_replay_and_hash_mismatch() {
 
     // ① 重放失败：第一条动作放一个不存在的牌 id。
     let mut bad_play = builtin_golden().remove(0);
-    bad_play.actions = vec![Action::Play {
-        cards: vec![9999],
-    }];
+    bad_play.actions = vec![Action::Play { cards: vec![9999] }];
     let mut v = fresh();
     validate_l4(&body, &[bad_play], &mut v);
     assert_eq!(v.findings[0].code, ErrorCode::RsL4Mismatch);
