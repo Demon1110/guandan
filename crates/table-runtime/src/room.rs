@@ -98,7 +98,10 @@ pub struct HandPlanCard {
 }
 
 /// 本地 bot 策略。**只给 view 字节与座位号**，不给 `State`（信息隔离，§3.3 约束 3）。
-pub trait BotPolicy {
+///
+/// `Send` 是服务端要求：一张桌要能被搬到任意工作线程上跑主循环，
+/// bot 实例必须随房间一起跨线程移动。这条约束不影响 wasm（单线程同样满足 `Send`）。
+pub trait BotPolicy: Send {
     /// 按本座位视图决策；返回的动作由房间做合法性复核。
     fn decide(&self, view_bytes: &[u8], seat: u8) -> Action;
 
