@@ -25,6 +25,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# 出错只打一行原因再退出，不给用户看 PowerShell 调用栈
+trap {
+    Write-Host ("打包失败：{0}" -f $_.Exception.Message) -ForegroundColor Red
+    exit 1
+}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $crateDir = (Resolve-Path (Join-Path $scriptDir '..')).Path
 $repoDir = (Resolve-Path (Join-Path $crateDir '..\..')).Path
