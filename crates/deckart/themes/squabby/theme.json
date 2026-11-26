@@ -1,0 +1,356 @@
+{
+  "id": "squabby",
+  "version": 1,
+  "name": "肥仔",
+  "license": "CC0-1.0",
+  "canvas": {
+    "width": 500,
+    "height": 700,
+    "cornerRadius": 100
+  },
+  "palette": {
+    "red": "#dd0808",
+    "black": "#000000",
+    "paper": "#FFFFFF",
+    "level": "#E53935",
+    "wild": "#D32F2F"
+  },
+  "layout": "compact",
+  "cornerScale": 2.5,
+  "corners": [
+    "topLeft"
+  ],
+  "cornerSuitPlacement": "right",
+  "layers": {
+    "base": "base.svg",
+    "suits": {
+      "spade": "suits/spade.svg",
+      "heart": "suits/heart.svg",
+      "diamond": "suits/diamond.svg",
+      "club": "suits/club.svg"
+    },
+    "ranks": {
+      "kind": "vector",
+      "files": [
+        "ranks/1.svg",
+        "ranks/2.svg",
+        "ranks/3.svg",
+        "ranks/4.svg",
+        "ranks/5.svg",
+        "ranks/6.svg",
+        "ranks/7.svg",
+        "ranks/8.svg",
+        "ranks/9.svg",
+        "ranks/10.svg",
+        "ranks/11.svg",
+        "ranks/12.svg",
+        "ranks/13.svg"
+      ]
+    },
+    "jokers": {
+      "small": "jokers/small.svg",
+      "big": "jokers/big.svg"
+    },
+    "back": "back.svg"
+  },
+  "badges": {
+    "level": "badges/level.svg",
+    "wild": "badges/wild.svg"
+  },
+  "slots": {
+    "cornerRank": {
+      "x": 30,
+      "y": 10,
+      "scale": 0.6
+    },
+    "cornerSuit": {
+      "x": 36,
+      "y": 112,
+      "scale": 0.34
+    },
+    "centerSuit": {
+      "x": 150,
+      "y": 320,
+      "scale": 2.6
+    },
+    "wildBadge": {
+      "x": 26,
+      "y": 251,
+      "scale": 0.58
+    }
+  },
+  "textLayer": {
+    "enabled": true,
+    "badge": "text-only",
+    "fontFamily": "'Microsoft YaHei', 'PingFang SC', 'Noto Sans SC', sans-serif",
+    "levelLabel": {
+      "text": "级牌",
+      "x": 404,
+      "y": 58,
+      "size": 28,
+      "color": "#ff0505",
+      "anchor": "start"
+    }
+  },
+  "preview": {
+    "faces": [
+      "C2",
+      "S2",
+      "H2",
+      "D2"
+    ],
+    "levelRank": 4
+  },
+  "classic": {
+    "cornerRank": {
+      "x": 30,
+      "y": 30,
+      "scale": 0.68
+    },
+    "cornerSuit": {
+      "x": 53,
+      "y": 16,
+      "scale": 0.26
+    },
+    "pipScale": 0.79,
+    "pipInset": 0.3,
+    "aceScale": 1.89,
+    "courtStyle": "figure",
+    "pipPositions": {
+      "2": [
+        [
+          0.5,
+          0.18
+        ],
+        [
+          0.5,
+          0.82
+        ]
+      ],
+      "3": [
+        [
+          0.5,
+          0.16
+        ],
+        [
+          0.5,
+          0.5
+        ],
+        [
+          0.5,
+          0.84
+        ]
+      ],
+      "4": [
+        [
+          0.28,
+          0.18
+        ],
+        [
+          0.72,
+          0.18
+        ],
+        [
+          0.28,
+          0.82
+        ],
+        [
+          0.72,
+          0.82
+        ]
+      ],
+      "5": [
+        [
+          0.28,
+          0.18
+        ],
+        [
+          0.72,
+          0.18
+        ],
+        [
+          0.5,
+          0.5
+        ],
+        [
+          0.28,
+          0.82
+        ],
+        [
+          0.72,
+          0.82
+        ]
+      ],
+      "6": [
+        [
+          0.28,
+          0.18
+        ],
+        [
+          0.72,
+          0.18
+        ],
+        [
+          0.28,
+          0.5
+        ],
+        [
+          0.72,
+          0.5
+        ],
+        [
+          0.28,
+          0.82
+        ],
+        [
+          0.72,
+          0.82
+        ]
+      ],
+      "7": [
+        [
+          0.28,
+          0.18
+        ],
+        [
+          0.72,
+          0.18
+        ],
+        [
+          0.5,
+          0.34
+        ],
+        [
+          0.28,
+          0.5
+        ],
+        [
+          0.72,
+          0.5
+        ],
+        [
+          0.28,
+          0.82
+        ],
+        [
+          0.72,
+          0.82
+        ]
+      ],
+      "8": [
+        [
+          0.28,
+          0.18
+        ],
+        [
+          0.72,
+          0.18
+        ],
+        [
+          0.5,
+          0.34
+        ],
+        [
+          0.28,
+          0.5
+        ],
+        [
+          0.72,
+          0.5
+        ],
+        [
+          0.5,
+          0.66
+        ],
+        [
+          0.28,
+          0.82
+        ],
+        [
+          0.72,
+          0.82
+        ]
+      ],
+      "9": [
+        [
+          0.28,
+          0.14
+        ],
+        [
+          0.72,
+          0.14
+        ],
+        [
+          0.28,
+          0.38
+        ],
+        [
+          0.72,
+          0.38
+        ],
+        [
+          0.5,
+          0.5
+        ],
+        [
+          0.28,
+          0.62
+        ],
+        [
+          0.72,
+          0.62
+        ],
+        [
+          0.28,
+          0.86
+        ],
+        [
+          0.72,
+          0.86
+        ]
+      ],
+      "10": [
+        [
+          0.28,
+          0.14
+        ],
+        [
+          0.72,
+          0.14
+        ],
+        [
+          0.5,
+          0.26
+        ],
+        [
+          0.28,
+          0.38
+        ],
+        [
+          0.72,
+          0.38
+        ],
+        [
+          0.28,
+          0.62
+        ],
+        [
+          0.72,
+          0.62
+        ],
+        [
+          0.5,
+          0.74
+        ],
+        [
+          0.28,
+          0.86
+        ],
+        [
+          0.72,
+          0.86
+        ]
+      ]
+    }
+  }
+}
