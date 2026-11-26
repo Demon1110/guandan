@@ -13,12 +13,13 @@ cargo +nightly llvm-cov --workspace --branch --summary-only `
 
 ## 口径（2026-11-26 起）
 
-排除四类：
+排除五类：
 
 1. `crates/client-wasm/src/lib.rs`——wasm C ABI 导出层，host 测试进程执行不到，另有 native/wasm 双产物 `stateHash` gate；
 2. `crates/protocol/src/generated/*`——protobuf 生成代码；
 3. `crates/engine/src/cases.rs`——测试辅助的局态构造器（`lead_state` / `classic_lead_state` / `mid_game_state` 等），只被测试调用，不是业务路径；
-4. `crates/runtime-spike/`——性能原型 crate，不进发布产物。
+4. `crates/runtime-spike/`——性能原型 crate，不进发布产物；
+5. `crates/deckart/`——牌面主题工具包（2026-11-26 新增），表现层资产管线：素材拼 SVG + `.gfdeck` 加解密，与 `stateHash`/协议/引擎零耦合，自带 23 个单测但对象是素材与包格式，不属 M1 的引擎门禁范围。
 
 **留在分母里、但无法按文件排除的两类**，如实记在这里：
 

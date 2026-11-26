@@ -1,0 +1,57 @@
+{
+  "id": "defaults",
+  "version": 2,
+  "name": "默认（深绿）",
+  "license": "CC0-1.0",
+  "canvas": { "width": 500, "height": 700, "cornerRadius": 36 },
+  "palette": {
+    "red": "#C62828",
+    "black": "#1B1B1B",
+    "paper": "#FFFFFF",
+    "level": "#E53935",
+    "wild": "#D32F2F"
+  },
+  "layout": "compact",
+  "layers": {
+    "base": "base.svg",
+    "suits": {
+      "spade": "suits/spade.svg",
+      "heart": "suits/heart.svg",
+      "diamond": "suits/diamond.svg",
+      "club": "suits/club.svg"
+    },
+    "ranks": { "kind": "vector", "files": ["ranks/1.svg", "ranks/2.svg", "ranks/3.svg", "ranks/4.svg", "ranks/5.svg", "ranks/6.svg", "ranks/7.svg", "ranks/8.svg", "ranks/9.svg", "ranks/10.svg", "ranks/11.svg", "ranks/12.svg", "ranks/13.svg"] },
+    "jokers": { "small": "jokers/small.svg", "big": "jokers/big.svg" },
+    "back": "back.svg"
+  },
+  "badges": { "level": "badges/level.svg", "wild": "badges/wild.svg" },
+  "slots": {
+    "cornerRank": { "x": 30, "y": 34, "scale": 0.42 },
+    "cornerSuit": { "x": 36, "y": 112, "scale": 0.34 },
+    "centerSuit": { "x": 155, "y": 242, "scale": 1.90 },
+    "wildBadge": { "x": 26, "y": 560, "scale": 0.60 }
+  },
+  "textLayer": {
+    "enabled": true,
+    "fontFamily": "'Microsoft YaHei', 'PingFang SC', 'Noto Sans SC', sans-serif",
+    "levelLabel": { "text": "级牌", "x": 404, "y": 58, "size": 28, "color": "#FFFFFF", "anchor": "middle" }
+  },
+  "classic": {
+    "cornerRank": { "x": 34, "y": 30, "scale": 0.40 },
+    "cornerSuit": { "x": 38, "y": 98, "scale": 0.30 },
+    "pipScale": 0.60,
+    "aceScale": 1.70,
+    "courtStyle": "monogram",
+    "pipPositions": {
+      "2": [[0.5, 0.18], [0.5, 0.82]],
+      "3": [[0.5, 0.16], [0.5, 0.5], [0.5, 0.84]],
+      "4": [[0.28, 0.18], [0.72, 0.18], [0.28, 0.82], [0.72, 0.82]],
+      "5": [[0.28, 0.18], [0.72, 0.18], [0.5, 0.5], [0.28, 0.82], [0.72, 0.82]],
+      "6": [[0.28, 0.18], [0.72, 0.18], [0.28, 0.5], [0.72, 0.5], [0.28, 0.82], [0.72, 0.82]],
+      "7": [[0.28, 0.18], [0.72, 0.18], [0.5, 0.34], [0.28, 0.5], [0.72, 0.5], [0.28, 0.82], [0.72, 0.82]],
+      "8": [[0.28, 0.18], [0.72, 0.18], [0.5, 0.34], [0.28, 0.5], [0.72, 0.5], [0.5, 0.66], [0.28, 0.82], [0.72, 0.82]],
+      "9": [[0.28, 0.14], [0.72, 0.14], [0.28, 0.38], [0.72, 0.38], [0.5, 0.5], [0.28, 0.62], [0.72, 0.62], [0.28, 0.86], [0.72, 0.86]],
+      "10": [[0.28, 0.14], [0.72, 0.14], [0.5, 0.26], [0.28, 0.38], [0.72, 0.38], [0.28, 0.62], [0.72, 0.62], [0.5, 0.74], [0.28, 0.86], [0.72, 0.86]]
+    }
+  }
+}

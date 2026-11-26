@@ -7,15 +7,28 @@ rust-version = "1.77"
 license = "MIT OR Apache-2.0"
 publish = false
 
-# 独立 workspace：本 crate 尚未并入根 workspace（见 README「待确认项」）。
-# 并入后需删除本段，并同步 coverage.ps1 的排除口径。
-[workspace]
+# 已并入根 workspace（成员见仓库根 Cargo.toml）；
+# 覆盖率口径里本 crate 被排除，见 scripts/coverage.ps1 与 docs/assets/m1-coverage-baseline.md。
+
+[features]
+default = []
+# SVG → PNG（resvg + tiny-skia，仅 CLI / 服务端预览；不要开进 wasm）
+png = ["dep:resvg", "dep:tiny-skia", "dep:fontdb"]
 
 [dependencies]
-# 依赖清单见 README「依赖计划」，按确认后的方案再落：
-# serde / serde_json            主题与包元数据
-# thiserror                     错误类型
-# aes-gcm 或 chacha20poly1305   素材包加密（方案 A/B）
-# sha2                          条目摘要与完整性
-# ed25519-dalek                 主题签名（可选）
-# resvg + tiny-skia             SVG → PNG（CLI/服务端预览；不进 wasm）
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+aes-gcm = "0.10"
+sha2 = "0.10"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+resvg = { version = "0.45", optional = true, default-features = false, features = ["text"] }
+tiny-skia = { version = "0.11", optional = true, features = ["png-format"] }
+# 与 resvg 共用的字体库：打开 `fs` 才能 load_system_fonts（文本层转 PNG 时找系统字体）
+fontdb = { version = "0.23", optional = true, features = ["fs"] }
+
+[[bin]]
+name = "gfdeck"
+path = "src/bin/gfdeck.rs"
+required-features = []
