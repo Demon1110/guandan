@@ -1,13 +1,16 @@
-//! 账号：手机号 + 短信验证码登录（M2 第三切片）。
+//! 账号：手机号 + 短信验证码注册 / 登录 / 会话认证（M2）。
 //!
 //! 范围：
 //! - `POST /api/auth/sms` 发码（60 秒一次、每日 10 次上限）；
+//! - `POST /api/auth/register` 显式注册并直接返回会话；
 //! - `POST /api/auth/login` 校码登录，发短期 access token + 长期 refresh token；
 //! - `POST /api/auth/refresh` 换新 access，旧 refresh 即刻作废（不允许并行刷新）；
+//! - `POST /api/auth/logout` 撤销 access（可选同时撤销 refresh）；
 //! - 手机号只存 `HMAC-SHA256(server_salt, 规范化手机号)` + 尾号 4 位（§5.8 / §8.4）。
 //!
-//! 存储是内存态（`profiles` / `codes` / `refresh`），PG 落库在持久化切片接入，
-//! 对外接口与数据结构按 `player_profile` 的字段对齐，替换存储时不动 HTTP 层。
+//! 进程内 `profiles` / `codes` / `refresh` 是热缓存；接上 PG 后由 `App` 在启动时
+//! 恢复档案、refresh 与 access 撤销表，并把登录/轮换/登出写回 `player_profile`、
+//! `player_refresh_token`、`access_revocation`。PG 缺席时退化为纯内存（单测/本机联调）。
 //!
 //! 短信通道未报备前，`GF_SMS_TEST_WHITELIST` 里的手机号走固定测试码，
 //! 不发真实短信；白名单为空时该口子彻底关闭（生产默认如此）。
@@ -73,6 +76,8 @@ pub struct Profile {
     pub phone_tail4: String,
     pub nickname: String,
     pub created_at_ms: u64,
+    /// `player_profile.status`；只有 `active` 允许登录与继续持有 access token。
+    pub status: String,
 }
 
 /// 发码失败原因。
@@ -91,6 +96,22 @@ pub enum LoginError {
     Locked {
         retry_after_ms: u64,
     },
+    /// 档案 `status` 不是 `active`（后台封禁/注销）。
+    AccountDisabled,
+}
+
+/// 已验证的登录手机号：验证码已消费，交给账号存储层建档或取档。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct VerifiedPhone {
+    pub phone_hash: String,
+    pub phone_tail4: String,
+}
+
+/// refresh 轮换失败时用于回滚内存态的原值。
+#[derive(Clone, Debug)]
+pub(crate) struct RefreshRollback {
+    pub key: String,
+    pub entry: RefreshEntry,
 }
 
 /// 短信通道。默认实现只记录「发过码」，不输出验证码明文（本地联调用）。
@@ -135,7 +156,8 @@ struct LoginGuard {
     last_ms: u64,
 }
 
-struct RefreshEntry {
+#[derive(Clone, Debug)]
+pub(crate) struct RefreshEntry {
     player_id: String,
     expires_ms: u64,
 }
@@ -272,6 +294,8 @@ impl Auth {
     /// 校码登录。任何来源都必须先发码；白名单只决定码的内容，不再是免发码后门。
     ///
     /// 失败按「手机号哈希 + 来源 IP」双维度累计，连续 5 次后指数退避锁定。
+    /// 纯内存路径（单测/未接 PG）走这里；HTTP 路径先 `verify_login_code`，
+    /// 再由账号存储层决定「建档或取档」。
     pub fn login_with_peer(
         &self,
         phone: &str,
@@ -279,6 +303,22 @@ impl Auth {
         peer: Option<&str>,
         now_ms: u64,
     ) -> Result<Session, LoginError> {
+        let verified = self.verify_login_code(phone, code, peer, now_ms)?;
+        let profile = self.upsert_profile(&verified.phone_hash, &verified.phone_tail4, now_ms);
+        if profile.status != "active" {
+            return Err(LoginError::AccountDisabled);
+        }
+        Ok(self.issue_session(&profile.player_id, now_ms))
+    }
+
+    /// 只校验证码并消费；不创建档案、不发 token。
+    pub(crate) fn verify_login_code(
+        &self,
+        phone: &str,
+        code: &str,
+        peer: Option<&str>,
+        now_ms: u64,
+    ) -> Result<VerifiedPhone, LoginError> {
         let phone = normalize_phone(phone).ok_or(LoginError::InvalidPhone)?;
         let hash = self.phone_hash(&phone).ok_or(LoginError::InvalidPhone)?;
         let code = code.trim();
@@ -288,7 +328,7 @@ impl Auth {
         }
         self.check_login_guards(&keys, now_ms)?;
 
-        let failure = {
+        {
             let mut codes = self.codes.await_or_poison();
             let Some(entry) = codes.get_mut(&hash) else {
                 drop(codes);
@@ -313,15 +353,12 @@ impl Auth {
             }
             // 成功才消费验证码；失败不清 entry（仍受 attempts 上限约束）。
             codes.remove(&hash);
-            false
-        };
-        if failure {
-            return Err(LoginError::InvalidCredentials);
         }
         self.clear_login_guards(&keys);
-
-        let profile = self.upsert_profile(&hash, &tail4(&phone), now_ms);
-        Ok(self.issue_session(&profile.player_id, now_ms))
+        Ok(VerifiedPhone {
+            phone_hash: hash,
+            phone_tail4: tail4(&phone),
+        })
     }
 
     /// 锁定检查；锁过期且长时间无尝试时把失败计数清零。
@@ -377,16 +414,89 @@ impl Auth {
 
     /// 换新 access token；旧 refresh 立即失效（§5.15）。
     pub fn refresh(&self, refresh_token: &str, now_ms: u64) -> Result<Session, LoginError> {
-        let key = hex(&Sha256::digest(refresh_token.trim().as_bytes()));
-        let player_id = {
+        self.rotate_refresh(refresh_token, now_ms)
+            .map(|(session, _)| session)
+    }
+
+    /// 轮换 refresh 并返回失败回滚材料；HTTP 层要在 DB 事务失败时还原旧值。
+    pub(crate) fn rotate_refresh(
+        &self,
+        refresh_token: &str,
+        now_ms: u64,
+    ) -> Result<(Session, RefreshRollback), LoginError> {
+        let key = refresh_key(refresh_token);
+        let entry = {
             let mut refresh = self.refresh.await_or_poison();
             refresh.retain(|_, entry| entry.expires_ms > now_ms);
-            match refresh.remove(&key) {
-                Some(entry) => entry.player_id,
-                None => return Err(LoginError::InvalidCredentials),
-            }
+            refresh.remove(&key).ok_or(LoginError::InvalidCredentials)?
         };
-        Ok(self.issue_session(&player_id, now_ms))
+        // 禁用账号不能靠 refresh 续命；档案缺失说明缓存没恢复好，也不放行。
+        match self.profiles.await_or_poison().get(&entry.player_id) {
+            Some(profile) if profile.status == "active" => {}
+            Some(_) => return Err(LoginError::AccountDisabled),
+            None => return Err(LoginError::InvalidCredentials),
+        }
+        let session = self.issue_session(&entry.player_id, now_ms);
+        Ok((session, RefreshRollback { key, entry }))
+    }
+
+    /// 撤销一枚 refresh；返回其哈希键（不存在则 `None`），供存储层删库。
+    pub(crate) fn revoke_refresh(&self, refresh_token: &str) -> Option<String> {
+        let key = refresh_key(refresh_token);
+        self.refresh.await_or_poison().remove(&key).map(|_| key)
+    }
+
+    /// DB 轮换失败时把旧 refresh 放回内存缓存，保证客户端可重试同一枚 token。
+    pub(crate) fn restore_refresh(&self, rollback: RefreshRollback) {
+        self.refresh
+            .await_or_poison()
+            .insert(rollback.key, rollback.entry);
+    }
+
+    pub(crate) fn restore_refresh_tokens(&self, rows: Vec<(String, String, u64)>, now_ms: u64) {
+        let mut refresh = self.refresh.await_or_poison();
+        refresh.clear();
+        for (key, player_id, expires_ms) in rows {
+            if expires_ms > now_ms {
+                refresh.insert(
+                    key,
+                    RefreshEntry {
+                        player_id,
+                        expires_ms,
+                    },
+                );
+            }
+        }
+    }
+
+    pub(crate) fn restore_access_revocations(&self, rows: Vec<(String, u64)>, now_ms: u64) {
+        let mut revoked = self.revoked_access.await_or_poison();
+        revoked.clear();
+        for (key, expires_ms) in rows {
+            if expires_ms > now_ms {
+                revoked.insert(key, expires_ms / 1_000);
+            }
+        }
+    }
+
+    /// refresh raw token 的库内键：只存 SHA-256，不存原文。
+    pub(crate) fn refresh_key(token: &str) -> String {
+        refresh_key(token)
+    }
+
+    /// access raw token 的撤销表键。
+    pub(crate) fn access_key(token: &str) -> String {
+        access_key(token)
+    }
+
+    /// 新签 refresh 的过期时刻（毫秒 epoch）。
+    pub(crate) fn refresh_expires_at(now_ms: u64) -> u64 {
+        now_ms.saturating_add(REFRESH_TTL_MS)
+    }
+
+    /// 新签 access 的撤销记录过期时刻（毫秒 epoch）。
+    pub(crate) fn access_expires_at(now_ms: u64) -> u64 {
+        now_ms.saturating_add(ACCESS_TTL_MS)
     }
 
     /// 校验 access token；返回玩家 ID。
@@ -395,7 +505,7 @@ impl Auth {
             return None;
         }
         // 已撤销令牌立刻失效（登出后不必等 15 分钟 TTL）。
-        let token_key = hex(&Sha256::digest(token.as_bytes()));
+        let token_key = access_key(token);
         {
             let mut revoked = self.revoked_access.await_or_poison();
             revoked.retain(|_, exp_sec| *exp_sec > now_ms / 1_000);
@@ -431,10 +541,13 @@ impl Auth {
         if exp <= now_ms / 1_000 {
             return None;
         }
-        claims
-            .get("sub")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_owned())
+        let sub = claims.get("sub").and_then(|v| v.as_str())?.to_owned();
+        // 只有 active 档案能继续持有 access；缓存里查不到（启动恢复失败/档案被删）
+        // 也按无效处理，避免封禁账号在缓存缺失时钻空子。
+        match self.profiles.await_or_poison().get(&sub) {
+            Some(profile) if profile.status == "active" => Some(sub),
+            _ => None,
+        }
     }
 
     /// 主动撤销一枚仍然有效的 access token（登出）；已过期/签名不对返回 false。
@@ -442,7 +555,7 @@ impl Auth {
         if self.verify_access(token, now_ms).is_none() {
             return false;
         }
-        let key = hex(&Sha256::digest(token.as_bytes()));
+        let key = access_key(token);
         let exp_sec = now_ms / 1_000 + ACCESS_TTL_MS / 1_000;
         let mut revoked = self.revoked_access.await_or_poison();
         revoked.retain(|_, exp| *exp > now_ms / 1_000);
@@ -460,39 +573,92 @@ impl Auth {
             .is_some_and(|hash| self.by_phone.await_or_poison().contains_key(&hash))
     }
 
-    fn upsert_profile(&self, phone_hash: &str, phone_tail4: &str, now_ms: u64) -> Profile {
+    /// 下一个玩家 ID。纯内存路径使用；接 PG 时同一进程先取号再插入，
+    /// 若并发撞上唯一键，`find_or_create_profile` 会返回已存在那一行。
+    pub(crate) fn next_player_id(&self) -> String {
+        format!("p-{:08x}", self.seq.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// 把存储层取回/新建的档案放进热缓存；同时维持手机号 → 玩家 ID 索引。
+    pub(crate) fn remember_profile(&self, profile: Profile) {
+        if let Some(hex) = profile.player_id.strip_prefix("p-") {
+            if let Ok(seq) = u64::from_str_radix(hex, 16) {
+                self.seq.fetch_max(seq.saturating_add(1), Ordering::Relaxed);
+            }
+        }
+        self.by_phone
+            .await_or_poison()
+            .insert(profile.phone_hash.clone(), profile.player_id.clone());
+        self.profiles
+            .await_or_poison()
+            .insert(profile.player_id.clone(), profile);
+    }
+
+    /// 后台列表用的全量快照；无 PG 时这就是唯一数据源。
+    pub(crate) fn profiles_snapshot(&self) -> Vec<Profile> {
+        self.profiles.await_or_poison().values().cloned().collect()
+    }
+
+    /// 后台启停：只改热缓存里的 `status`，PG 由调用方先行落库。
+    pub(crate) fn set_profile_status(&self, player_id: &str, status: &str) -> bool {
+        let mut profiles = self.profiles.await_or_poison();
+        match profiles.get_mut(player_id) {
+            Some(profile) => {
+                profile.status = status.to_owned();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 启动恢复：PG 里的全部档案一次性灌入内存索引。
+    pub(crate) fn restore_profiles(&self, profiles: Vec<Profile>) {
+        {
+            let mut by_phone = self.by_phone.await_or_poison();
+            let mut cache = self.profiles.await_or_poison();
+            by_phone.clear();
+            cache.clear();
+        }
+        for profile in profiles {
+            self.remember_profile(profile);
+        }
+    }
+
+    pub(crate) fn upsert_profile(
+        &self,
+        phone_hash: &str,
+        phone_tail4: &str,
+        now_ms: u64,
+    ) -> Profile {
         let mut by_phone = self.by_phone.await_or_poison();
         if let Some(player_id) = by_phone.get(phone_hash) {
-            return self
-                .profiles
-                .await_or_poison()
-                .get(player_id)
-                .cloned()
-                .expect("索引与档案必须成对存在");
+            if let Some(profile) = self.profiles.await_or_poison().get(player_id).cloned() {
+                return profile;
+            }
         }
-        let player_id = format!("p-{:08x}", self.seq.fetch_add(1, Ordering::Relaxed));
         let profile = Profile {
-            player_id: player_id.clone(),
+            player_id: self.next_player_id(),
             phone_hash: phone_hash.to_owned(),
             phone_tail4: phone_tail4.to_owned(),
             nickname: format!("掼友{phone_tail4}"),
             created_at_ms: now_ms,
+            status: "active".to_owned(),
         };
-        by_phone.insert(phone_hash.to_owned(), player_id.clone());
+        by_phone.insert(phone_hash.to_owned(), profile.player_id.clone());
         self.profiles
             .await_or_poison()
-            .insert(player_id, profile.clone());
+            .insert(profile.player_id.clone(), profile.clone());
         profile
     }
 
-    fn issue_session(&self, player_id: &str, now_ms: u64) -> Session {
+    pub(crate) fn issue_session(&self, player_id: &str, now_ms: u64) -> Session {
         let token = self.issue_access(player_id, now_ms);
         let mut raw = [0u8; 32];
         rand::rng().fill_bytes(&mut raw);
         let refresh_token = hex(&raw);
-        let expires_ms = now_ms.saturating_add(REFRESH_TTL_MS);
+        let expires_ms = refresh_expires_at(now_ms);
         self.refresh.await_or_poison().insert(
-            hex(&Sha256::digest(refresh_token.as_bytes())),
+            refresh_key(&refresh_token),
             RefreshEntry {
                 player_id: player_id.to_owned(),
                 expires_ms,
@@ -558,6 +724,21 @@ fn tail4(phone: &str) -> String {
 fn six_digit_code() -> String {
     let n = rand::rng().next_u32() % 1_000_000;
     format!("{n:06}")
+}
+
+/// refresh raw token 的库内键：只存 SHA-256，不存原文。
+fn refresh_key(token: &str) -> String {
+    hex(&Sha256::digest(token.trim().as_bytes()))
+}
+
+/// access raw token 的撤销表键。
+fn access_key(token: &str) -> String {
+    hex(&Sha256::digest(token.as_bytes()))
+}
+
+/// 新签 refresh 的过期时刻（毫秒 epoch）。
+fn refresh_expires_at(now_ms: u64) -> u64 {
+    now_ms.saturating_add(REFRESH_TTL_MS)
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -840,5 +1021,71 @@ mod tests {
             .login("+86 138-0013-8000", DEFAULT_TEST_CODE, now + 60_002)
             .unwrap();
         assert_eq!(a.player_id, b.player_id, "同一手机号必须复用同一 playerId");
+    }
+
+    fn profile(player_id: &str, status: &str) -> Profile {
+        Profile {
+            player_id: player_id.to_owned(),
+            phone_hash: format!("hash-{player_id}"),
+            phone_tail4: "8000".to_owned(),
+            nickname: "掼友8000".to_owned(),
+            created_at_ms: 100,
+            status: status.to_owned(),
+        }
+    }
+
+    #[test]
+    fn restored_profiles_keep_ids_and_continue_sequence() {
+        let auth = auth(&[]);
+        auth.restore_profiles(vec![profile("p-0000002a", "active")]);
+        assert!(auth.profile("p-0000002a").is_some());
+        assert_eq!(
+            auth.next_player_id(),
+            "p-0000002b",
+            "重启后取号必须接在已有序号之后"
+        );
+    }
+
+    #[test]
+    fn restored_refresh_and_revocation_records_take_effect() {
+        let auth = auth(&[]);
+        let now = 86_400_000;
+        auth.restore_profiles(vec![profile("p-00000001", "active")]);
+        auth.restore_refresh_tokens(
+            vec![(
+                refresh_key("persisted-refresh"),
+                "p-00000001".to_owned(),
+                now + 1_000,
+            )],
+            now,
+        );
+        let session = auth
+            .refresh("persisted-refresh", now)
+            .expect("恢复的 refresh 可用");
+        assert_eq!(session.player_id, "p-00000001");
+
+        let other = auth.issue_session("p-00000002", now);
+        auth.remember_profile(profile("p-00000002", "active"));
+        auth.restore_access_revocations(vec![(access_key(&other.token), now + ACCESS_TTL_MS)], now);
+        assert!(
+            auth.verify_access(&other.token, now).is_none(),
+            "撤销表按毫秒恢复后必须继续生效"
+        );
+    }
+
+    #[test]
+    fn disabled_profile_cannot_login_or_refresh() {
+        let auth = auth(&[]);
+        auth.remember_profile(profile("p-00000003", "disabled"));
+        let now = 1_000;
+        let session = auth.issue_session("p-00000003", now);
+        assert!(
+            auth.verify_access(&session.token, now).is_none(),
+            "禁用账号已签发的 access 也必须拒绝"
+        );
+        assert!(matches!(
+            auth.rotate_refresh(&session.refresh_token, now + 1),
+            Err(LoginError::AccountDisabled)
+        ));
     }
 }

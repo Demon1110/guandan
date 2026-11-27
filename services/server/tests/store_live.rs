@@ -102,3 +102,111 @@ async fn settlement_lands_in_pg_and_redis_when_configured() {
     assert_eq!(players.as_array().map(Vec::len), Some(4));
     assert_eq!(players[0]["rank"], 1);
 }
+
+/// 账号主数据与会话表：建档幂等、显式注册冲突、refresh 轮换、撤销表回读。
+#[tokio::test]
+async fn account_state_roundtrips_through_pg_when_configured() {
+    let Some(pg) = pg_url() else {
+        eprintln!("跳过：未设置 GF_TEST_DATABASE_URL");
+        return;
+    };
+    let store = Store::connect(Some(&pg), None).await;
+    assert!(store.pg_enabled(), "给了连接串却没连上 PG");
+    let now = 1_700_000_000_000u64;
+    let tag = format!("{}", std::process::id());
+    let phone_a = format!("live-a-{tag}");
+    let phone_b = format!("live-b-{tag}");
+
+    let first = store
+        .find_or_create_profile(&phone_a, "1234", now, "p-00000001")
+        .await
+        .expect("首登建档");
+    assert_eq!(first.player_id, "p-00000001");
+    let again = store
+        .find_or_create_profile(&phone_a, "1234", now + 1, "p-00000002")
+        .await
+        .expect("重复登录");
+    assert_eq!(again.player_id, first.player_id, "同一手机号必须复用档案");
+
+    let conflict = store
+        .create_profile(&phone_a, "1234", now, "p-00000003")
+        .await
+        .expect("冲突查询");
+    assert!(conflict.is_none(), "已注册手机号显式注册必须返回冲突");
+    let created = store
+        .create_profile(&phone_b, "5678", now, "p-00000004")
+        .await
+        .expect("显式注册")
+        .expect("新手机号必须建档");
+    assert_eq!(created.player_id, "p-00000004");
+
+    let old_hash = format!("refresh-old-{tag}");
+    let new_hash = format!("refresh-new-{tag}");
+    store
+        .insert_refresh_token(&old_hash, &first.player_id, now + 1_000, now)
+        .await
+        .expect("写 refresh");
+    store
+        .rotate_refresh_token(
+            &old_hash,
+            &new_hash,
+            &first.player_id,
+            now + 20_000,
+            now + 1,
+        )
+        .await
+        .expect("轮换 refresh");
+    let tokens = store
+        .load_refresh_tokens(now + 2)
+        .await
+        .expect("读 refresh");
+    assert!(tokens
+        .iter()
+        .any(|(hash, player_id, _)| hash == &new_hash && player_id == &first.player_id));
+    assert!(
+        !tokens.iter().any(|(hash, _, _)| hash == &old_hash),
+        "轮换后旧行必须删除"
+    );
+    assert!(
+        store
+            .rotate_refresh_token(&old_hash, "x", &first.player_id, now + 3_000, now + 2)
+            .await
+            .is_err(),
+        "旧 refresh 不能再轮换"
+    );
+
+    store
+        .insert_access_revocation(&format!("access-{tag}"), now + 100)
+        .await
+        .expect("写撤销");
+    let revoked = store.load_access_revocations(now).await.expect("读撤销");
+    assert!(revoked
+        .iter()
+        .any(|(hash, _)| hash == &format!("access-{tag}")));
+    assert!(
+        !store
+            .load_access_revocations(now + 200)
+            .await
+            .expect("读过期撤销")
+            .iter()
+            .any(|(hash, _)| hash == &format!("access-{tag}")),
+        "过期撤销不应回灌"
+    );
+
+    // 收尾，避免测试库累积行（失败也不影响其它断言）。
+    let pool = sqlx::PgPool::connect(&pg).await.expect("清理连接失败");
+    let _ = sqlx::query("DELETE FROM player_refresh_token WHERE player_id = $1")
+        .bind(&first.player_id)
+        .execute(&pool)
+        .await;
+    for phone in [&phone_a, &phone_b] {
+        let _ = sqlx::query("DELETE FROM player_profile WHERE phone_hash = $1")
+            .bind(phone)
+            .execute(&pool)
+            .await;
+    }
+    let _ = sqlx::query("DELETE FROM access_revocation WHERE token_hash = $1")
+        .bind(format!("access-{tag}"))
+        .execute(&pool)
+        .await;
+}

@@ -84,6 +84,17 @@ async fn request_sms(app: &Arc<App>, phone: &str) {
     assert_eq!(status, StatusCode::OK, "发码失败：{body}");
 }
 
+async fn register(app: &Arc<App>, phone: &str, code: &str) -> (StatusCode, Value) {
+    call(
+        app,
+        "POST",
+        "/api/auth/register",
+        None,
+        Some(json!({"phone": phone, "code": code, "clientVersion": "0.1.0"})),
+    )
+    .await
+}
+
 async fn token_of(app: &Arc<App>, phone: &str) -> String {
     request_sms(app, phone).await;
     let (status, body) = login(app, phone, TEST_CODE).await;
@@ -214,6 +225,99 @@ async fn refresh_rotates_and_invalidates_old_token() {
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body["reason"], "AUTH_INVALID");
+}
+
+#[tokio::test]
+async fn explicit_register_issues_session_and_profile() {
+    let app = make_app();
+    request_sms(&app, PHONE_A).await;
+    let (status, body) = register(&app, PHONE_A, TEST_CODE).await;
+    assert_eq!(status, StatusCode::OK, "注册失败：{body}");
+    let player_id = body["playerId"].as_str().expect("缺 playerId").to_owned();
+    assert!(player_id.starts_with("p-"), "playerId 口径：{player_id}");
+    let token = body["token"].as_str().expect("缺 token").to_owned();
+    assert!(body["refreshToken"].as_str().is_some());
+
+    let (status, profile) = call(&app, "GET", "/api/profile", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(profile["playerId"], player_id);
+    assert_eq!(profile["phoneTail4"], "8000");
+
+    // 验证码已消费：同一枚码再注册只能是 AUTH_INVALID。
+    let (status, body) = register(&app, PHONE_A, TEST_CODE).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["reason"], "AUTH_INVALID");
+}
+
+#[tokio::test]
+async fn register_honours_version_gate() {
+    let app = App::new(ServerConfig {
+        min_client_version: "1.0.0".to_owned(),
+        sms: SmsConfig {
+            test_whitelist: vec![PHONE_A.to_owned()],
+            test_code: TEST_CODE.to_owned(),
+            ..SmsConfig::default()
+        },
+        ..ServerConfig::default()
+    });
+    request_sms(&app, PHONE_A).await;
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/auth/register",
+        None,
+        Some(json!({"phone": PHONE_A, "code": TEST_CODE, "clientVersion": "0.9.0"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UPGRADE_REQUIRED);
+    assert_eq!(body["reason"], "CLIENT_TOO_OLD");
+}
+
+#[tokio::test]
+async fn logout_revokes_access_and_refresh_together() {
+    let app = make_app();
+    request_sms(&app, PHONE_A).await;
+    let (status, session) = login(&app, PHONE_A, TEST_CODE).await;
+    assert_eq!(status, StatusCode::OK, "登录失败：{session}");
+    let token = session["token"].as_str().expect("缺 token").to_owned();
+    let refresh = session["refreshToken"]
+        .as_str()
+        .expect("缺 refreshToken")
+        .to_owned();
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/auth/logout",
+        Some(&token),
+        Some(json!({"refreshToken": refresh})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["ok"], true);
+
+    let (status, _) = call(&app, "GET", "/api/profile", Some(&token), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "登出后 access 必须失效");
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/auth/refresh",
+        None,
+        Some(json!({"refreshToken": refresh})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "登出后 refresh 必须失效");
+}
+
+#[tokio::test]
+async fn logout_without_body_keeps_access_only_contract() {
+    let app = make_app();
+    let token = token_of(&app, PHONE_A).await;
+    let (status, body) = call(&app, "POST", "/api/auth/logout", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["ok"], true);
+    let (status, _) = call(&app, "GET", "/api/profile", Some(&token), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

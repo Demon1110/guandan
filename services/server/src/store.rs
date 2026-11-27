@@ -13,15 +13,22 @@ use gf_engine::contract::Action;
 use gf_table_runtime::ActionRecord;
 use redis::aio::MultiplexedConnection;
 use sqlx::postgres::PgPoolOptions;
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 
+use crate::admin::{AdminAudit, AdminMatchRow, AdminStats, GameSetting};
 use crate::auth::Profile;
 
 /// 房间快照的兜底 TTL（配置缺省时用；设计口径 §6.5 是 60 秒）。
 pub const SNAPSHOT_TTL_MS: u64 = 60_000;
 
 /// 初始化表结构（幂等）。文件随二进制编译进来，部署不额外拷 SQL。
-const SCHEMA_SQL: &str = include_str!("../migrations/0001_init.sql");
+const SCHEMA_SQL: &str = concat!(
+    include_str!("../migrations/0001_init.sql"),
+    "\n",
+    include_str!("../migrations/0002_auth.sql"),
+    "\n",
+    include_str!("../migrations/0003_admin.sql")
+);
 
 /// 一局的落库行（§5.8 `round_record`）。
 #[derive(Clone, Debug)]
@@ -152,7 +159,22 @@ impl Store {
         self.pg.is_some() || self.redis.is_some()
     }
 
-    /// 账号建档（`player_profile`）。`phone_hash` 唯一，重复登录只更新展示字段。
+    pub fn redis_enabled(&self) -> bool {
+        self.redis.is_some()
+    }
+
+    /// PG 是否可用；账号持久化只在 PG 在场时启用。
+    pub fn pg_enabled(&self) -> bool {
+        self.pg.is_some()
+    }
+
+    /// 给账号缓存做启动恢复用；连接句柄 clone 一次即可。
+    pub fn pg_pool(&self) -> Option<PgPool> {
+        self.pg.clone()
+    }
+
+    /// 账号建档（`player_profile`）。保留给旧调用点；新登录路径走
+    /// [`Self::find_or_create_profile`]，返回值带 `status` 且失败会上抛。
     pub async fn upsert_profile(&self, profile: &Profile) {
         let Some(pg) = &self.pg else { return };
         let sql = "INSERT INTO player_profile \
@@ -170,6 +192,479 @@ impl Store {
         {
             eprintln!("[store] 写 player_profile 失败：{err}");
         }
+    }
+
+    /// 按手机号哈希查档案（不含创建）。
+    pub async fn find_profile_by_phone(
+        &self,
+        phone_hash: &str,
+    ) -> Result<Option<Profile>, sqlx::Error> {
+        let Some(pg) = &self.pg else {
+            return Ok(None);
+        };
+        let row = sqlx::query(
+            "SELECT player_id, phone_hash, phone_tail4, nickname, created_at, status \
+             FROM player_profile WHERE phone_hash = $1",
+        )
+        .bind(phone_hash)
+        .fetch_optional(pg)
+        .await?;
+        Ok(row.as_ref().map(profile_from_row))
+    }
+
+    /// 登录用「有则返回、无则建档」：手机号哈希唯一，并发首登只有一行会活下来。
+    pub async fn find_or_create_profile(
+        &self,
+        phone_hash: &str,
+        phone_tail4: &str,
+        now_ms: u64,
+        new_player_id: &str,
+    ) -> Result<Profile, sqlx::Error> {
+        let Some(pg) = &self.pg else {
+            return Err(sqlx::Error::RowNotFound);
+        };
+        let row = sqlx::query(
+            "INSERT INTO player_profile \
+             (player_id, phone_hash, phone_tail4, nickname, created_at, status) \
+             VALUES ($1, $2, $3, $4, $5, 'active') \
+             ON CONFLICT (phone_hash) DO UPDATE SET phone_tail4 = EXCLUDED.phone_tail4 \
+             RETURNING player_id, phone_hash, phone_tail4, nickname, created_at, status",
+        )
+        .bind(new_player_id)
+        .bind(phone_hash)
+        .bind(phone_tail4)
+        .bind(format!("掼友{phone_tail4}"))
+        .bind(now_ms as i64)
+        .fetch_one(pg)
+        .await?;
+        Ok(profile_from_row(&row))
+    }
+
+    /// 显式注册用「只新建」：手机号已存在时返回 `Ok(None)`，由上层映射冲突。
+    pub async fn create_profile(
+        &self,
+        phone_hash: &str,
+        phone_tail4: &str,
+        now_ms: u64,
+        new_player_id: &str,
+    ) -> Result<Option<Profile>, sqlx::Error> {
+        let Some(pg) = &self.pg else {
+            return Ok(None);
+        };
+        let row = sqlx::query(
+            "INSERT INTO player_profile \
+             (player_id, phone_hash, phone_tail4, nickname, created_at, status) \
+             VALUES ($1, $2, $3, $4, $5, 'active') \
+             ON CONFLICT (phone_hash) DO NOTHING \
+             RETURNING player_id, phone_hash, phone_tail4, nickname, created_at, status",
+        )
+        .bind(new_player_id)
+        .bind(phone_hash)
+        .bind(phone_tail4)
+        .bind(format!("掼友{phone_tail4}"))
+        .bind(now_ms as i64)
+        .fetch_optional(pg)
+        .await?;
+        Ok(row.as_ref().map(profile_from_row))
+    }
+
+    /// 启动恢复：一次性把全部档案灌进 `Auth` 内存索引。
+    pub async fn load_profiles(&self) -> Result<Vec<Profile>, sqlx::Error> {
+        let Some(pg) = &self.pg else {
+            return Ok(Vec::new());
+        };
+        let rows = sqlx::query(
+            "SELECT player_id, phone_hash, phone_tail4, nickname, created_at, status \
+             FROM player_profile",
+        )
+        .fetch_all(pg)
+        .await?;
+        Ok(rows.iter().map(profile_from_row).collect())
+    }
+
+    /// 新会话的 refresh token（只存哈希）。
+    pub async fn insert_refresh_token(
+        &self,
+        token_hash: &str,
+        player_id: &str,
+        expires_at_ms: u64,
+        created_at_ms: u64,
+    ) -> Result<(), sqlx::Error> {
+        let Some(pg) = &self.pg else {
+            return Ok(());
+        };
+        sqlx::query(
+            "INSERT INTO player_refresh_token \
+             (token_hash, player_id, expires_at, created_at) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(token_hash)
+        .bind(player_id)
+        .bind(expires_at_ms as i64)
+        .bind(created_at_ms as i64)
+        .execute(pg)
+        .await?;
+        Ok(())
+    }
+
+    /// 登出/轮换时删一条 refresh；不存在也不报错。
+    pub async fn delete_refresh_token(&self, token_hash: &str) -> Result<(), sqlx::Error> {
+        let Some(pg) = &self.pg else {
+            return Ok(());
+        };
+        sqlx::query("DELETE FROM player_refresh_token WHERE token_hash = $1")
+            .bind(token_hash)
+            .execute(pg)
+            .await?;
+        Ok(())
+    }
+
+    /// refresh 轮换事务：旧行必须还在且未过期，删旧 + 插新同事务提交。
+    ///
+    /// 返回 `RowNotFound` 表示旧 refresh 已不在服务端权威表里（过期、
+    /// 已被别的端轮换或登出），调用方按 `AUTH_INVALID` 处理。
+    pub async fn rotate_refresh_token(
+        &self,
+        old_hash: &str,
+        new_hash: &str,
+        player_id: &str,
+        expires_at_ms: u64,
+        now_ms: u64,
+    ) -> Result<(), sqlx::Error> {
+        let Some(pg) = &self.pg else {
+            return Ok(());
+        };
+        let mut tx = pg.begin().await?;
+        let deleted = sqlx::query(
+            "DELETE FROM player_refresh_token \
+             WHERE token_hash = $1 AND expires_at > $2",
+        )
+        .bind(old_hash)
+        .bind(now_ms as i64)
+        .execute(&mut *tx)
+        .await?;
+        if deleted.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Err(sqlx::Error::RowNotFound);
+        }
+        sqlx::query(
+            "INSERT INTO player_refresh_token \
+             (token_hash, player_id, expires_at, created_at) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(new_hash)
+        .bind(player_id)
+        .bind(expires_at_ms as i64)
+        .bind(now_ms as i64)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// 启动恢复：只加载未过期 refresh。
+    pub async fn load_refresh_tokens(
+        &self,
+        now_ms: u64,
+    ) -> Result<Vec<(String, String, u64)>, sqlx::Error> {
+        let Some(pg) = &self.pg else {
+            return Ok(Vec::new());
+        };
+        let rows = sqlx::query(
+            "SELECT token_hash, player_id, expires_at FROM player_refresh_token \
+             WHERE expires_at > $1",
+        )
+        .bind(now_ms as i64)
+        .fetch_all(pg)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                (
+                    row.get::<String, _>("token_hash"),
+                    row.get::<String, _>("player_id"),
+                    row.get::<i64, _>("expires_at") as u64,
+                )
+            })
+            .collect())
+    }
+
+    /// 登出撤销 access：落库后重启仍生效。
+    pub async fn insert_access_revocation(
+        &self,
+        token_hash: &str,
+        expires_at_ms: u64,
+    ) -> Result<(), sqlx::Error> {
+        let Some(pg) = &self.pg else {
+            return Ok(());
+        };
+        sqlx::query(
+            "INSERT INTO access_revocation (token_hash, expires_at) VALUES ($1, $2) \
+             ON CONFLICT (token_hash) DO UPDATE SET expires_at = EXCLUDED.expires_at",
+        )
+        .bind(token_hash)
+        .bind(expires_at_ms as i64)
+        .execute(pg)
+        .await?;
+        Ok(())
+    }
+
+    /// 启动恢复：只加载未过期撤销项。
+    pub async fn load_access_revocations(
+        &self,
+        now_ms: u64,
+    ) -> Result<Vec<(String, u64)>, sqlx::Error> {
+        let Some(pg) = &self.pg else {
+            return Ok(Vec::new());
+        };
+        let rows = sqlx::query(
+            "SELECT token_hash, expires_at FROM access_revocation WHERE expires_at > $1",
+        )
+        .bind(now_ms as i64)
+        .fetch_all(pg)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                (
+                    row.get::<String, _>("token_hash"),
+                    row.get::<i64, _>("expires_at") as u64,
+                )
+            })
+            .collect())
+    }
+
+    pub async fn find_profile_by_player_id(
+        &self,
+        player_id: &str,
+    ) -> Result<Option<Profile>, sqlx::Error> {
+        let Some(pg) = &self.pg else {
+            return Ok(None);
+        };
+        let row = sqlx::query(
+            "SELECT player_id, phone_hash, phone_tail4, nickname, created_at, status \
+             FROM player_profile WHERE player_id = $1",
+        )
+        .bind(player_id)
+        .fetch_optional(pg)
+        .await?;
+        Ok(row.as_ref().map(profile_from_row))
+    }
+
+    /// 后台用户列表：关键词匹配玩家 ID / 昵称 / 尾号，状态精确过滤。
+    pub async fn admin_list_users(
+        &self,
+        keyword: &str,
+        status: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<Profile>, i64), sqlx::Error> {
+        let Some(pg) = &self.pg else {
+            return Ok((Vec::new(), 0));
+        };
+        const FILTER: &str = "($1 = '' OR player_id ILIKE '%' || $1 || '%' \
+             OR nickname ILIKE '%' || $1 || '%' OR phone_tail4::text LIKE '%' || $1 || '%') \
+             AND ($2 = '' OR status = $2)";
+        let rows = sqlx::query(&format!(
+            "SELECT player_id, phone_hash, phone_tail4, nickname, created_at, status \
+             FROM player_profile WHERE {FILTER} \
+             ORDER BY created_at DESC LIMIT $3 OFFSET $4"
+        ))
+        .bind(keyword)
+        .bind(status)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pg)
+        .await?;
+        let total: i64 = sqlx::query_scalar(&format!(
+            "SELECT count(*) FROM player_profile WHERE {FILTER}"
+        ))
+        .bind(keyword)
+        .bind(status)
+        .fetch_one(pg)
+        .await?;
+        Ok((rows.iter().map(profile_from_row).collect(), total))
+    }
+
+    pub async fn update_profile_status(
+        &self,
+        player_id: &str,
+        status: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let Some(pg) = &self.pg else {
+            return Ok(false);
+        };
+        let result = sqlx::query("UPDATE player_profile SET status = $2 WHERE player_id = $1")
+            .bind(player_id)
+            .bind(status)
+            .execute(pg)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// 后台概览统计；`since_ms` 用于「近 24h」。
+    pub async fn admin_stats(&self, since_ms: u64) -> Result<AdminStats, sqlx::Error> {
+        let Some(pg) = &self.pg else {
+            return Ok(AdminStats::default());
+        };
+        let row = sqlx::query(
+            "SELECT \
+             (SELECT count(*) FROM player_profile) AS users_total, \
+             (SELECT count(*) FROM player_profile WHERE status = 'active') AS users_active, \
+             (SELECT count(*) FROM player_profile WHERE status <> 'active') AS users_disabled, \
+             (SELECT count(*) FROM player_profile WHERE created_at >= $1) AS users_recent, \
+             (SELECT count(*) FROM match_record) AS matches_total, \
+             (SELECT count(*) FROM match_record WHERE started_at >= $1) AS matches_recent, \
+             (SELECT count(*) FROM round_record) AS rounds_total",
+        )
+        .bind(since_ms as i64)
+        .fetch_one(pg)
+        .await?;
+        Ok(AdminStats {
+            users_total: row.get::<i64, _>("users_total"),
+            users_active: row.get::<i64, _>("users_active"),
+            users_disabled: row.get::<i64, _>("users_disabled"),
+            users_recent: row.get::<i64, _>("users_recent"),
+            matches_total: row.get::<i64, _>("matches_total"),
+            matches_recent: row.get::<i64, _>("matches_recent"),
+            rounds_total: row.get::<i64, _>("rounds_total"),
+        })
+    }
+
+    /// 后台对局列表，按开始时间倒序。
+    pub async fn admin_list_matches(
+        &self,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<AdminMatchRow>, i64), sqlx::Error> {
+        let Some(pg) = &self.pg else {
+            return Ok((Vec::new(), 0));
+        };
+        let rows = sqlx::query(
+            "SELECT match_id, game_id, match_type, winner_team, end_reason, seats_count, \
+                    started_at, ended_at \
+             FROM match_record ORDER BY started_at DESC LIMIT $1 OFFSET $2",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pg)
+        .await?;
+        let total: i64 = sqlx::query_scalar("SELECT count(*) FROM match_record")
+            .fetch_one(pg)
+            .await?;
+        let items = rows
+            .iter()
+            .map(|row| AdminMatchRow {
+                match_id: row.get("match_id"),
+                game_id: row.get("game_id"),
+                match_type: row.get("match_type"),
+                winner_team: row.get("winner_team"),
+                end_reason: row.get("end_reason"),
+                seats_count: row.get("seats_count"),
+                started_at_ms: row.get::<i64, _>("started_at") as u64,
+                ended_at_ms: row.get::<Option<i64>, _>("ended_at").map(|v| v as u64),
+            })
+            .collect();
+        Ok((items, total))
+    }
+
+    pub async fn load_game_setting(&self) -> Result<Option<GameSetting>, sqlx::Error> {
+        let Some(pg) = &self.pg else {
+            return Ok(None);
+        };
+        let row = sqlx::query(
+            "SELECT game_id, display_name, enabled, modes::text AS modes_text, \
+                    next_deal_ms, updated_at \
+             FROM game_setting WHERE game_id = $1",
+        )
+        .bind(crate::admin::DEFAULT_GAME_ID)
+        .fetch_optional(pg)
+        .await?;
+        Ok(row.map(|row| {
+            let modes_text: String = row.get("modes_text");
+            GameSetting {
+                game_id: row.get("game_id"),
+                display_name: row.get("display_name"),
+                enabled: row.get("enabled"),
+                modes: serde_json::from_str(&modes_text).unwrap_or_else(|_| {
+                    vec!["casual".to_owned(), "ranked".to_owned(), "mixed".to_owned()]
+                }),
+                next_deal_ms: row.get::<i64, _>("next_deal_ms") as u64,
+                updated_at_ms: row.get::<i64, _>("updated_at") as u64,
+            }
+        }))
+    }
+
+    pub async fn upsert_game_setting(&self, setting: &GameSetting) -> Result<(), sqlx::Error> {
+        let Some(pg) = &self.pg else {
+            return Ok(());
+        };
+        let modes = serde_json::to_string(&setting.modes).unwrap_or_else(|_| "[]".to_owned());
+        sqlx::query(
+            "INSERT INTO game_setting \
+             (game_id, display_name, enabled, modes, next_deal_ms, updated_at) \
+             VALUES ($1, $2, $3, $4::text::jsonb, $5, $6) \
+             ON CONFLICT (game_id) DO UPDATE SET \
+               display_name = EXCLUDED.display_name, enabled = EXCLUDED.enabled, \
+               modes = EXCLUDED.modes, next_deal_ms = EXCLUDED.next_deal_ms, \
+               updated_at = EXCLUDED.updated_at",
+        )
+        .bind(&setting.game_id)
+        .bind(&setting.display_name)
+        .bind(setting.enabled)
+        .bind(&modes)
+        .bind(setting.next_deal_ms as i64)
+        .bind(setting.updated_at_ms as i64)
+        .execute(pg)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn insert_admin_audit(&self, audit: &AdminAudit) -> Result<(), sqlx::Error> {
+        let Some(pg) = &self.pg else {
+            return Ok(());
+        };
+        let detail = audit.detail.to_string();
+        sqlx::query(
+            "INSERT INTO admin_audit (audit_id, action, target, detail, actor, created_at) \
+             VALUES ($1, $2, $3, $4::text::jsonb, $5, $6) \
+             ON CONFLICT (audit_id) DO NOTHING",
+        )
+        .bind(&audit.audit_id)
+        .bind(&audit.action)
+        .bind(&audit.target)
+        .bind(&detail)
+        .bind(&audit.actor)
+        .bind(audit.created_at_ms as i64)
+        .execute(pg)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn load_admin_audits(&self, limit: i64) -> Result<Vec<AdminAudit>, sqlx::Error> {
+        let Some(pg) = &self.pg else {
+            return Ok(Vec::new());
+        };
+        let rows = sqlx::query(
+            "SELECT audit_id, action, target, detail::text AS detail_text, actor, created_at \
+             FROM admin_audit ORDER BY created_at DESC LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(pg)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let detail_text: String = row.get("detail_text");
+                AdminAudit {
+                    audit_id: row.get("audit_id"),
+                    action: row.get("action"),
+                    target: row.get("target"),
+                    actor: row.get("actor"),
+                    detail: serde_json::from_str(&detail_text)
+                        .unwrap_or_else(|_| serde_json::json!({})),
+                    created_at_ms: row.get::<i64, _>("created_at") as u64,
+                }
+            })
+            .collect())
     }
 
     /// 场次开始（`match_record`）。
@@ -435,6 +930,17 @@ async fn apply_schema(pool: &PgPool) -> Result<(), sqlx::Error> {
         sqlx::query(statement).execute(pool).await?;
     }
     Ok(())
+}
+
+fn profile_from_row(row: &sqlx::postgres::PgRow) -> Profile {
+    Profile {
+        player_id: row.get("player_id"),
+        phone_hash: row.get("phone_hash"),
+        phone_tail4: row.get("phone_tail4"),
+        nickname: row.get("nickname"),
+        created_at_ms: row.get::<i64, _>("created_at") as u64,
+        status: row.get("status"),
+    }
 }
 
 /// `settlement_event.settlement_id`：`{matchId}:{roundNo}` 足够唯一且可人工核对。

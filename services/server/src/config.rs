@@ -51,6 +51,8 @@ pub struct ServerConfig {
     pub auth_salt: String,
     /// access/refresh token 的 HS256 签名密钥（§8.5：支持双密钥轮换）。
     pub jwt_secret: String,
+    /// 运营后台独立令牌（`Authorization: Bearer`）。空串 = 后台接口关闭。
+    pub admin_token: String,
     /// 是否强制所有玩家侧接口与 WS 入座都带 access token。
     pub require_auth: bool,
     /// PostgreSQL 连接与池参数。
@@ -175,6 +177,8 @@ impl Default for ServerConfig {
             // 开发默认值只为本机联调能跑；生产未覆盖视为配置事故（`env=production` 时启动失败）。
             auth_salt: "gf-dev-salt-change-me".to_owned(),
             jwt_secret: "gf-dev-jwt-secret-change-me".to_owned(),
+            // 本地联调默认开一个显式后台令牌；生产必须由 GF_ADMIN_TOKEN 注入。
+            admin_token: "gf-dev-admin-token".to_owned(),
             require_auth: false,
             database: DatabaseConfig::default(),
             redis: RedisConfig::default(),
@@ -266,6 +270,9 @@ impl ServerConfig {
         if let Some(v) = file.security.jwt_secret {
             self.jwt_secret = v;
         }
+        if let Some(v) = file.security.admin_token {
+            self.admin_token = v.trim().to_owned();
+        }
         if let Some(v) = file.database.url {
             self.database.url = non_empty(v);
         }
@@ -336,6 +343,7 @@ impl ServerConfig {
     /// - `GF_BIND`、`GF_MIN_CLIENT_VERSION`、`GF_TICK_MS`、`GF_NEXT_DEAL_MS`
     /// - `GF_HEARTBEAT_TIMEOUT_MS`、`GF_ROOM_CODE_TTL_MS`、`GF_MATCH_TIMEOUT_MS`
     /// - `GF_AUTH_SALT` / `GF_JWT_SECRET`
+    /// - `GF_ADMIN_TOKEN`（运营后台令牌；留空关闭 `/api/admin/*`）
     /// - `GF_REQUIRE_AUTH`
     /// - `GF_DATABASE_URL` / `GF_REDIS_URL`
     /// - `GF_SMS_PROVIDER` / `GF_SMS_API_KEY`
@@ -375,6 +383,9 @@ impl ServerConfig {
         }
         if let Ok(v) = env::var("GF_JWT_SECRET") {
             self.jwt_secret = v;
+        }
+        if let Ok(v) = env::var("GF_ADMIN_TOKEN") {
+            self.admin_token = v.trim().to_owned();
         }
         if let Ok(v) = env::var("GF_REQUIRE_AUTH") {
             self.require_auth = matches!(v.trim(), "1" | "true" | "TRUE" | "True" | "yes");
@@ -484,8 +495,13 @@ impl ServerConfig {
         } else {
             self.sms.provider.as_str()
         };
+        let admin = if self.admin_token.trim().is_empty() {
+            "off"
+        } else {
+            "on"
+        };
         format!(
-            "bind={} require_auth={} postgres={pg} redis={redis} sms={sms}",
+            "bind={} require_auth={} postgres={pg} redis={redis} sms={sms} admin={admin}",
             self.bind, self.require_auth
         )
     }
@@ -574,6 +590,7 @@ struct ServerSection {
 struct SecuritySection {
     auth_salt: Option<String>,
     jwt_secret: Option<String>,
+    admin_token: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]

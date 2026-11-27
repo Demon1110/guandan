@@ -4,12 +4,14 @@
 //! - 联机骨架：HTTP 建房、WS protobuf、满四人发牌、动作判定、结算广播；
 //! - 增量重连：`ReconnectBuffer` 内补发 `RoomDelta`，跨局/结算落快照重置；
 //! - 大厅：房间码、凭码预占座位、匹配队列（内存态）；
-//! - 账号：手机号 + 短信验证码登录、access/refresh token、测试白名单；
+//! - 账号：手机号 + 短信验证码注册/登录、JWT 认证、refresh 轮换、登出撤销；
+//! - 账号持久化：`player_profile` / `player_refresh_token` / `access_revocation`，重启恢复；
 //! - PG/Redis 落库：战绩、账号、快照、动作流、队列镜像；
 //! - 回放包导出：`GET /api/replays/{matchId}`（§7.7），离线复现用 `tools/replay-viewer`。
 //!
 //! 未做：结算重试与死信补偿、回放式观战 UI、桌面壳跨平台产物。
 
+pub mod admin;
 pub mod auth;
 pub mod config;
 pub mod events;
@@ -66,6 +68,8 @@ pub struct App {
     lobby: Mutex<Lobby>,
     /// 账号、验证码与令牌（内存态；PG 落库走 `store`）。
     auth: Auth,
+    /// 运营后台配置与审计（内存热缓存；PG 落库走 `store`）。
+    admin: admin::AdminState,
     /// 持久化句柄：`App::new` 时不接，`attach_store` 时装一次（进程内只装一次）。
     store: std::sync::OnceLock<Store>,
     /// 房间 → 存档任务的通道；未挂存储时事件被丢弃。
@@ -84,6 +88,10 @@ pub enum RoomCreateError {
     InvalidMatchId,
     /// 进程内房间数已达 `max_rooms`。
     TooManyRooms,
+    /// 运营后台已关闭该玩法（新局/新房间不放行，已有房间仍可重连收尾）。
+    GameDisabled,
+    /// 运营后台关闭了该模式（休闲/排位/混合）。
+    ModeDisabled,
     /// 规则集建桌失败（正常不会发生）。
     Engine(String),
 }
@@ -118,6 +126,7 @@ impl App {
             rooms: RwLock::new(HashMap::new()),
             lobby: Mutex::new(Lobby::new()),
             auth,
+            admin: admin::AdminState::default(),
             store: std::sync::OnceLock::new(),
             storage_tx,
             storage_rx: Mutex::new(Some(storage_rx)),
@@ -132,9 +141,16 @@ impl App {
         if !store.enabled() {
             return;
         }
+        let has_pg = store.pg_enabled();
         if self.store.set(store).is_err() {
             eprintln!("[store] 已接过存储句柄，忽略重复接入");
             return;
+        }
+        // 账号状态先恢复：进程重启后同一手机号必须拿到原 `playerId`，
+        // 已登出的 access 与已轮换的 refresh 也必须继续失效。
+        if has_pg {
+            self.restore_auth().await;
+            self.restore_admin().await;
         }
         // 已经建好的房间补挂存档通道（正常顺序是先 attach 再建房，这里只兜底）。
         for room in self.rooms.read().await.values() {
@@ -166,6 +182,63 @@ impl App {
                 app.flush_snapshots().await;
             }
         });
+    }
+
+    /// 启动时把 PG 里的账号态灌回 `Auth` 热缓存。
+    ///
+    /// 失败只记日志不阻断启动：账号接口在数据库故障时按「不可用」返回，
+    /// 而不是让整个服务起不来。
+    async fn restore_auth(&self) {
+        let Some(store) = self.store() else { return };
+        let now = now_unix_ms();
+        match store.load_profiles().await {
+            Ok(profiles) => {
+                let count = profiles.len();
+                self.auth.restore_profiles(profiles);
+                eprintln!("[auth] 已恢复 {count} 个账号档案");
+            }
+            Err(err) => eprintln!("[auth] 恢复账号档案失败，登录/注册将返回 503：{err}"),
+        }
+        match store.load_refresh_tokens(now).await {
+            Ok(rows) => {
+                let count = rows.len();
+                self.auth.restore_refresh_tokens(rows, now);
+                eprintln!("[auth] 已恢复 {count} 枚未过期 refresh token");
+            }
+            Err(err) => eprintln!("[auth] 恢复 refresh token 失败：{err}"),
+        }
+        match store.load_access_revocations(now).await {
+            Ok(rows) => {
+                let count = rows.len();
+                self.auth.restore_access_revocations(rows, now);
+                eprintln!("[auth] 已恢复 {count} 条 access 撤销记录");
+            }
+            Err(err) => eprintln!("[auth] 恢复 access 撤销记录失败：{err}"),
+        }
+    }
+
+    /// 启动时恢复运营配置与审计。失败只记日志，回落默认配置。
+    async fn restore_admin(&self) {
+        let Some(store) = self.store() else { return };
+        match store.load_game_setting().await {
+            Ok(Some(setting)) => {
+                eprintln!(
+                    "[admin] 已恢复玩法配置：enabled={} modes={:?} nextDealMs={}",
+                    setting.enabled, setting.modes, setting.next_deal_ms
+                );
+                self.admin.replace_setting(setting).await;
+            }
+            Ok(None) => eprintln!("[admin] 库里没有玩法配置，使用默认值"),
+            Err(err) => eprintln!("[admin] 恢复玩法配置失败，使用默认值：{err}"),
+        }
+        match store.load_admin_audits(200).await {
+            Ok(rows) => {
+                let count = rows.len();
+                self.admin.restore_audits(rows).await;
+                eprintln!("[admin] 已恢复 {count} 条审计记录");
+            }
+            Err(err) => eprintln!("[admin] 恢复审计失败：{err}"),
+        }
     }
 
     fn store(&self) -> Option<&Store> {
@@ -241,6 +314,10 @@ impl App {
         if let Some(room) = self.rooms.read().await.get(match_id).cloned() {
             return Ok(room);
         }
+        if !self.admin.game_enabled().await {
+            return Err(RoomCreateError::GameDisabled);
+        }
+        let next_deal_ms = self.admin.next_deal_ms().await;
         let mut rooms = self.rooms.write().await;
         if let Some(room) = rooms.get(match_id).cloned() {
             return Ok(room);
@@ -251,7 +328,7 @@ impl App {
         let seed = self.room_seq.fetch_add(1, Ordering::Relaxed);
         let opts = RoomOptions {
             tick_ms: self.cfg.tick_ms,
-            next_deal_ms: self.cfg.next_deal_ms,
+            next_deal_ms,
         };
         let room = RoomHost::spawn(match_id.to_owned(), seed, opts)
             .map_err(|err| RoomCreateError::Engine(err.to_string()))?;
@@ -309,6 +386,9 @@ impl App {
         &self,
         mode: Mode,
     ) -> Result<(Arc<RoomHost>, String), RoomCreateError> {
+        if !self.admin.mode_enabled(mode).await {
+            return Err(RoomCreateError::ModeDisabled);
+        }
         let match_id = loop {
             let id = self.lobby.lock().await.new_match_id();
             if !self.rooms.read().await.contains_key(&id) {
@@ -455,12 +535,14 @@ impl App {
                 get(match_status).delete(match_cancel),
             )
             .route("/api/auth/sms", post(auth_sms))
+            .route("/api/auth/register", post(auth_register))
             .route("/api/auth/login", post(auth_login))
             .route("/api/auth/logout", post(auth_logout))
             .route("/api/auth/refresh", post(auth_refresh))
             .route("/api/profile", get(profile))
             .route("/api/replays/{match_id}", get(replay_package))
             .route("/ws", get(ws_upgrade))
+            .merge(admin::router())
             .layer(DefaultBodyLimit::max(MAX_HTTP_BODY))
             .with_state(self.clone())
     }
@@ -608,6 +690,16 @@ async fn create_room(
         )
             .into_response(),
         Err(RoomCreateError::InvalidMatchId) => invalid_request("MATCH_ID_INVALID"),
+        Err(RoomCreateError::GameDisabled) => (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"reason": "GAME_DISABLED"})),
+        )
+            .into_response(),
+        Err(RoomCreateError::ModeDisabled) => (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"reason": "GAME_MODE_DISABLED"})),
+        )
+            .into_response(),
         Err(RoomCreateError::TooManyRooms) => (
             StatusCode::TOO_MANY_REQUESTS,
             Json(serde_json::json!({"reason": "RATE_LIMITED"})),
@@ -651,6 +743,13 @@ async fn room_create(
     let Some(mode) = Mode::parse(&body.mode) else {
         return invalid_request("MODE_UNKNOWN");
     };
+    if !app.admin.mode_enabled(mode).await {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"reason": "GAME_MODE_DISABLED"})),
+        )
+            .into_response();
+    }
     // 座位数由 RuleSet 的 `seats.count` 决定，客户端只能传同值（§5.15）。
     if body
         .seats_count
@@ -660,6 +759,13 @@ async fn room_create(
     }
     let (room, code) = match app.create_room_with_code(mode).await {
         Ok(pair) => pair,
+        Err(RoomCreateError::GameDisabled) | Err(RoomCreateError::ModeDisabled) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({"reason": "GAME_MODE_DISABLED"})),
+            )
+                .into_response()
+        }
         Err(RoomCreateError::TooManyRooms) => {
             return (
                 StatusCode::TOO_MANY_REQUESTS,
@@ -755,6 +861,13 @@ async fn match_queue(
     let Some(mode) = Mode::parse(&body.mode) else {
         return invalid_request("MODE_UNKNOWN");
     };
+    if !app.admin.mode_enabled(mode).await {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"reason": "GAME_MODE_DISABLED"})),
+        )
+            .into_response();
+    }
     // 入队频控：优先按玩家 ID，其次按来源 IP；anonymous 且无 peer（单测）不额外限。
     if let Some(key) = owner
         .as_ref()
@@ -874,20 +987,73 @@ where
     }
 }
 
-/// `POST /api/auth/logout`：把当前 access token 放进撤销表，立即失效。
-async fn auth_logout(State(app): State<Arc<App>>, headers: HeaderMap) -> axum::response::Response {
+/// `POST /api/auth/register`：显式注册（手机号 + 短信验证码），直接返回会话。
+///
+/// 登录仍保留「首次校码自动建档」；这个接口是给需要明确「注册成功/已存在」
+/// 语义的客户端用的加法接口，底层账号主数据同一张 `player_profile`。
+async fn auth_register(
+    State(app): State<Arc<App>>,
+    peer: PeerAddr,
+    Json(body): Json<LoginBody>,
+) -> axum::response::Response {
     use axum::response::IntoResponse as _;
-    let token = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| {
-            v.strip_prefix("Bearer ")
-                .or_else(|| v.strip_prefix("bearer "))
-                .map(str::trim)
-        })
-        .filter(|t| !t.is_empty());
-    let revoked = token.map(|t| app.revoke_access_token(t)).unwrap_or(false);
-    Json(serde_json::json!({"ok": revoked})).into_response()
+    if !app.cfg.accepts_version(&body.client_version) {
+        return client_too_old();
+    }
+    let now = now_unix_ms();
+    let verified = match app.auth.verify_login_code(
+        &body.phone,
+        &body.code,
+        peer.0.as_ref().map(|a| a.to_string()).as_deref(),
+        now,
+    ) {
+        Ok(verified) => verified,
+        Err(err) => return login_error_response(err),
+    };
+    let profile = match app.store().filter(|store| store.pg_enabled()) {
+        Some(store) => {
+            let new_player_id = app.auth.next_player_id();
+            match store
+                .create_profile(
+                    &verified.phone_hash,
+                    &verified.phone_tail4,
+                    now,
+                    &new_player_id,
+                )
+                .await
+            {
+                Ok(Some(profile)) => profile,
+                Ok(None) => {
+                    return (
+                        StatusCode::CONFLICT,
+                        Json(serde_json::json!({"reason": "ACCOUNT_EXISTS"})),
+                    )
+                        .into_response();
+                }
+                Err(err) => {
+                    eprintln!("[auth] 注册建档失败：{err}");
+                    return storage_unavailable();
+                }
+            }
+        }
+        // 纯内存路径：没有 PG 的本地联调/单测也要能显式注册。
+        None => {
+            if app.auth.phone_hash_known(&body.phone) {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({"reason": "ACCOUNT_EXISTS"})),
+                )
+                    .into_response();
+            }
+            app.auth
+                .upsert_profile(&verified.phone_hash, &verified.phone_tail4, now)
+        }
+    };
+    if profile.status != "active" {
+        return account_disabled();
+    }
+    app.auth.remember_profile(profile.clone());
+    issue_persisted_session(&app, &profile, now).await
 }
 
 async fn auth_login(
@@ -895,44 +1061,144 @@ async fn auth_login(
     peer: PeerAddr,
     Json(body): Json<LoginBody>,
 ) -> axum::response::Response {
-    use axum::response::IntoResponse as _;
     if !app.cfg.accepts_version(&body.client_version) {
-        return (
-            StatusCode::UPGRADE_REQUIRED,
-            Json(serde_json::json!({"reason": "CLIENT_TOO_OLD"})),
-        )
-            .into_response();
+        return client_too_old();
     }
+    let now = now_unix_ms();
     let peer = peer.0.map(|addr| addr.to_string());
-    match app
+    let verified = match app
         .auth
-        .login_with_peer(&body.phone, &body.code, peer.as_deref(), now_unix_ms())
+        .verify_login_code(&body.phone, &body.code, peer.as_deref(), now)
     {
-        Ok(session) => {
-            // 账号建档（`player_profile`）：存储未接时是 no-op。
-            if let Some(profile) = app.auth.profile(&session.player_id) {
-                if let Some(store) = app.store() {
-                    store.upsert_profile(&profile).await;
+        Ok(verified) => verified,
+        Err(err) => return login_error_response(err),
+    };
+
+    let profile = match app.store().filter(|store| store.pg_enabled()) {
+        Some(store) => {
+            let new_player_id = app.auth.next_player_id();
+            match store
+                .find_or_create_profile(
+                    &verified.phone_hash,
+                    &verified.phone_tail4,
+                    now,
+                    &new_player_id,
+                )
+                .await
+            {
+                Ok(profile) => {
+                    app.auth.remember_profile(profile.clone());
+                    profile
+                }
+                Err(err) => {
+                    eprintln!("[auth] 登录读取/建档失败：{err}");
+                    return storage_unavailable();
                 }
             }
-            Json(serde_json::json!({
-                "token": session.token,
-                "refreshToken": session.refresh_token,
-                "expiresIn": session.expires_in,
-                "playerId": session.player_id,
-            }))
-            .into_response()
         }
-        Err(auth::LoginError::Locked { retry_after_ms }) => (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(serde_json::json!({
-                "reason": "RATE_LIMITED",
-                "retryAfterMs": retry_after_ms,
-            })),
-        )
-            .into_response(),
-        Err(_) => unauthorized(),
+        // 纯内存路径（单测/未接 PG）：与旧行为完全一致。
+        None => app
+            .auth
+            .upsert_profile(&verified.phone_hash, &verified.phone_tail4, now),
+    };
+    if profile.status != "active" {
+        return account_disabled();
     }
+    issue_persisted_session(&app, &profile, now).await
+}
+
+/// 发会话并落 refresh；PG 写失败时把刚发的 token 全部收回，避免内存里有
+/// 一枚服务端不认的 refresh。
+async fn issue_persisted_session(
+    app: &Arc<App>,
+    profile: &Profile,
+    now_ms: u64,
+) -> axum::response::Response {
+    let session = app.auth.issue_session(&profile.player_id, now_ms);
+    if let Some(store) = app.store().filter(|store| store.pg_enabled()) {
+        let key = Auth::refresh_key(&session.refresh_token);
+        let expires_at = Auth::refresh_expires_at(now_ms);
+        if let Err(err) = store
+            .insert_refresh_token(&key, &profile.player_id, expires_at, now_ms)
+            .await
+        {
+            eprintln!("[auth] 写 refresh token 失败：{err}");
+            app.auth.revoke_refresh(&session.refresh_token);
+            app.auth.revoke_access(&session.token, now_ms);
+            return storage_unavailable();
+        }
+    }
+    session_response(&session)
+}
+
+fn session_response(session: &Session) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    Json(serde_json::json!({
+        "token": session.token,
+        "refreshToken": session.refresh_token,
+        "expiresIn": session.expires_in,
+        "playerId": session.player_id,
+    }))
+    .into_response()
+}
+
+/// `POST /api/auth/logout`：撤销 access；body 里带 `refreshToken` 时一并撤销。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LogoutBody {
+    refresh_token: String,
+}
+
+async fn auth_logout(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    let now = now_unix_ms();
+    let token = bearer_token(&headers);
+    let mut ok = false;
+    let mut storage_failed = false;
+
+    if let Some(token) = token {
+        if app.auth.revoke_access(token, now) {
+            ok = true;
+            if let Some(store) = app.store().filter(|store| store.pg_enabled()) {
+                // 只撤内存会在重启后「复活」，撤销表必须落库。
+                if let Err(err) = store
+                    .insert_access_revocation(
+                        &Auth::access_key(token),
+                        Auth::access_expires_at(now),
+                    )
+                    .await
+                {
+                    storage_failed = true;
+                    eprintln!("[auth] 写 access 撤销记录失败：{err}");
+                }
+            }
+        }
+    }
+
+    let refresh_token = serde_json::from_slice::<LogoutBody>(&body)
+        .ok()
+        .map(|body| body.refresh_token)
+        .filter(|token| !token.trim().is_empty());
+    if let Some(token) = refresh_token {
+        if let Some(key) = app.auth.revoke_refresh(&token) {
+            ok = true;
+            if let Some(store) = app.store().filter(|store| store.pg_enabled()) {
+                if let Err(err) = store.delete_refresh_token(&key).await {
+                    storage_failed = true;
+                    eprintln!("[auth] 删除 refresh token 失败：{err}");
+                }
+            }
+        }
+    }
+
+    if storage_failed {
+        return storage_unavailable();
+    }
+    Json(serde_json::json!({"ok": ok})).into_response()
 }
 
 /// `POST /api/auth/refresh`（§5.15）：换新 access，旧 refresh 立刻作废。
@@ -947,15 +1213,92 @@ async fn auth_refresh(
     Json(body): Json<RefreshBody>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse as _;
-    match app.auth.refresh(&body.refresh_token, now_unix_ms()) {
-        Ok(session) => Json(serde_json::json!({
-            "token": session.token,
-            "refreshToken": session.refresh_token,
-            "expiresIn": session.expires_in,
-        }))
-        .into_response(),
-        Err(_) => unauthorized(),
+    let now = now_unix_ms();
+    let (session, rollback) = match app.auth.rotate_refresh(&body.refresh_token, now) {
+        Ok(pair) => pair,
+        Err(err) => return login_error_response(err),
+    };
+    if let Some(store) = app.store().filter(|store| store.pg_enabled()) {
+        let new_key = Auth::refresh_key(&session.refresh_token);
+        let expires_at = Auth::refresh_expires_at(now);
+        if let Err(err) = store
+            .rotate_refresh_token(&rollback.key, &new_key, &session.player_id, expires_at, now)
+            .await
+        {
+            app.auth.revoke_refresh(&session.refresh_token);
+            app.auth.revoke_access(&session.token, now);
+            if matches!(err, sqlx::Error::RowNotFound) {
+                // 权威表里已经没有了：过期、被另一端轮换或已登出。
+                // 旧 refresh 也不能放回内存，否则会一直「内存有效、库里没有」。
+                return unauthorized();
+            }
+            // 存储抖动才回滚：旧 refresh 放回，客户端可重试同一枚。
+            app.auth.restore_refresh(rollback);
+            eprintln!("[auth] 轮换 refresh token 失败：{err}");
+            return storage_unavailable();
+        }
     }
+    Json(serde_json::json!({
+        "token": session.token,
+        "refreshToken": session.refresh_token,
+        "expiresIn": session.expires_in,
+    }))
+    .into_response()
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| {
+            v.strip_prefix("Bearer ")
+                .or_else(|| v.strip_prefix("bearer "))
+                .map(str::trim)
+        })
+        .filter(|t| !t.is_empty())
+}
+
+fn login_error_response(err: auth::LoginError) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    match err {
+        auth::LoginError::Locked { retry_after_ms } => (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({
+                "reason": "RATE_LIMITED",
+                "retryAfterMs": retry_after_ms,
+            })),
+        )
+            .into_response(),
+        auth::LoginError::AccountDisabled => account_disabled(),
+        _ => unauthorized(),
+    }
+}
+
+fn client_too_old() -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    (
+        StatusCode::UPGRADE_REQUIRED,
+        Json(serde_json::json!({"reason": "CLIENT_TOO_OLD"})),
+    )
+        .into_response()
+}
+
+fn account_disabled() -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    (
+        StatusCode::FORBIDDEN,
+        Json(serde_json::json!({"reason": "ACCOUNT_DISABLED"})),
+    )
+        .into_response()
+}
+
+fn storage_unavailable() -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(serde_json::json!({"reason": "STORAGE_UNAVAILABLE"})),
+    )
+        .into_response()
 }
 
 /// `GET /api/profile`（§5.15）：个人资料。

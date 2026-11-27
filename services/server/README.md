@@ -50,6 +50,7 @@ cargo clippy -p gf-server --all-targets -- -D warnings
 | --- | --- |
 | `GF_CONFIG_FILE` | 指定配置文件路径 |
 | `GF_AUTH_SALT` / `GF_JWT_SECRET` | 覆盖 `[security]` |
+| `GF_ADMIN_TOKEN` | 运营后台令牌；留空关闭 `/api/admin/*`。本地默认 `gf-dev-admin-token` |
 | `GF_DATABASE_URL` / `GF_REDIS_URL` | 覆盖 `[database].url` / `[redis].url`；不填即纯内存运行 |
 | `GF_SMS_PROVIDER` / `GF_SMS_API_KEY` | 覆盖 `[sms].provider` / `[sms].api_key` |
 | `GF_SMS_SEND_ENABLED` / `GF_SMS_TEST_WHITELIST` / `GF_SMS_TEST_CODE` | 覆盖 `[sms].send_enabled` / `[sms].test_whitelist` / `[sms].test_code` |
@@ -108,14 +109,45 @@ cargo clippy -p gf-server --all-targets -- -D warnings
 | 方法 | 路径 | 入参 / 出参 |
 | --- | --- | --- |
 | `POST` | `/api/auth/sms` | `{phone}` → `{requestId, cooldownSec}`；同号 60s/次、10 次/日，超限 `429 RATE_LIMITED` + `retryAfterMs` |
-| `POST` | `/api/auth/login` | `{phone, code, clientVersion}` → `{token, refreshToken, expiresIn, playerId}`；`clientVersion` 低于下限 `426 CLIENT_TOO_OLD`，码错/超期 `401 AUTH_INVALID` |
-| `POST` | `/api/auth/refresh` | `{refreshToken}` → `{token, refreshToken, expiresIn}`；旧 refresh 即刻作废（单端轮换） |
+| `POST` | `/api/auth/register` | `{phone, code, clientVersion}` → `{token, refreshToken, expiresIn, playerId}`；手机号已注册 `409 ACCOUNT_EXISTS`，参数/版本/验证码错误同登录 |
+| `POST` | `/api/auth/login` | `{phone, code, clientVersion}` → `{token, refreshToken, expiresIn, playerId}`；首次校码自动建档；`clientVersion` 低于下限 `426 CLIENT_TOO_OLD`，码错/超期 `401 AUTH_INVALID`，账号被禁用 `403 ACCOUNT_DISABLED` |
+| `POST` | `/api/auth/refresh` | `{refreshToken}` → `{token, refreshToken, expiresIn}`；旧 refresh 即刻作废（单端轮换），失效 `401 AUTH_INVALID` |
+| `POST` | `/api/auth/logout` | 可选 `{refreshToken}`；带 `Authorization: Bearer <token>` → `{ok}`；撤 access，body 里带 refresh 时一并撤 |
 | `GET` | `/api/profile` | 需 `Authorization: Bearer <token>` → `{playerId, nickname, phoneTail4, stats}`；`stats` 在 PG 切片前恒为空表 |
 
 - access 是 HS256 JWT（15 分钟），refresh 是 32 字节随机串（30 天），库里只存其 SHA-256。
 - 手机号规范化后取 `HMAC-SHA256(server_salt, phone)` 与尾号 4 位入库（`player_profile` 字段位），原文只在发码链路内存里出现。
 - 验证码由 `[sms]` 决定投递方式：默认挡板（`send_enabled = false`），一条真实短信都不发、只把验证码写进服务端日志；`send_enabled = true` 且 `provider = "yunpian"` 时才走云片，并且只发给 `send_whitelist` 里的号码，其余号码直接拦下。白名单号始终用 `test_code`（默认 `666666`）直通、不发真实短信，模板报备未批时靠这条口子跑内测。
+- 显式注册与登录共用同一张 `player_profile`：注册只允许新建，登录在手机号不存在时按既有设计自动建档。启用 PG 后，同一手机号重启仍拿到原 `playerId`。
+- 按设计 §5.15 保持「手机号 + 短信验证码」，不引入密码；显式注册是「首次登录自动建档」之外的补充接口，用于拿到明确的注册成功/已存在结果。
+- 账号存储故障返回 `503 STORAGE_UNAVAILABLE`；登录/注册在写库前已经消费验证码，客户端需重新发码重试。
 - 带 token 入座会把座位绑定到玩家；重连回座位时校验同一玩家，HTTP 预占也按玩家 ID 绑定（见下节）。
+
+## 运营后台接口（`services/admin` 用）
+
+后台令牌独立于玩家 JWT：请求头 `Authorization: Bearer <GF_ADMIN_TOKEN>`。令牌留空时所有
+`/api/admin/*` 返回 `503 ADMIN_DISABLED`；缺失或错误返回 `401 ADMIN_UNAUTHORIZED`。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/admin/session` | 校验令牌，回 `gameId` / `rulesetVersion` / 服务器时间 |
+| `GET` | `/api/admin/overview` | 账号、对局、房间、存储开关与运行时长 |
+| `GET` | `/api/admin/users` | `keyword`（玩家 ID / 昵称 / 尾号）+ `status`（`active` / `disabled`）+ `page` / `pageSize` |
+| `PATCH` | `/api/admin/users/{playerId}` | `{status}`；禁用后旧 access 立即失效，无法再登录/刷新 |
+| `GET` | `/api/admin/games` | 玩法配置（含只读的规则集版本、座位数） |
+| `PUT` | `/api/admin/games/guandan` | `{displayName, enabled, modes, nextDealMs}`；即时作用到建房与匹配 |
+| `GET` | `/api/admin/matches` | 已结束对局列表（PG 的 `match_record`） |
+| `GET` | `/api/admin/audits` | 最近 100 条后台写操作审计 |
+
+配置边界（M2 最小管理台）：
+
+- `enabled=false`：新房间/新匹配不放行（`403 GAME_DISABLED`），已有房间仍可重连收尾；
+- `modes` 只接受 `casual` / `ranked` / `mixed` 子集，关闭的模式建房/入队返回 `403 GAME_MODE_DISABLED`；
+- `nextDealMs` 限制 1s–10min，改后只影响之后新建的房间，已在跑的房间保留原节奏；
+- 规则集注册、dry-run、灰度/全量、回滚属设计 M3，本轮不做。
+
+没有 PG 时：用户列表/启停走 `Auth` 内存档案，玩法配置走 `AdminState` 默认值（改动不落盘，
+重启丢失），对局列表为空。审计先写 PG，失败只记日志，不阻断已经生效的管理动作。
 
 ## 回放包（§7.7）
 
@@ -135,7 +167,7 @@ cargo clippy -p gf-server --all-targets -- -D warnings
 
 | 变量 | 落点 |
 | --- | --- |
-| `[database].url` | 启动时执行 `migrations/0001_init.sql`（幂等）；写 `player_profile`、`match_record`、`round_record`、`settlement_event` |
+| `[database].url` | 启动时执行 `migrations/0001_init.sql` + `0002_auth.sql`（幂等）；写 `player_profile`、`player_refresh_token`、`access_revocation`、`match_record`、`round_record`、`settlement_event` |
 | `[redis].url` | `room:{matchId}:snapshot`（按 `snapshot_interval_ms` 刷新、`snapshot_ttl_ms` 过期）、`room:{matchId}:actions`（Stream，`MAXLEN ~ actions_max_len`）、`match:queue:{gameId}`（zset 镜像） |
 
 - 落库发生在房间之外的独立任务里：`RoomHost` 只把「结算 / 场次终止」两类事实投进
@@ -145,6 +177,10 @@ cargo clippy -p gf-server --all-targets -- -D warnings
 - `round_record.players` 形如 `[{seat, player_id, rank}]`；匿名入座 `player_id` 为 `null`，
   等 `GF_REQUIRE_AUTH` 全面打开后才会全是有值。
 - `round_record.started_at / ended_at` 用 epoch 毫秒（`bigint`），不用 PG 的时区类型。
+- 账号态在 `App::attach_store` 时回灌：`player_profile` 全量、未过期 `player_refresh_token` 与
+  `access_revocation`；`playerId` 序号按已有 `p-xxxxxxxx` 最大值恢复，重启后不会重复发号。
+- refresh 轮换是「删旧 + 插新」同事务；登出同时撤 access（落 `access_revocation`）与可选 refresh。
+  账号接口在 PG 故障时返回 `503 STORAGE_UNAVAILABLE`，但联机对局不受影响。
 - 匹配队列以内存为准，Redis 里只是镜像；队列跨实例共享要等粘性路由。
 
 ## 已知取舍（都在代码里有注释）
