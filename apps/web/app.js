@@ -7,12 +7,13 @@
 const RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
 const SUITS = ['♠', '♥', '♦', '♣'];
 const JOKER_BASE = 104;
-// 横排手牌：一行最多几张，按屏宽取值，多了折行（27 张在 1600 宽上正好 14 + 13）
+// 横排手牌：一行最多几张，按屏宽取值。宽屏尽量让 27 张铺成一整排（牌只露左上角，
+// 既像参考棋牌游戏的大号手牌，也给下半屏的出牌区腾出高度）；窄屏再折两行。
 function fanPerRow() {
   const w = window.innerWidth;
-  if (w < 700) return 7;
-  if (w < 1100) return 10;
-  return 14;
+  if (w >= 760) return 28;
+  if (w >= 520) return 18;
+  return 9;
 }
 
 function cardLabel(id) {
@@ -523,7 +524,9 @@ function renderSeats() {
     const si = bySeat.get(s.seat) ?? { hand: 0, rank: 0 };
     const rankName = RANK_NAMES[si.rank] ?? '';
     const last = state.lastBySeat[s.seat];
-    box.className = `seat slot-${['bottom', 'right', 'top', 'left'][relSlot(s.seat)]}` + (active ? ' active' : '');
+    box.className = mine
+      ? `seat me-seat${active ? ' active' : ''}`
+      : `seat slot-${['bottom', 'right', 'top', 'left'][relSlot(s.seat)]}${active ? ' active' : ''}`;
     let tag;
     if (active) tag = `<span class="tag gold">${state.phase === 'tribute' ? '还贡中' : '行动中'}</span>`;
     else if (rankName) tag = `<span class="tag rank">${rankName}</span>`;
@@ -632,7 +635,8 @@ function renderCenter() {
   const myTurn =
     state.waitingSeat === state.humanSeat &&
     (state.phase === 'play' || state.phase === 'tribute');
-  if (state.phase === 'settle') el('turn').textContent = '本局结算中';
+  if (state.tributeBusy) el('turn').textContent = '进贡 / 还贡飞牌中…';
+  else if (state.phase === 'settle') el('turn').textContent = '本局结算中';
   else if (state.phase === 'ended') el('turn').textContent = '场次已结束';
   else if (state.phase === 'tribute') {
     const pending = tributePending();
@@ -674,6 +678,14 @@ function renderCenter() {
     const team = (state.humanSeat + 2) % 4;
     extra.textContent = `你座位 ${state.humanSeat} · 队友座位 ${team} · 第 ${info.roundNo ?? '?'} 局`;
     extra.style.color = '';
+  }
+  // 手机竖屏不再把轮次说明钉在牌桌中央，塞进手牌上沿的一条状态里，给四方位出牌让位。
+  const compact = el('turn-mobile');
+  if (compact) {
+    const text = (state.notice ? state.notice : el('turn').textContent)
+      .replace(/ · 剩 (\d+) ms/, (_, ms) => ` · ${Math.ceil(Number(ms) / 1000)}s`);
+    compact.textContent = text;
+    compact.title = text;
   }
 }
 
@@ -790,6 +802,7 @@ function renderHand() {
 
   el('hand-count').textContent = `手牌 ${cards.length} 张`;
   syncSuitTabs(cards, groupedIds);
+  queueHandMetrics();
 }
 
 // ---------- 理牌：只调布局，不动手牌 / 选中 / 合法判定 ----------
@@ -803,27 +816,58 @@ function flash(msg) {
   state.noticeTimer = setTimeout(() => { state.notice = ''; renderCenter(); }, 2600);
 }
 
-// 该花色手牌里所有「5 张连续」的窗口（王不参与；级牌转换 / 百搭不在此展开）。
+// 该花色手牌里所有「5 张连续」的窗口。红配（红桃级牌）不占自然点数，
+// 只当百搭补窗口里缺的点数；级牌在顺子里仍按自然点数算，所以只有红桃级牌
+// 会被抽出来做补位。王不参与。
 function flushWindows(suit, ids) {
+  const levelIdx = levelRankIndex();
+  const wildIds = levelIdx < 0
+    ? []
+    : ids.filter((id) => id < JOKER_BASE && suitIndexOf(id) === 1 && rankIndexOf(id) === levelIdx);
+  const wildSet = new Set(wildIds);
   const byRank = new Map();
   for (const id of ids) {
-    if (id >= 100) continue;
-    if (Math.floor(id / 26) !== suit) continue;
-    const rank = Math.floor(id / 2) % 13;
+    if (id >= JOKER_BASE || wildSet.has(id)) continue;
+    if (suitIndexOf(id) !== suit) continue;
+    const rank = rankIndexOf(id);
     if (!byRank.has(rank)) byRank.set(rank, []);
     byRank.get(rank).push(id);
   }
   const out = [];
-  for (let start = 0; start + 4 < 13; start += 1) {
+  const addWindow = (start, ranks, wheel = false) => {
     const cards = [];
-    for (let d = 0; d < 5; d += 1) {
-      const list = byRank.get(start + d);
-      if (!list || list.length === 0) { cards.length = 0; break; }
-      cards.push(list[0]);
+    let missing = 0;
+    for (const rank of ranks) {
+      const list = byRank.get(rank);
+      if (list && list.length) cards.push(list[0]);
+      else missing += 1;
     }
-    if (cards.length === 5) out.push({ start, cards });
+    if (missing > wildIds.length) return;
+    const usedWild = wildIds.slice(0, missing);
+    out.push({ start, wheel, cards: cards.concat(usedWild), wild: usedWild.length });
+  };
+  for (let start = 0; start + 4 < 13; start += 1) {
+    addWindow(start, Array.from({ length: 5 }, (_, d) => start + d));
   }
-  return out;
+  // A-2-3-4-5 轮子：自然序是 12,0,1,2,3，牌力最小，但也是合法同花顺。
+  addWindow(12, [12, 0, 1, 2, 3], true);
+  // 同一组牌可能同时卡进两个窗口（例如 5♣6♣7♣8♣ + 红配，红配既可当 4
+  // 也可当 9）。落到理牌上仍是同一手牌，去重后只留牌力更大的那个窗口。
+  const unique = new Map();
+  for (const opt of out) {
+    const key = opt.cards.slice().sort((a, b) => a - b).join(',');
+    const prev = unique.get(key);
+    if (!prev || opt.start > prev.start) unique.set(key, opt);
+  }
+  return [...unique.values()];
+}
+
+// 同花顺的本色：跳过红配，取第一张自然牌的花色；整组都是红配时返回 null。
+function straightFlushSuit(cards) {
+  const levelIdx = levelRankIndex();
+  const natural = cards.find((id) => id < JOKER_BASE
+    && !(levelIdx >= 0 && suitIndexOf(id) === 1 && rankIndexOf(id) === levelIdx));
+  return natural === undefined ? null : suitIndexOf(natural);
 }
 
 // 该花色「可用的牌池」：排除其它理牌组，但保留自己这一组（否则高亮会在切换时消失）。
@@ -844,7 +888,7 @@ function syncSuitTabs(cards, groupedIds) {
     btn.classList.toggle('active', state.arranged.some((g) => g.suit === suit));
     btn.disabled = !myTurn || opts.length === 0;
     btn.title = opts.length
-      ? `${SUIT_NAMES[suit]} 可凑 ${opts.length} 种同花顺（可反复点击切换）`
+      ? `${SUIT_NAMES[suit]} 可凑 ${opts.length} 种同花顺${opts.some((o) => o.wild) ? '（红配补位）' : ''}（可反复点击切换）`
       : `${SUIT_NAMES[suit]} 凑不出同花顺`;
   }
 }
@@ -875,7 +919,8 @@ function cycleFlush(suit) {
   state.selected.clear();
   renderHand();
   renderActions();
-  flash(`${SUIT_NAMES[suit]} 同花顺方案 ${idx + 1}/${opts.length}`);
+  const wild = pick.wild ? `（红配代 ${pick.wild} 张）` : '';
+  flash(`${SUIT_NAMES[suit]} 同花顺方案 ${idx + 1}/${opts.length}${wild}`);
 }
 
 // 「理成一列」：只认牌型，不看压不压得住；炸弹 / 同花理到最左，其余理到最右。
@@ -895,7 +940,7 @@ function arrangeSelection() {
     flash('选中的牌凑不成牌型，理不了');
     return;
   }
-  const suit = pid.startsWith('straight-flush') ? suitIndexOf(cards[0]) : null;
+  const suit = pid.startsWith('straight-flush') ? straightFlushSuit(cards) : null;
   state.arranged = state.arranged.filter((g) => g.cards.slice().sort((a, b) => a - b).join(',') !== cards.join(','));
   state.arranged.push({ cards, patternId: pid, layout: SPECIAL_PATTERN(pid) ? 'left' : 'right', suit });
   state.selected.clear();
@@ -923,7 +968,7 @@ function arrangeSuggest() {
       cards: g.cards.slice(),
       patternId: g.patternId ?? '',
       layout: SPECIAL_PATTERN(g.patternId) ? 'left' : 'right',
-      suit: g.patternId?.startsWith('straight-flush') ? suitIndexOf(g.cards[0]) : null,
+      suit: g.patternId?.startsWith('straight-flush') ? straightFlushSuit(g.cards) : null,
     }));
   state.arranged = groups;
   state.flushCursor = {};
@@ -1007,10 +1052,6 @@ function previewSelection() {
   return state.previewCache;
 }
 
-function selectedPlayIsLegal() {
-  return previewSelection().ok;
-}
-
 function renderActions() {
   const isTribute = state.phase === 'tribute';
   const myTurn =
@@ -1020,10 +1061,11 @@ function renderActions() {
     ? legal.filter((a) => a.tributeReturn)
     : legal.filter((a) => !a.pass && !a.tributeReturn);
   const canPass = !isTribute && myTurn && legal.some((a) => a.pass);
-  const pickLegal = selectedPlayIsLegal();
-  const pickPattern = pickLegal && !isTribute ? previewSelection().pattern : '';
+  const pick = previewSelection();
+  const pickLegal = pick.ok;
+  const pickPattern = !isTribute ? pick.pattern : '';
   // 动作行只在轮到自己时露出来，压在牌型行上方。
-  el('turn-actions').classList.toggle('hidden', !myTurn);
+  el('turn-actions').classList.toggle('hidden', !myTurn || state.tributeBusy);
   el('play').textContent = isTribute ? '还贡' : '出牌';
   el('play').disabled = !myTurn || !pickLegal || state.tributeBusy;
   el('hint').disabled = !myTurn || plays.length === 0 || state.tributeBusy;
@@ -1031,24 +1073,44 @@ function renderActions() {
   el('pass').disabled = !canPass;
   el('clear-select').disabled = state.selected.size === 0;
   el('suggest').disabled = isTribute || !myTurn || plays.length === 0;
-  el('arrange').disabled = isTribute || !myTurn || state.selected.size === 0 || !pickLegal;
+  // 理牌只认「牌型成立」，不要求当前压得过上家；压不过也能先整理好。
+  el('arrange').disabled = isTribute || !myTurn || state.selected.size === 0 || !pickPattern;
   el('restore').disabled = state.arranged.length === 0;
   const parts = [];
-  if (state.selected.size === 0) {
+  if (state.tributeBusy) {
+    parts.push('进贡 / 还贡动画中…');
+  } else if (state.selected.size === 0) {
     if (isTribute && !myTurn) parts.push(`等座位 ${tributePending()?.receiver ?? '?'} 还贡`);
     else parts.push(isTribute ? '请选一张不大于 10 的牌还贡' : '未选牌');
   } else {
     parts.push(`已选 ${state.selected.size} 张：${[...state.selected]
       .sort((a, b) => columnKey(b, levelRankLabel()) - columnKey(a, levelRankLabel()))
       .map(cardLabel).join(' ')}`);
-    parts.push(pickLegal ? (isTribute ? '✔ 可还贡' : `✔ 可出${pickPattern ? `（${pickPattern}）` : ''}`) : '✘ 不合法');
+    parts.push(pickLegal
+      ? (isTribute ? '✔ 可还贡' : `✔ 可出${pickPattern ? `（${pickPattern}）` : ''}`)
+      : (pickPattern && !isTribute
+        ? `✘ 压不过上家（可理牌：${pickPattern}）`
+        : '✘ 不合法'));
   }
-  if (myTurn) {
+  if (myTurn && !state.tributeBusy) {
     parts.push(isTribute
       ? (plays.length === 0 ? '没有可还的牌（只能从手牌里挑）' : `可还 ${plays.length} 张`)
       : (plays.length === 0 ? (canPass ? '只剩过牌' : '要不起') : `可出 ${plays.length} 手`));
   }
   el('selection').textContent = parts.join(' · ');
+  queueHandMetrics();
+}
+
+/** 手牌、动作行、选牌文案都会改变手牌区高度；下一帧统一量一次，避免出牌区晚一帧。 */
+function queueHandMetrics() {
+  if (queueHandMetrics.pending) return;
+  queueHandMetrics.pending = true;
+  requestAnimationFrame(() => {
+    queueHandMetrics.pending = false;
+    syncHandMetrics();
+    // 手牌换行 / 动作行出现后，真正的高度常常要再等一帧才稳定；补测一次，避免首帧压住出牌。
+    requestAnimationFrame(syncHandMetrics);
+  });
 }
 
 function renderAll() {
@@ -1066,6 +1128,7 @@ function renderAll() {
   renderHand();
   renderActions();
   renderHeader();
+  queueHandMetrics();
 }
 
 // ---------- 日志 ----------
@@ -1686,6 +1749,50 @@ for (const btn of document.querySelectorAll('.suit-tabs .suit')) {
 
 // ---------- 入口 ----------
 
+/**
+ * 横排手牌在日志侧栏打开、窄屏或手机上都可能比容器宽。按第一行实际可用宽度
+ * 反算“每张露出的宽度”（最小 26px、最大 40px），27/28 张能铺满而不会被裁掉。
+ * 分列模式不处理——列本身横向换行由 CSS 管。
+ */
+function fitFanHandStep() {
+  const hand = el('hand');
+  if (!hand?.classList.contains('fan')) return;
+  const rows = hand.querySelectorAll('.fan-row');
+  if (rows.length === 0) return;
+  // 行内张数最多的那行决定步长；两行时用较大的一行。
+  let row = rows[0];
+  for (const r of rows) {
+    if (r.querySelectorAll('.card').length > row.querySelectorAll('.card').length) row = r;
+  }
+  const n = row.querySelectorAll('.card').length;
+  if (n < 2) { hand.style.removeProperty('--hand-step'); return; }
+  const cardW = row.querySelector('.card')?.getBoundingClientRect().width ?? 0;
+  if (!cardW) return;
+  const available = hand.clientWidth - 12;
+  const step = Math.max(26, Math.min(40, (available - cardW) / (n - 1)));
+  hand.style.setProperty('--hand-step', `${step.toFixed(2)}px`);
+}
+
+/**
+ * 手牌区高度是浮动的：回合开始时多出「出牌/提示/过牌」一行，进贡/结算时座位卡
+ * 也会变高。把真实高度写进 `--hand-h`，出牌区底边就能始终贴在手牌上沿，
+ * 宽屏、笔记本、手机上都不会被手牌压住，也不会因为手牌变大而留下大块空白。
+ */
+function syncHandMetrics() {
+  fitFanHandStep();
+  const handArea = document.querySelector('.hand-area');
+  const board = document.querySelector('.board');
+  if (!handArea || !board) return;
+  const h = Math.ceil(handArea.getBoundingClientRect().height);
+  board.style.setProperty('--hand-h', `${h}px`);
+}
+
+if (document.querySelector('.hand-area')) {
+  syncHandMetrics();
+  if (window.ResizeObserver) new ResizeObserver(syncHandMetrics).observe(document.querySelector('.hand-area'));
+  window.addEventListener('resize', syncHandMetrics);
+}
+
 async function init() {
   loadSettings();
   const hasSeed = seedFromQuery();
@@ -1712,7 +1819,7 @@ init().catch((e) => {
 
 // 调试钩子：URL 带 debug=1 时可从控制台看内部状态（不影响正常路径）。
 if (location.search.includes('debug')) {
-  window.__gd = { state, room, currentLegal, previewSelection, renderAll, syncTribute, drainTribute, theme, get ex() { return ex; } };
+  window.__gd = { state, room, currentLegal, previewSelection, renderAll, syncTribute, drainTribute, theme, flushWindows, straightFlushSuit, syncHandMetrics, get ex() { return ex; } };
 }
 
 

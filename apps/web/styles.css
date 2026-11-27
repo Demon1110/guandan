@@ -80,11 +80,11 @@ header .dot { opacity: .5; }
 .header-actions { display: flex; gap: 8px; }
 
 /* ---------- 牌桌 ---------- */
-.table-wrap { display: flex; gap: 14px; padding: 14px 18px 22px; align-items: stretch; height: calc(100vh - 70px); }
+.table-wrap { display: flex; gap: 14px; padding: 14px 18px 22px; align-items: stretch; height: calc(100vh - 70px); height: calc(100svh - 70px); }
 .board {
   position: relative;
   flex: 1;
-  min-height: 640px;
+  min-height: min(640px, calc(100svh - 92px));
   border-radius: 18px;
   background: radial-gradient(ellipse at 50% 45%, #125840 0%, var(--felt-2) 75%);
   border: 1px solid #1c5c43;
@@ -132,9 +132,25 @@ header .dot { opacity: .5; }
 .seat-empty { font-size: 10px; color: var(--muted); letter-spacing: 1px; }
 
 .slot-top { top: 16px; left: 50%; transform: translateX(-50%); }
-.slot-left { left: 16px; top: 22%; }
-.slot-right { right: 16px; top: 34%; }
-.slot-bottom { left: 16px; top: calc(22% + 180px); min-height: 92px; }
+.slot-left { left: 16px; top: 24%; }
+.slot-right { right: 16px; top: 24%; }
+
+/* 自己的座位卡不再钉在牌桌左侧中间：收进手牌上沿的窄条，缩成身份/手牌/贡还牌一览。
+   这样左侧中间不再被一块卡占住，出牌区可以横着铺满下半屏。 */
+.seat.me-seat {
+  position: static;
+  width: auto;
+  min-width: 188px;
+  max-width: min(390px, 46vw);
+  padding: 6px 10px 7px;
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(16, 48, 37, .92), rgba(8, 26, 20, .82));
+  border-color: rgba(242, 193, 78, .28);
+}
+.seat.me-seat .seat-head { font-size: 12px; align-items: center; gap: 6px; }
+.seat.me-seat .seat-body { margin-top: 2px; font-size: 11px; line-height: 1.3; }
+.seat.me-seat .seat-tribute { margin-top: 4px; padding-top: 4px; }
+.seat.me-seat .seat-cards { margin-top: 4px; }
 
 /* 左上角：文字在上、级牌在下；只高亮打级方，不用箭头标当前行动 */
 .scoreboard {
@@ -169,9 +185,53 @@ header .dot { opacity: .5; }
 .score-side.attack .score-label { color: var(--gold); }
 .score-side.attack b { color: var(--gold); }
 
-/* 出牌区：四个方位各一块，铺在各自座位靠近桌心的一侧。
-   下方（自己）放在手牌区上方；右家放在其座位卡左侧；上方放在其座位卡下方；左家放在其座位卡右侧。 */
-.play-zones { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+/* 出牌区：不再四块各自乱钉，而是一张以桌心为轴的“十字桌面”——
+   对家在上、左右家分列中段、自己横跨底部整行，底边贴着 JS 量出来的手牌高度。
+   这样下方（自己）的出牌区能吃掉手牌以上的全部空间，手牌放大后也不会被压住。 */
+.play-zones {
+  position: absolute;
+  left: max(104px, 9.5%);
+  right: max(104px, 9.5%);
+  top: clamp(96px, 9vh, 140px);
+  bottom: calc(var(--hand-h, 236px) + 18px);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1fr);
+  grid-template-rows: auto minmax(90px, 1fr) auto;
+  column-gap: clamp(8px, 1.2vw, 20px);
+  row-gap: 8px;
+  z-index: 2;
+  pointer-events: none;
+}
+.play-zone {
+  position: relative;
+  min-width: 0;
+  text-align: center;
+  pointer-events: auto;
+  transition: opacity .2s ease;
+}
+.play-zone[data-rel="2"] { grid-column: 2; grid-row: 1; width: 100%; align-self: start; }
+.play-zone[data-rel="3"] { grid-column: 1; grid-row: 2; width: 100%; align-self: center; }
+.play-zone[data-rel="1"] { grid-column: 3; grid-row: 2; width: 100%; align-self: center; }
+/* 自己的牌横跨整行、贴着底边；手牌一放大，这里也仍然有足够横向空间。 */
+.play-zone[data-rel="0"] { grid-column: 1 / -1; grid-row: 3; width: 100%; align-self: end; }
+.play-who { font-size: 11px; letter-spacing: 1px; color: var(--muted); margin-bottom: 5px; }
+.last-play { min-height: 36px; display: flex; flex-wrap: wrap; gap: clamp(2px, .3vw, 4px); justify-content: center; align-items: center; }
+/* 桌面上的牌跟着屏幕适当放大：宽屏约 44×62，笔记本约 38×54，手机上再收一档。 */
+.play-zone {
+  --play-card-w: clamp(36px, 3.2vw, 46px);
+  --play-card-h: calc(var(--play-card-w) * 1.42);
+}
+/* 下方自己的出牌区最宽，牌再大一号，把下半屏真正用起来 */
+.play-zone[data-rel="0"] { --play-card-w: clamp(44px, 4.2vw, 56px); }
+.play-zone .mini-card { width: var(--play-card-w); min-width: 0; height: var(--play-card-h); padding: 0 5px; font-size: clamp(13px, 1.05vw, 16px); border-radius: 7px; }
+.play-zone .mini-card.themed { width: var(--play-card-w); height: var(--play-card-h); }
+.pass-chip {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 34px; height: 26px; padding: 0 10px; border-radius: 999px;
+  background: rgba(8, 26, 20, .55); border: 1px solid var(--line);
+  color: var(--muted); font-size: 12px; letter-spacing: 2px;
+}
+
 /* 进贡 / 还贡飞牌：盖在牌区上，不接鼠标；牌用主题 mini-card 放大后飞 */
 .tribute-layer { position: absolute; inset: 0; z-index: 5; pointer-events: none; overflow: hidden; }
 .tribute-fly {
@@ -210,27 +270,16 @@ header .dot { opacity: .5; }
   outline-offset: -2px;
   box-shadow: 0 0 0 1px rgba(242, 193, 78, .18), 0 0 14px rgba(242, 193, 78, .16);
 }
-.play-zone { position: absolute; text-align: center; pointer-events: auto; transition: top .2s ease, left .2s ease; }
-.play-zone[data-rel="0"] { left: 50%; bottom: 300px; transform: translateX(-50%); width: min(520px, 50%); }
-.play-zone[data-rel="1"] { right: 196px; top: 34%; width: min(240px, 24%); }
-.play-zone[data-rel="2"] { left: 50%; top: 106px; transform: translateX(-50%); width: min(520px, 50%); }
-.play-zone[data-rel="3"] { left: 196px; top: 22%; width: min(240px, 24%); }
-.play-who { font-size: 11px; letter-spacing: 1px; color: var(--muted); margin-bottom: 5px; }
-.last-play { min-height: 36px; display: flex; flex-wrap: wrap; gap: 5px; justify-content: center; align-items: center; }
-.pass-chip {
-  display: inline-flex; align-items: center; justify-content: center;
-  min-width: 34px; height: 26px; padding: 0 10px; border-radius: 999px;
-  background: rgba(8, 26, 20, .55); border: 1px solid var(--line);
-  color: var(--muted); font-size: 12px; letter-spacing: 2px;
-}
 
 .center {
   position: absolute;
   left: 50%;
-  top: 40%;
+  top: 42%;
   transform: translate(-50%, -50%);
-  width: min(420px, 62%);
+  width: min(440px, 54%);
   text-align: center;
+  z-index: 3;
+  pointer-events: none;
 }
 .turn { margin-top: 12px; font-size: 14px; font-weight: 600; color: var(--gold); }
 .table-extra { margin-top: 6px; font-size: 11px; color: var(--muted); }
@@ -242,13 +291,16 @@ header .dot { opacity: .5; }
   right: 16px;
   bottom: 14px;
 }
-.hand-head { display: flex; justify-content: space-between; margin-bottom: 6px; }
+/* 手牌上沿：左边是“我”的座位身份，右边是手牌数/选牌数；不再单独占牌桌左侧一列。 */
+.hand-top { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 6px; }
+.hand-head { flex: 1 1 220px; min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 0; flex-wrap: wrap; }
+.turn-compact { display: none; flex: 0 0 auto; min-width: 0; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--gold); font-size: 11px; font-weight: 600; }
 /* 轮到自己时才露出的动作行，压在牌型行上方 */
 .turn-actions { display: flex; gap: 10px; justify-content: center; margin-bottom: 8px; }
 .turn-actions.hidden { display: none; }
 /* 理牌条：贴在手牌下方 */
 .arrange-bar { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 8px; }
-.arrange-bar button { font-size: 12px; padding: 5px 10px; }
+.arrange-bar button { font-size: 12px; padding: 5px 10px; white-space: nowrap; flex: 0 0 auto; }
 .suit-tabs { display: flex; gap: 4px; }
 .suit-tabs .suit { width: 30px; padding: 5px 0; text-align: center; font-size: 15px; line-height: 1; }
 .suit-tabs .suit.red { color: #d94b4b; }
@@ -264,8 +316,8 @@ header .dot { opacity: .5; }
 .hand-col.grouped { padding: 0 4px 3px; border-radius: 8px; border: 1px solid rgba(232, 193, 90, .55); background: rgba(232, 193, 90, .08); }
 .hand-col.grouped.group-left { border-color: rgba(255, 214, 107, .8); }
 .hand-col.grouped.group-right { border-color: rgba(120, 190, 220, .6); background: rgba(120, 190, 220, .08); }
-.hand-col .card { width: 44px; height: 62px; }
-.hand-col .card + .card { margin-top: -38px; }
+.hand-col .card { width: clamp(52px, 4vw, 60px); height: clamp(74px, 5.7vw, 86px); }
+.hand-col .card + .card { margin-top: -48px; }
 .actions { display: flex; gap: 10px; justify-content: center; margin-top: 10px; }
 
 .card {
@@ -304,7 +356,13 @@ header .dot { opacity: .5; }
 }
 .card.joker { font-size: 12px; letter-spacing: .5px; }
 .card.joker .corner b { font-size: 12px; }
-.card.dim { opacity: .55; }
+/* 不可选的牌：只降亮度，不要降透明度。手牌是叠放的，整排一起变半透明会
+   让后一张透过前一张，看起来像多了一层“虚影”；现在保持不透明，只压暗。 */
+.card.dim {
+  filter: brightness(.76) saturate(.7);
+  cursor: default;
+}
+.card.picked { filter: none; }
 .card .cid { font-size: 9px; color: #7a8f85; font-weight: 500; margin-top: auto; }
 
 .mini-card {
@@ -339,11 +397,19 @@ header .dot { opacity: .5; }
   box-shadow: 0 10px 22px rgba(0, 0, 0, .45);
   transform: translateX(9px);
 }
-/* 手牌横排紧叠：一条行、左→右牌力降序，每张只露左上角标那一条 */
-.hand.fan { flex-direction: column; align-items: center; justify-content: center; padding: 10px 4px 8px; gap: 6px; min-height: auto; }
+/* 手牌横排紧叠：一条行、左→右牌力降序，每张只露左上角标那一条。
+   牌比旧版大一号（宽屏约 114×162），27 张在一条里铺开；重叠量按屏宽算，
+   28 张在 1280 宽也放得下，手牌上方的出牌区因此能再高一些。 */
+.hand.fan {
+  --hand-card-w: clamp(108px, 7.8vw, 122px);
+  --hand-card-h: calc(var(--hand-card-w) * 1.42);
+  --hand-step: clamp(27px, 3vw, 40px);
+  flex-direction: column; align-items: center; justify-content: center;
+  padding: 10px 4px 8px; gap: 6px; min-height: auto;
+}
 .hand.fan .hand-col { flex-direction: row; padding: 0; border: none; background: none; }
-.hand.fan .card { width: 100px; height: 140px; border-radius: 8px; }
-.hand.fan .card + .card { margin: 0 0 0 -44px; }
+.hand.fan .card { width: var(--hand-card-w); height: var(--hand-card-h); border-radius: 8px; }
+.hand.fan .card + .card { margin: 0 0 0 calc(var(--hand-step) - var(--hand-card-w)); }
 .hand.fan .card.picked { transform: translateY(-18px); }
 .mini-card.themed { padding: 0; border: none; background: none; width: 34px; height: 48px; }
 .mini-card.themed svg { width: 100%; height: 100%; display: block; border-radius: 4px; }
@@ -401,7 +467,7 @@ header .dot { opacity: .5; }
 /* ---------- 窄屏（笔记本半屏 / 手机） ---------- */
 @media (max-width: 1200px) {
   .table-wrap { padding: 10px 10px 14px; }
-  .board { min-height: 560px; padding: 10px; border-radius: 14px; }
+  .board { min-height: 0; padding: 10px; border-radius: 14px; }
   .side {
     position: fixed;
     top: 56px;
@@ -413,20 +479,15 @@ header .dot { opacity: .5; }
   }
   .seat { width: 134px; padding: 8px 10px; font-size: 11px; }
   .slot-top { top: 10px; }
-  .slot-left { left: 8px; top: 30%; }
-  .slot-right { right: 8px; top: 30%; }
-  .slot-bottom { left: 8px; bottom: 236px; }
-  .center { top: 38%; width: min(340px, 54%); }
-  .play-zone[data-rel="0"] { bottom: 306px; width: min(420px, 52%); }
-  .play-zone[data-rel="1"] { right: 152px; top: 30%; width: min(210px, 30%); }
-  .play-zone[data-rel="2"] { top: 126px; width: min(420px, 52%); }
-  .play-zone[data-rel="3"] { left: 152px; top: 30%; width: min(210px, 30%); }
+  .slot-left { left: 8px; top: 15%; }
+  .slot-right { right: 8px; top: 15%; }
+  .center { top: 40%; width: min(360px, 50%); }
   .hand-area { left: 8px; right: 8px; }
-  .hand-col .card { width: 38px; height: 54px; }
-  .hand-col .card + .card { margin-top: -32px; }
+  .hand-col .card { width: 46px; height: 66px; }
+  .hand-col .card + .card { margin-top: -38px; }
   .card { width: 38px; height: 54px; font-size: 13px; }
   .card .suit { font-size: 13px; }
-  .hand { justify-content: flex-start; min-height: 104px; }
+  .hand { justify-content: center; min-height: 104px; }
   .scoreboard { left: 8px; top: 6px; }
   /* 窄屏侧栏是浮层，结算时先让开，免得把右家和牌桌盖住 */
   .board.settling ~ .side { display: none; }
@@ -435,11 +496,14 @@ header .dot { opacity: .5; }
 }
 @media (max-width: 640px) {
   .seat { width: 112px; }
-  .slot-bottom { bottom: 230px; }
   .card { width: 34px; height: 48px; font-size: 12px; }
-  .hand-col .card { width: 34px; height: 48px; }
+  .hand-col .card { width: 38px; height: 54px; }
   .hand-col .card + .card { margin-top: -32px; }
-  .hand { gap: 5px; }
+  .hand { gap: 5px; align-content: flex-start; flex-wrap: wrap; }
+  .hand.fan { flex-wrap: nowrap; }
+  .hand-top { flex-wrap: wrap; gap: 6px; }
+  .seat.me-seat { min-width: 0; max-width: 46vw; }
+  .hand-head { flex-basis: 160px; }
 }
 
 
@@ -459,15 +523,13 @@ header .dot { opacity: .5; }
 .hand.fan .card.themed { box-shadow: inset 7px 0 9px -7px rgba(0, 0, 0, .45); }
 
 
-/* 横排模式下「手牌 N 张」往右让开左下座位卡，别贴到卡面上 */
-.hand-area:has(.hand.fan) .hand-head { padding-left: 186px; }
-
-/* 窄屏（手机/窄窗）：手牌 13 张一行折两行，座位卡收成小卡片，牌桌钉在一屏内不滚 */
+/* 窄屏（手机/窄窗）：手牌适当收小、必要时应折两行；座位卡收成小卡片，牌桌钉在一屏内不滚 */
 @media (max-width: 760px) {
-  .hand.fan .card { width: 70px; height: 96px; }
-  .hand.fan .card + .card { margin: 0 0 0 -48px; }
-  .hand.fan { gap: 5px; padding: 6px 2px; }
-  .hand-area:has(.hand.fan) .hand-head { padding-left: 96px; }
+  .hand.fan {
+    --hand-card-w: clamp(74px, 11vw, 92px);
+    --hand-step: clamp(17px, 3vw, 28px);
+    gap: 5px; padding: 6px 2px;
+  }
   header { padding: 6px 10px; gap: 6px; flex-wrap: wrap; }
   header .title { font-size: 15px; }
   .meta { font-size: 10px; flex-wrap: nowrap; overflow: hidden; white-space: nowrap; max-width: 100%; }
@@ -475,14 +537,22 @@ header .dot { opacity: .5; }
   .table-wrap { height: calc(100svh - 96px); padding: 6px 8px; }
   .board { min-height: 0; padding: 8px; }
   .seat { width: 96px; padding: 6px 8px; border-radius: 9px; font-size: 10px; }
+  .slot-top { top: 10px; }
   .slot-left { left: 8px; top: 10%; }
   .slot-right { right: 8px; top: 10%; }
-  .slot-bottom { left: 8px; top: calc(10% + 152px); bottom: auto; min-height: 0; }
-  .play-zone[data-rel="0"] { bottom: 300px; width: min(360px, 56%); }
-  .play-zone[data-rel="1"] { right: 112px; top: calc(10% + 84px); width: min(170px, 34%); }
-  .play-zone[data-rel="2"] { top: 78px; width: min(360px, 56%); }
-  .play-zone[data-rel="3"] { left: 112px; top: calc(10% + 84px); width: min(170px, 34%); }
+  .play-zones { left: 8px; right: 8px; top: 124px; row-gap: 4px; grid-template-rows: auto minmax(0, 1fr) auto; }
+  .play-zone { --play-card-w: clamp(30px, 4.6vw, 38px); }
+  .center { display: none; }
+  .turn-compact { display: inline-block; }
+  .hand-head { flex-wrap: nowrap; gap: 6px; }
+  .hand-head > span { white-space: nowrap; }
+  #selection { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .turn-actions { margin-bottom: 4px; }
-  .arrange-bar { margin-top: 4px; }
+  .arrange-bar { margin-top: 4px; flex-wrap: wrap; row-gap: 6px; }
+}
+
+/* 短屏笔记本（1366×768 等）：出牌区高度有限，把轮次说明抬高，别压住自己刚出的牌 */
+@media (max-height: 900px) and (min-width: 641px) {
+  .center { top: 28%; }
 }
 

@@ -61,7 +61,6 @@
         <div class="seat slot-top" id="seat-slot-2"></div>
         <div class="seat slot-right" id="seat-slot-1"></div>
         <div class="seat slot-left" id="seat-slot-3"></div>
-        <div class="seat slot-bottom" id="seat-slot-0"></div>
 
         <!-- 出牌区：按方位铺在各自座位前，四个方位同时展示本墩各自最近一手 -->
         <div id="play-zones" class="play-zones"></div>
@@ -74,16 +73,21 @@
         </div>
 
         <div class="hand-area">
+          <!-- 我的座位信息不再占左上角一列，收进手牌上沿的窄条里；座位卡本身仍由 renderSeats 填。 -->
+          <div class="hand-top">
+            <div id="seat-slot-0" class="seat me-seat"></div>
+            <div class="hand-head">
+              <span id="turn-mobile" class="turn-compact" title=""></span>
+              <span id="hand-count" class="muted">手牌 0</span>
+              <span id="selection" class="muted">未选牌</span>
+            </div>
+          </div>
           <!-- 轮到本人时才出现：出牌 / 提示 / 过牌 / 取消选牌，压在牌型行上方 -->
           <div id="turn-actions" class="turn-actions hidden">
             <button id="play" class="primary" disabled>出牌</button>
             <button id="hint" disabled>提示</button>
             <button id="pass" disabled>过牌</button>
             <button id="clear-select" disabled>取消选牌</button>
-          </div>
-          <div class="hand-head">
-            <span id="hand-count" class="muted">手牌 0</span>
-            <span id="selection" class="muted">未选牌</span>
           </div>
           <div id="hand" class="hand"></div>
           <!-- 理牌条：组牌建议 | 四花色（有同花顺则高亮）| 理成一列 | 回复理牌 -->
