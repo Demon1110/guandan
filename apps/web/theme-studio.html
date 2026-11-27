@@ -589,7 +589,7 @@ function renderFace(t, face, levelRank, cornerScale) {
     const slot = t.slots.wildBadge;
     body += `<g id="L4b-wild" transform="translate(${num(slot.x)} ${num(slot.y)}) scale(${num(slot.scale)})">${art('wild').inner}</g>`;
   }
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${num(W)} ${num(H)}" width="${num(W)}" height="${num(H)}" data-layout="${t.layout}">${body}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${num(W)} ${num(H)}" width="${num(W)}" height="${num(H)}" data-layout="${esc(t.layout)}">${body}</svg>`;
 }
 
 /* ===== 预览 ===== */
@@ -1119,6 +1119,10 @@ q('#fileJson').addEventListener('change', async (e) => {
   catch (err) { toast('theme.json 解析失败：' + err.message); }
 });
 
+function normalizeLayout(value) {
+  return value === 'classic' ? 'classic' : (value === 'compact' ? 'compact' : DEFAULTS.layout);
+}
+
 function applyTheme(o) {
   if (!o || typeof o !== 'object') throw new Error('不是对象');
   state.id = o.id ?? DEFAULTS.id;
@@ -1145,7 +1149,7 @@ function applyTheme(o) {
     });
     if (Object.keys(keep).length) state.palette.suits = keep;
   }
-  state.layout = o.layout === 'classic' ? 'classic' : (o.layout === 'compact' ? 'compact' : DEFAULTS.layout);
+  state.layout = normalizeLayout(o.layout);
   state.cornerScale = Number(o.cornerScale ?? DEFAULTS.cornerScale);
   const defCorners = state.layout === 'classic'
     ? ['topLeft','topRight','bottomLeft','bottomRight'] : ['topLeft','bottomRight'];
@@ -1223,6 +1227,14 @@ function restore() {
     state = { ...clone(DEFAULTS), ...d.state };
     state.classic = { ...clone(DEFAULTS.classic), ...(d.state.classic || {}) };
     state.slots = { ...clone(DEFAULTS.slots), ...(d.state.slots || {}) };
+    // localStorage 是外部输入：layout/角标白名单必须和导入主题走同一套校验，
+    // 不能让脏草稿把任意字符串塞进 SVG 的 data-layout 属性。
+    state.layout = normalizeLayout(d.state.layout);
+    state.cornerSuitPlacement = d.state.cornerSuitPlacement === 'right' ? 'right' : 'below';
+    const cornerKeys = ['topLeft', 'topRight', 'bottomLeft', 'bottomRight'];
+    state.corners = Array.isArray(d.state.corners)
+      ? d.state.corners.filter((c) => cornerKeys.includes(c))
+      : (state.layout === 'classic' ? cornerKeys : ['topLeft', 'bottomRight']);
     if (d.paths) paths = { ...paths, ...d.paths };
     fitAsset = d.fitAsset !== false;
     return true;

@@ -18,9 +18,24 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Push-Location $root
 try {
-    $env:Path = "C:\Program Files\Git\cmd;" + $env:USERPROFILE + '\.cargo\bin;' + $env:Path
-    if (Test-Path 'D:\soft\anaconda3\Library\bin\protoc.exe') {
-        $env:PROTOC = 'D:\soft\anaconda3\Library\bin\protoc.exe'
+    # 不写死本机路径：Git / protoc / cargo 都从当前 PATH 或 rustup 默认目录解析。
+    # 需要固定工具链时，调用方可在外部先设置 $env:PROTOC。
+    $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
+    if (Test-Path -LiteralPath $cargoBin) {
+        $env:Path = $cargoBin + ';' + $env:Path
+    }
+    if (Get-Command git -ErrorAction SilentlyContinue) {
+        $gitDir = Split-Path -Parent (Get-Command git).Source
+        if ($gitDir -and ($env:Path -notlike "*$gitDir*")) {
+            $env:Path = $gitDir + ';' + $env:Path
+        }
+    }
+    if (-not $env:PROTOC) {
+        $protoc = Get-Command protoc -ErrorAction SilentlyContinue
+        if ($protoc) { $env:PROTOC = $protoc.Source }
+    }
+    if ($env:PROTOC -and -not (Test-Path -LiteralPath $env:PROTOC)) {
+        throw "PROTOC 指向的文件不存在：$env:PROTOC"
     }
     $exclude = if ($args.Count -gt 0) { $args[0] } else { '(client-wasm|generated|engine[\\/]src[\\/]cases\.rs|runtime-spike|crates[\\/]deckart|services[\\/]server)' }
     Write-Host "[coverage] 排除口径：$exclude（分支覆盖需要 nightly + llvm-tools-preview）"

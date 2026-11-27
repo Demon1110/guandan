@@ -44,6 +44,11 @@ fn base_total(r: &RuleSetBody) -> usize {
     rank_count(r) * suit_count(r) * copies(r)
 }
 
+/// 整副牌 id 上界：基础牌 + 大小王（王的数量由 `deck.jokers` 决定）。
+fn deck_total(r: &RuleSetBody) -> usize {
+    base_total(r) + r.deck.jokers as usize * copies(r)
+}
+
 /// 基础牌 id：`(suit × rank_count + rank) × copies + copy`（测试侧构造受控手牌用）。
 pub fn card_id(r: &RuleSetBody, rank: usize, suit: usize, copy: u8) -> u16 {
     ((suit * rank_count(r) + rank) * copies(r) + copy as usize) as u16
@@ -769,6 +774,10 @@ pub(crate) fn recognize(
     cards: &[u16],
 ) -> Option<Recognized> {
     if cards.is_empty() {
+        return None;
+    }
+    // 越界 id 不属于任何牌；不能让它在 `card_ref` 里落进「大王」分支。
+    if cards.iter().any(|&c| c as usize >= deck_total(r)) {
         return None;
     }
     let mut seen = HashSet::new();

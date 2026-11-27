@@ -501,7 +501,7 @@ impl M0Engine {
             }
             // 贡牌最大者首出；双下两张同力时，保留先配对的贡方。
             let power = self.card_power(state, pay_card);
-            if leader.map_or(true, |(_, best)| power > best) {
+            if leader.is_none_or(|(_, best)| power > best) {
                 leader = Some((payer, power));
             }
             pending.push(TributeReturnPending { payer, receiver });
@@ -708,7 +708,7 @@ impl M0Engine {
         Ok(())
     }
 
-    /// 基础牌点数下标；王返回 `None`。
+    /// 基础牌点数下标；王与越界牌返回 `None`。
     fn card_rank_index(&self, card: u16) -> Option<usize> {
         if card as usize >= self.base_total() {
             return None;
@@ -717,8 +717,18 @@ impl M0Engine {
         Some(b % self.rank_count())
     }
 
+    /// 牌 id 是否落在当前牌堆的合法区间 `0..deck_total`（含王与所有副本）。
+    fn card_in_deck(&self, card: u16) -> bool {
+        (card as usize) < self.deck_total()
+    }
+
     /// 牌力权重：基础牌取 `naturalOrder` 位置，小王 / 大王居尾；用于选贡牌 / 还贡兜底比较。
+    ///
+    /// 越界 id 不属于任何牌：返回 0（最低权重），绝不再按「王/尾部槽位」算成大王。
     fn card_weight(&self, card: u16) -> u32 {
+        if !self.card_in_deck(card) {
+            return 0;
+        }
         match self.card_rank_index(card) {
             Some(ri) => {
                 let key = &self.ruleset.deck.ranks[ri];
@@ -729,6 +739,8 @@ impl M0Engine {
                     .unwrap_or(ri) as u32
             }
             None => {
+                // 走到这里只可能是王：`card_in_deck` 已排除越界 id，
+                // `card_rank_index` 的 None 分支因此只剩王区段。
                 let base = self.base_total();
                 let slot = (card as usize - base) / self.copies();
                 let tail = self.ruleset.natural_order.len();
@@ -1059,6 +1071,9 @@ impl M0Engine {
     /// bot 的「先走最小的」「散张压不压得上家」都按这个数比，而不是按原始点数猜：
     /// 级牌被提升到 A 之后，用原始点数比会把级牌当成小牌。
     pub fn card_power(&self, state: &State, card: u16) -> u32 {
+        if !self.card_in_deck(card) {
+            return 0;
+        }
         let ctx = self.rank_context(state);
         match self.card_rank_index(card) {
             Some(ri) => ctx.rank_key(&self.ruleset, ri),
@@ -3426,5 +3441,43 @@ mod tests {
         }
         eprintln!("compose 随机差分: {checked} 个 (手牌×4 座位×领出/跟牌) 全部一致");
         assert_eq!(checked, SAMPLES * 4 * 2);
+    }
+
+    #[test]
+    fn out_of_range_card_is_not_treated_as_big_joker() {
+        let engine = engine();
+        let state = engine.deal(M0_SEED).expect("发牌失败");
+        let base = engine.base_total();
+        let total = engine.deck_total();
+        assert!(total > base, "夹具必须带王，否则这条不成立");
+
+        let invalid = total as u16;
+        let big_joker = (total - 1) as u16;
+        assert_eq!(
+            engine.card_weight(invalid),
+            0,
+            "越界 id 不能落进王区段的高权重"
+        );
+        assert!(
+            engine.card_weight(invalid) < engine.card_weight(big_joker),
+            "越界 id 的权重必须低于大王"
+        );
+        assert_eq!(
+            engine.card_power(&state, invalid),
+            0,
+            "越界 id 的牌力必须低于任何真实牌"
+        );
+
+        // 牌型识别也不能把越界 id 当成大王：它不应被识别成任何牌型。
+        let ladder = crate::ruleset::ladder::synthetic_ladder(&engine.ruleset);
+        let ctx = engine.rank_context(&state);
+        assert!(
+            patterns::recognize(&ladder, &engine.ruleset, &ctx, &[invalid]).is_none(),
+            "越界 id 不能通过牌型识别"
+        );
+        assert!(
+            patterns::recognize(&ladder, &engine.ruleset, &ctx, &[big_joker]).is_some(),
+            "真实大王仍应被识别"
+        );
     }
 }

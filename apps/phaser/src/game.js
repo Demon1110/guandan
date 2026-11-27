@@ -200,9 +200,10 @@ export class Game {
       this.emitEvent({ type: 'tribute', event: { ...ev, round } });
     });
     // 场景可能没有订阅（如 Node 冒烟），给一个兜底超时避免永久挂起。
+    // 浏览器里飞牌动画约 800ms 就完成，3s 后 flights 已归零，兜底不会重复触发。
     if (this.tributeFlights > 0 && this.tributeWaiters.length === 0) {
       const self = this;
-      setTimeout(() => { if (self.tributeFlights > 0) self.tributeDone(); }, 2000);
+      setTimeout(() => { if (self.tributeFlights > 0) self.tributeDone(); }, 3000);
     }
     return this.waitFlights();
   }
@@ -263,6 +264,17 @@ export class Game {
     if (out.kind === 'applied' || out.kind === 'ok') {
       this.selected.clear();
       this.waitingSeat = null;
+      // submit 已经消费了这一手，后续 step() 只会返回别人的动作。
+      // 这里必须自己派发 play 事件，否则自己的出牌动画（含炸弹特效）永远不会播。
+      this.remember(out);
+      this.emitEvent({
+        type: 'play',
+        seat: out.seat ?? this.humanSeat,
+        action: out.action ?? { pass: false, cards },
+        auto: out.auto,
+        snapshot: this.snapshot(),
+      });
+      this.emitChange();
       this.pump();
       return { ok: true, out };
     }
@@ -276,6 +288,16 @@ export class Game {
     if (out.kind === 'applied' || out.kind === 'ok') {
       this.selected.clear();
       this.waitingSeat = null;
+      // 与 play() 同理：submit 消费过的过牌也要自己派发，场景才能显示"过"。
+      this.remember(out);
+      this.emitEvent({
+        type: 'play',
+        seat: out.seat ?? this.humanSeat,
+        action: out.action ?? { pass: true, cards: [] },
+        auto: out.auto,
+        snapshot: this.snapshot(),
+      });
+      this.emitChange();
       this.pump();
       return { ok: true };
     }
@@ -309,16 +331,21 @@ export class Game {
     }
   }
 
+  // 下一局同样走独立发牌阶段：引擎跨局发牌后，交给场景播动画，再 beginPlay。
   nextRound() {
     if (this.phase !== 'settle') return;
     if (this.wasm.nextRound(0)) {
-      this.phase = 'play';
+      this.phase = 'dealing';
       this.waitingSeat = null;
       this.lastBySeat = {};
       this.selected.clear();
-      this.emitEvent({ type: 'dealt', snapshot: this.snapshot() });
+      const info = this.wasm.info();
+      this.emitEvent({
+        type: 'deal',
+        hands: (info.seats ?? []).map((s) => ({ seat: s.seat, count: s.hand ?? 0 })),
+        snapshot: this.snapshot(),
+      });
       this.emitChange();
-      this.pump();
     }
   }
 

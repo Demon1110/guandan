@@ -72,7 +72,19 @@ pub(crate) fn choose(
     memory: bool,
     plan: Option<&HandPlan>,
 ) -> Action {
-    let hand = view_scan::hand_cards(view);
+    let hand = match view_scan::try_hand_cards(view) {
+        Ok(hand) => hand,
+        // 视图格式漂移时不要把「没解析到手牌」当成空手牌；退回合法集里最小的
+        // 非空动作，至少不让 bot 因读不到手牌而静默 Pass。
+        Err(_) => {
+            return legal
+                .iter()
+                .filter(|a| count_of(a) > 0)
+                .min_by_key(|a| (top_rank_of(a), count_of(a), cards_key_of(a)))
+                .cloned()
+                .unwrap_or(Action::Pass);
+        }
+    };
     let hand_len = hand.len();
     let plays: Vec<&Action> = legal.iter().filter(|a| count_of(a) > 0).collect();
     if plays.is_empty() {

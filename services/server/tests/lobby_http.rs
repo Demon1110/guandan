@@ -235,3 +235,18 @@ async fn queue_timeout_is_reported_by_poll() {
     let (_, body) = call(&app, "GET", &format!("/api/match/queue/{ticket}"), None).await;
     assert_eq!(body["state"], "timeout");
 }
+
+#[tokio::test]
+async fn oversized_json_body_is_rejected() {
+    let app = make_app(ServerConfig::default());
+    let oversized = json!({
+        "gameId": "guandan",
+        "mode": "x".repeat(300 * 1024),
+    });
+    let (status, _) = call(&app, "POST", "/api/match/queue", Some(oversized)).await;
+    assert_eq!(
+        status,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "超过 256 KiB 的 JSON 必须在进入 handler 前被拒"
+    );
+}

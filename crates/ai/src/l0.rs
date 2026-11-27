@@ -20,7 +20,12 @@ impl BotPolicy for L0Bot {
         if crate::view_scan::is_following(view_bytes, seat) {
             return Action::Pass;
         }
-        let mut cards = crate::view_scan::hand_cards(view_bytes);
+        // 严格解析：视图漂移/截断时不能把「读不到手牌」当成空手牌直接 Pass。
+        // 旧入口没有合法集可回落，只能显式 Pass；房间主路径走 `decide_with_plan`。
+        let mut cards = match crate::view_scan::try_hand_cards(view_bytes) {
+            Ok(cards) => cards,
+            Err(_) => return Action::Pass,
+        };
         cards.sort_unstable();
         match cards.first() {
             Some(&card) => Action::Play { cards: vec![card] },

@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>掼蛋 · 发牌动画演示</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #071e15; font-family: system-ui, sans-serif; overflow: hidden; }
+  #wrap { width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  #stage { position: relative; line-height: 0; box-shadow: 0 12px 48px rgba(0,0,0,.5); border-radius: 12px; overflow: hidden; }
+  canvas { display: block; }
+  #bar { display: flex; gap: 10px; align-items: center; margin-top: 14px; color: #9fd8bd; font-size: 13px; }
+  #bar button {
+    background: #14563d; color: #eafff2; border: 1px solid #2f8f6a; border-radius: 6px;
+    padding: 7px 16px; font-size: 13px; cursor: pointer;
+  }
+  #bar button:hover { background: #1d6f57; }
+  #bar button:active { transform: translateY(1px); }
+  #bar .tag { opacity: .7; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="stage"><canvas id="cv" width="1280" height="720"></canvas></div>
+  <div id="bar">
+    <button id="btn-replay">重播</button>
+    <button id="btn-pause">暂停</button>
+    <button id="btn-speed">速度 1x</button>
+    <span class="tag">只给自己发牌 · 27 张全发 · 零依赖双击即播</span>
+  </div>
+</div>
+<script>
+(function () {
+  'use strict';
+
+  // ---- 常量 ----
+  var W = 1280, H = 720;
+  var DECK_X = 640, DECK_Y = 300;
+  var CW = 64, CH = 90;           // 牌面尺寸
+  var HAND_COUNT = 27;            // 一次发满 27 张
+  var HAND_SPACING = 44;          // 手牌 fan 间距（铺满屏幕，露角标）
+  var HAND_START_X = 640 - (HAND_COUNT - 1) * HAND_SPACING / 2;
+  var HAND_Y = 600;
+  var CARD_DELAY = 55;            // 每张间隔
+  var CARD_DURATION = 320;        // 单张飞行时长
+
+  var RANKS = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
+  var SUITS = ['♠','♥','♦','♣'];
+
+  var cv = document.getElementById('cv');
+  var ctx = cv.getContext('2d');
+
+  // ---- 缓动 ----
+  function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+  function linear(t) { return t; }
+
+  // ---- tween 调度器（基于 rAF 的虚拟时钟，暂停时不推进） ----
+  var tweens = [];
+  var paused = false, pausedAt = 0, totalPaused = 0;
+  var speed = 1;
+  var gen = 0;
+
+  function tween(o) {
+    return new Promise(function (resolve) {
+      tweens.push({
+        t0: (performance.now() - totalPaused) + (o.delay || 0) / speed,
+        duration: (o.duration || 0) / speed,
+        from: o.from == null ? 0 : o.from,
+        to: o.to == null ? 1 : o.to,
+        ease: o.ease || easeOutCubic,
+        onUpdate: o.onUpdate,
+        resolve: resolve
+      });
+    });
+  }
+  function sleep(ms) { return tween({ from: 0, to: 1, duration: ms }); }
+
+  function tick(raw) {
+    if (!paused) {
+      var now = raw - totalPaused;
+      for (var i = tweens.length - 1; i >= 0; i--) {
+        var tw = tweens[i];
+        if (now < tw.t0) continue;
+        var p = tw.duration <= 0 ? 1 : Math.min(1, (now - tw.t0) / tw.duration);
+        var val = tw.from + (tw.to - tw.from) * tw.ease(p);
+        if (tw.onUpdate) tw.onUpdate(val, p);
+        if (p >= 1) {
+          tweens.splice(i, 1);
+          tw.resolve();
+        }
+      }
+    }
+    render();
+    requestAnimationFrame(tick);
+  }
+
+  // ---- 演示状态 ----
+  var state = {
+    phase: 'idle',   // idle | dealing | done
+    status: '准备发牌…',
+    flying: [],      // 已发出/飞行中的牌（落位后保留为手牌）
+    dealt: 0,        // 已发到手牌区的张数
+    faces: []
+  };
+
+  function shuffle(a) {
+    for (var i = a.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var t = a[i]; a[i] = a[j]; a[j] = t;
+    }
+    return a;
+  }
+  function makeDeck() {
+    var d = [];
+    for (var s = 0; s < 4; s++) {
+      for (var r = 0; r < 13; r++) {
+        d.push({ rank: RANKS[r], suit: SUITS[s], red: s === 1 || s === 2 });
+        d.push({ rank: RANKS[r], suit: SUITS[s], red: s === 1 || s === 2 });
+      }
+    }
+    d.push({ rank: '小', suit: '王', red: false, joker: true });
+    d.push({ rank: '小', suit: '王', red: false, joker: true });
+    d.push({ rank: '大', suit: '王', red: true, joker: true });
+    d.push({ rank: '大', suit: '王', red: true, joker: true });
+    return shuffle(d);
+  }
+
+  function reset() {
+    tweens.splice(0).forEach(function (t) { t.resolve(); });
+    state.flying = [];
+    state.dealt = 0;
+    state.faces = makeDeck();
+  }
+
+  // 单张飞牌：从中央牌堆飞向"我"的手牌区，亮牌面。
+  function flyToHand(i) {
+    var face = state.faces[i];
+    var card = {
+      x: DECK_X, y: DECK_Y,
+      scale: 0.5, rotation: 0, alpha: 1,
+      x0: DECK_X, y0: DECK_Y,
+      tx: HAND_START_X + i * HAND_SPACING,
+      ty: HAND_Y,
+      s0: 0.5, ts: 1,
+      rot0: (i % 2 ? 0.10 : -0.10),
+      face: face,
+      depth: i
+    };
+    state.flying.push(card);
+    return tween({
+      from: 0, to: 1, duration: CARD_DURATION, delay: i * CARD_DELAY, ease: easeOutCubic,
+      onUpdate: function (v) {
+        card.x = card.x0 + (card.tx - card.x0) * v;
+        card.y = card.y0 + (card.ty - card.y0) * v;
+        card.scale = card.s0 + (card.ts - card.s0) * v;
+        card.rotation = card.rot0 * (1 - v);
+      }
+    });
+  }
+
+  function dealOnce(myGen) {
+    reset();
+    state.phase = 'dealing';
+    state.status = '发牌中… 0 / ' + HAND_COUNT;
+    var flights = [];
+    for (var i = 0; i < HAND_COUNT; i++) flights.push(flyToHand(i));
+    // 张数计数：线性递增，与发牌节奏同步
+    var counter = tween({
+      from: 0, to: HAND_COUNT, duration: (HAND_COUNT - 1) * CARD_DELAY + CARD_DURATION,
+      ease: linear,
+      onUpdate: function (v) {
+        state.dealt = Math.round(v);
+        state.status = '发牌中… ' + state.dealt + ' / ' + HAND_COUNT;
+      }
+    });
+    return Promise.all(flights.concat([counter])).then(function () {
+      if (myGen !== gen) return;
+      state.dealt = HAND_COUNT;
+      state.phase = 'done';
+      state.status = '发牌完成 · 27 张全部到手';
+      return sleep(1800);
+    });
+  }
+
+  function loop(myGen) {
+    function next() {
+      if (myGen !== gen) return;
+      dealOnce(myGen).then(function () {
+        if (myGen !== gen) return;
+        next();
+      });
+    }
+    next();
+  }
+
+  function replay() {
+    gen++;
+    reset();
+    state.status = '准备发牌…';
+    if (!paused) loop(gen);
+  }
+
+  // ---- 绘制 ----
+  function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+  }
+
+  function drawCard(card) {
+    ctx.save();
+    ctx.translate(card.x, card.y);
+    ctx.rotate(card.rotation || 0);
+    ctx.scale(card.scale, card.scale);
+    ctx.globalAlpha = card.alpha == null ? 1 : card.alpha;
+
+    ctx.shadowColor = 'rgba(0,0,0,.35)';
+    ctx.shadowBlur = 8;
+    ctx.shadowOffsetY = 4;
+    roundRect(-CW / 2, -CH / 2, CW, CH, 7);
+    ctx.fillStyle = '#fdfdf7';
+    ctx.fill();
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = '#9fd8bd';
+    ctx.stroke();
+
+    var f = card.face;
+    var color = f.red ? '#c0392b' : '#1c2733';
+    ctx.fillStyle = color;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.font = 'bold 24px sans-serif';
+    ctx.fillText(f.rank, -CW / 2 + 8, -CH / 2 + 27);
+    ctx.font = '18px sans-serif';
+    ctx.fillText(f.suit, -CW / 2 + 8, -CH / 2 + 47);
+    ctx.globalAlpha = 0.26 * (card.alpha == null ? 1 : card.alpha);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '32px sans-serif';
+    ctx.fillText(f.joker ? '★' : f.suit, 6, 12);
+    ctx.restore();
+  }
+
+  function render() {
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#0e5238';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#146b4a';
+    roundRect(40, 40, W - 80, H - 80, 28);
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#2a8f6a';
+    ctx.stroke();
+
+    ctx.fillStyle = '#dff5e8';
+    ctx.font = '500 24px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText('掼蛋 · 发牌动画', 640, 84);
+
+    // 中央牌堆
+    ctx.fillStyle = '#0b3f2a';
+    roundRect(DECK_X - 34, DECK_Y - 46, 68, 92, 8);
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#2f8f6a';
+    ctx.stroke();
+    ctx.fillStyle = '#7fd3ae';
+    ctx.font = '18px sans-serif';
+    ctx.fillText('牌堆', DECK_X, DECK_Y + 6);
+
+    // 阶段文字 + 我的手牌数
+    ctx.fillStyle = '#ffe9a8';
+    ctx.font = '500 18px sans-serif';
+    ctx.fillText(state.status, 640, 460);
+    ctx.fillStyle = '#e9fff3';
+    ctx.font = '16px sans-serif';
+    ctx.fillText('你 · 手牌 ' + state.dealt, 640, 490);
+
+    // 飞牌 / 已落位手牌（按 depth 从大到小画，后发的盖在先发的上）
+    var sorted = state.flying.slice().sort(function (a, b) { return a.depth - b.depth; });
+    for (var i = 0; i < sorted.length; i++) drawCard(sorted[i]);
+  }
+
+  // ---- 自适应缩放 ----
+  function resize() {
+    var stage = document.getElementById('stage');
+    var scale = Math.min(window.innerWidth / W, (window.innerHeight - 70) / H);
+    scale = Math.max(0.3, scale);
+    stage.style.width = (W * scale) + 'px';
+    stage.style.height = (H * scale) + 'px';
+    cv.style.width = (W * scale) + 'px';
+    cv.style.height = (H * scale) + 'px';
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---- 控件 ----
+  document.getElementById('btn-replay').addEventListener('click', replay);
+  var pauseBtn = document.getElementById('btn-pause');
+  pauseBtn.addEventListener('click', function () {
+    if (!paused) { paused = true; pausedAt = performance.now(); pauseBtn.textContent = '继续'; }
+    else { paused = false; totalPaused += performance.now() - pausedAt; pauseBtn.textContent = '暂停'; }
+  });
+  var speedBtn = document.getElementById('btn-speed');
+  var speeds = [1, 2, 0.5];
+  var speedIdx = 0;
+  speedBtn.addEventListener('click', function () {
+    speedIdx = (speedIdx + 1) % speeds.length;
+    speed = speeds[speedIdx];
+    speedBtn.textContent = '速度 ' + speed + 'x';
+  });
+
+  // ---- 启动 ----
+  window.__dealDemo = {
+    state: state, replay: replay,
+    get phase() { return state.phase; },
+    config: { handCount: HAND_COUNT, spacing: HAND_SPACING, startX: HAND_START_X, handY: HAND_Y }
+  };
+  requestAnimationFrame(tick);
+  loop(gen);
+})();
+</script>
+</body>
+</html>

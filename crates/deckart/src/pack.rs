@@ -3,7 +3,7 @@
 //! 布局：
 //! ```text
 //! +0   magic "GFDK"
-//! +4   u16 格式版本
+//! +4   u16 格式版本（v1 旧包可读；v2 起签名覆盖 magic/version/flags/headerLen）
 //! +6   u16 flags（bit0 压缩预留 / bit1 加密 / bit2 签名 / bit3 签名覆盖头字段）
 //! +8   u32 header_len
 //! +12  header JSON（明文：themeId / themeVersion / license / keyId / entries）
@@ -14,6 +14,11 @@
 //! **安全边界**：AES-256 只做内容混淆（内置密钥随包分发，拿不到真正机密性）；
 //! 真实性由 Ed25519 签名提供。生产包必须签名、并在验签时绑定 `keyId`，内置密钥仅限
 //! 开发/主题预览，不得承载需要防篡改的内容。
+//!
+//! v2 签名口径：`magic || version || flags || header_len || header_json || payload`。
+//! v1 的签名只覆盖 `header_json || payload`（或带 `FLAG_SIGNED_AAD` 时额外覆盖
+//! `flags || header_len`），magic/version 不在签名内，存在替换容器头绕过版本判断的
+//! 根因；新包一律写 v2，旧 v1 包保留只读兼容。
 
 use std::collections::HashMap;
 #[cfg(feature = "pack-write")]
@@ -34,7 +39,10 @@ use crate::error::DeckError;
 use crate::theme::{Theme, ThemeMeta};
 
 pub const MAGIC: [u8; 4] = *b"GFDK";
-pub const FORMAT_VERSION: u16 = 1;
+/// 新包写 v2；`parse_container` 仍接受 v1，保证旧 `.gfdeck` 可读。
+pub const FORMAT_VERSION: u16 = 2;
+/// 只读兼容的最低版本。
+pub const MIN_FORMAT_VERSION: u16 = 1;
 pub const FLAG_COMPRESSED: u16 = 0b0001;
 pub const FLAG_ENCRYPTED: u16 = 0b0010;
 pub const FLAG_SIGNED: u16 = 0b0100;
@@ -178,7 +186,10 @@ pub fn pack_theme(
     if let Some(sk) = opts.signing_key {
         flags |= FLAG_SIGNED | FLAG_SIGNED_AAD;
         let mut signed = Vec::new();
-        // AAD：把 flags 与 headerLen 一起签进去，防止「清签名位/改加密位」绕过。
+        // v2 签名：容器头 + header + payload 全部入签。magic/version 也在内，
+        // 换版本、换魔数、清签名位都无法只改外壳而不破坏签名。
+        signed.extend_from_slice(&MAGIC);
+        signed.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
         signed.extend_from_slice(&flags.to_le_bytes());
         signed.extend_from_slice(&(header_json.len() as u32).to_le_bytes());
         signed.extend_from_slice(&header_json);
@@ -282,9 +293,15 @@ pub fn open_bytes(
         let Some(sig_bytes) = c.sig else {
             return Err(DeckError::PackCorrupt("缺签名".into()));
         };
-        let mut signed = Vec::with_capacity(c.header_json.len() + c.payload.len() + 8);
-        if c.flags & FLAG_SIGNED_AAD != 0 {
-            // 新格式：flags 与 headerLen 也在签名覆盖范围内。
+        let mut signed = Vec::with_capacity(c.header_json.len() + c.payload.len() + 20);
+        if c.version >= 2 {
+            // v2：签名覆盖完整容器头（magic/version/flags/headerLen）+ header + payload。
+            signed.extend_from_slice(&MAGIC);
+            signed.extend_from_slice(&c.version.to_le_bytes());
+            signed.extend_from_slice(&c.flags.to_le_bytes());
+            signed.extend_from_slice(&(c.header_len as u32).to_le_bytes());
+        } else if c.flags & FLAG_SIGNED_AAD != 0 {
+            // v1 的「新格式」只覆盖 flags + headerLen；magic/version 仍不在签名内。
             signed.extend_from_slice(&c.flags.to_le_bytes());
             signed.extend_from_slice(&(c.header_len as u32).to_le_bytes());
         }
@@ -350,6 +367,7 @@ struct Container {
     header_json: Vec<u8>,
     header_len: usize,
     payload: Vec<u8>,
+    version: u16,
     flags: u16,
     sig: Option<[u8; SIG_LEN]>,
     total: u64,
@@ -364,7 +382,7 @@ fn parse_container(bytes: &[u8]) -> Result<Container, DeckError> {
         return Err(DeckError::PackCorrupt("magic 不符（不是 .gfdeck）".into()));
     }
     let version = u16::from_le_bytes([bytes[4], bytes[5]]);
-    if version != FORMAT_VERSION {
+    if !(MIN_FORMAT_VERSION..=FORMAT_VERSION).contains(&version) {
         return Err(DeckError::PackCorrupt(format!("格式版本不支持: {version}")));
     }
     let flags = u16::from_le_bytes([bytes[6], bytes[7]]);
@@ -417,6 +435,7 @@ fn parse_container(bytes: &[u8]) -> Result<Container, DeckError> {
         header_json,
         header_len,
         payload,
+        version,
         flags,
         sig,
         total: bytes.len() as u64,
@@ -443,6 +462,14 @@ fn decrypt_entries(
             return Err(DeckError::PackCorrupt(format!("条目 {} 过短", e.name)));
         }
         let nonce = &blob[..NONCE_LEN];
+        // header 里的 nonce 是给解包器看的副本；必须与实际密文前缀一致，
+        // 否则改 header 就能让「声明的 nonce」与真正解密用的 nonce 脱节。
+        if !e.nonce.eq_ignore_ascii_case(&hex(nonce)) {
+            return Err(DeckError::PackCorrupt(format!(
+                "条目 {} 的 header nonce 与密文 nonce 不一致",
+                e.name
+            )));
+        }
         let aad = aad(&header.theme_id, header.theme_version, &e.name);
         let plain = cipher
             .decrypt(

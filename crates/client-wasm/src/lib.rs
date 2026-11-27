@@ -15,34 +15,66 @@
 //! `gf_room_new` → `gf_room_start` → 逐条 `gf_room_next_round` / `gf_room_replay_action`，
 //! 最后用 `gf_room_hash` 与存档里的哈希比对；相等即续局成功。
 
-#![allow(clippy::missing_safety_doc)]
-
+#[cfg(target_arch = "wasm32")]
 use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::ffi::c_void;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::{Mutex, MutexGuard};
 
 use gf_engine::contract::{Action, Engine};
 use gf_table_runtime::{
     BotPolicy, PlayerKind, Room, RoomConfig, StepOutcome, DEFAULT_RULESET_VERSION,
 };
 
-/// `wasm32-unknown-unknown` 是单线程环境；用零开销的全局可变槽代替 `Mutex`。
+/// 全局槽的实现分两条路径：
+/// - `wasm32-unknown-unknown` 是单线程环境（不启用 wasm threads），用零开销的
+///   `UnsafeCell`，`Sync` 的唯一依据是「同一实例内所有导出都在同一条 JS 调用栈上串行」；
+/// - native 目标（`cargo test/clippy --workspace` 会编译本 crate）没有这个前提，
+///   必须用 `Mutex`，否则 `UnsafeCell` + `Sync` 是实打实的 UB。
+#[cfg(target_arch = "wasm32")]
 struct Global<T>(UnsafeCell<T>);
 
-// SAFETY: 目标平台单线程，且所有入口都在同一条 JS 调用栈上串行执行。
+#[cfg(target_arch = "wasm32")]
+impl<T> Global<T> {
+    const fn new(value: T) -> Self {
+        Self(UnsafeCell::new(value))
+    }
+}
+
+// SAFETY: 只在 wasm32-unknown-unknown 且未启用线程时成立；native 分支用 Mutex。
+#[cfg(target_arch = "wasm32")]
 unsafe impl<T> Sync for Global<T> {}
 
-static ROOM: Global<Option<Room>> = Global(UnsafeCell::new(None));
-static STRINGS: Global<Vec<Vec<u8>>> = Global(UnsafeCell::new(Vec::new()));
-/// `gf_alloc` 出去的块：起始地址 → 字节数。入参裸指针必须落在这张表内，防止 JS
-/// 传任意地址/长度造成 UB 或巨量分配。
-static ALLOCS: Global<Option<HashMap<usize, usize>>> = Global(UnsafeCell::new(None));
+#[cfg(not(target_arch = "wasm32"))]
+struct Global<T>(Mutex<T>);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<T> Global<T> {
+    const fn new(value: T) -> Self {
+        Self(Mutex::new(value))
+    }
+}
+
+static ROOM: Global<Option<Room>> = Global::new(None);
+static ALLOCS: Global<Option<HashMap<usize, usize>>> = Global::new(None);
 /// 单次入参上限：主题包最大 16MB；牌数组另有更小的上限。
 const MAX_INPUT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CARDS_INPUT: usize = 256;
+/// 导出字符串长度头的字节数（见 [`out`]）。
+const OUT_HEADER: usize = 8;
 
-fn allocs() -> &'static mut HashMap<usize, usize> {
-    unsafe { (&mut *ALLOCS.0.get()).get_or_insert_with(HashMap::new) }
+fn with_allocs<R>(f: impl FnOnce(&mut HashMap<usize, usize>) -> R) -> R {
+    #[cfg(target_arch = "wasm32")]
+    {
+        // SAFETY: 单线程 wasm，导出函数不会重入；初始化只发生一次。
+        unsafe { f((&mut *ALLOCS.0.get()).get_or_insert_with(HashMap::new)) }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut guard = ALLOCS.0.lock().unwrap_or_else(|e| e.into_inner());
+        f(guard.get_or_insert_with(HashMap::new))
+    }
 }
 
 /// 校验 `[ptr, ptr+len)` 是一整块由 `gf_alloc` 登记、且满足对齐与上限的内存。
@@ -57,27 +89,103 @@ fn input_range_ok(ptr: *const u8, len: usize, align: usize, max: usize) -> bool 
     if addr.checked_add(len).is_none() {
         return false;
     }
-    allocs()
-        .get(&addr)
-        .is_some_and(|allocated| len <= *allocated)
+    with_allocs(|allocs| allocs.get(&addr).is_some_and(|allocated| len <= *allocated))
 }
 
-fn room() -> &'static mut Option<Room> {
-    unsafe { &mut *ROOM.0.get() }
+/// 对全局槽的临时引用；`Deref` 直接得到槽里的值（`Room` / `Theme`）。
+struct SlotRef<T: 'static> {
+    #[cfg(target_arch = "wasm32")]
+    slot: &'static mut Option<T>,
+    #[cfg(not(target_arch = "wasm32"))]
+    guard: MutexGuard<'static, Option<T>>,
 }
 
-/// 把一段文本变成以 NUL 结尾的堆字符串并登记，供 [`gf_str_free`] 回收。
+impl<T: 'static> SlotRef<T> {
+    #[cfg(target_arch = "wasm32")]
+    fn as_option(&self) -> &Option<T> {
+        &*self.slot
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn as_option(&self) -> &Option<T> {
+        &self.guard
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn as_option_mut(&mut self) -> &mut Option<T> {
+        &mut *self.slot
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn as_option_mut(&mut self) -> &mut Option<T> {
+        &mut self.guard
+    }
+}
+
+impl<T: 'static> std::ops::Deref for SlotRef<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.as_option().as_ref().expect("global slot is empty")
+    }
+}
+
+impl<T: 'static> std::ops::DerefMut for SlotRef<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.as_option_mut().as_mut().expect("global slot is empty")
+    }
+}
+
+fn room() -> Option<SlotRef<Room>> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        // SAFETY: 单线程 wasm；只取一次裸指针，随后由 `SlotRef` 独占。
+        let slot = unsafe { &mut *ROOM.0.get() };
+        slot.is_some().then_some(SlotRef { slot })
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let guard = ROOM.0.lock().unwrap_or_else(|e| e.into_inner());
+        guard.is_some().then_some(SlotRef { guard })
+    }
+}
+
+fn replace_room(room: Option<Room>) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        // SAFETY: 单线程 wasm；替换整个槽，不留下别名。
+        unsafe { *ROOM.0.get() = room };
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        *ROOM.0.lock().unwrap_or_else(|e| e.into_inner()) = room;
+    }
+}
+
+/// 需要 `&mut Room` 的导出从这里拿槽；调用方绑定必须写 `mut r`
+/// （`DerefMut` 要可变接收者），读路径继续用 [`room`]。
+fn room_mut() -> Option<SlotRef<Room>> {
+    room()
+}
+
+/// 把一段文本变成以 NUL 结尾的独立堆块：`[u64 长度][bytes...]`，返回 bytes 起点。
+///
+/// 生命周期契约：调用方拿到指针后必须调用 [`gf_str_free`]；不再有全局 `STRINGS`
+/// 列表兜底，也不会因为一次漏 free 把整局所有导出字符串都留在 wasm 线性内存里。
 fn out(s: String) -> *mut u8 {
     let mut buf = s.into_bytes();
     if buf.contains(&0) {
         buf.retain(|b| *b != 0);
     }
     buf.push(0);
-    let ptr = buf.as_mut_ptr();
-    unsafe {
-        (*STRINGS.0.get()).push(buf);
-    }
-    ptr
+    let len = buf.len();
+    let mut all: Vec<u8> = Vec::with_capacity(OUT_HEADER + len);
+    all.extend_from_slice(&(len as u64).to_le_bytes());
+    all.extend_from_slice(&buf);
+    let boxed: Box<[u8]> = all.into_boxed_slice();
+    let base = Box::into_raw(boxed).cast::<u8>();
+    // SAFETY: `base` 来自刚分配、未被释放的 `OUT_HEADER + len` 字节块。
+    unsafe { base.add(OUT_HEADER) }
 }
 
 fn err(e: impl std::fmt::Debug) -> *mut u8 {
@@ -287,39 +395,61 @@ pub extern "C" fn gf_alloc(len: usize) -> *mut c_void {
     let mut buf = vec![0u8; len];
     let ptr = buf.as_mut_ptr().cast::<c_void>();
     std::mem::forget(buf);
-    allocs().insert(ptr as usize, len);
+    with_allocs(|allocs| {
+        allocs.insert(ptr as usize, len);
+    });
     ptr
 }
 
 /// 释放 [`gf_alloc`] 分配的内存（容量按 `len` 还原）。
 ///
 /// 只接受「登记过、长度一致」的块；伪造指针或改长度都不会走到 `from_raw_parts`。
+///
+/// # Safety
+///
+/// `ptr` 必须是 [`gf_alloc`] 返回、且尚未释放的指针；`len` 必须与分配时一致。
+/// 重复释放、跨分配器指针或错误长度都会造成未定义行为（函数内部会先查登记表，
+/// 但登记表只能防「本 crate 之外」的指针，不能防调用方重复释放同一块）。
 #[no_mangle]
 pub unsafe extern "C" fn gf_mem_free(ptr: *mut c_void, len: usize) {
     if ptr.is_null() || len == 0 {
         return;
     }
     let addr = ptr as usize;
-    let Some(allocated) = allocs().remove(&addr) else {
+    let Some(allocated) = with_allocs(|allocs| allocs.remove(&addr)) else {
         return;
     };
     if allocated != len {
         // 长度不匹配说明调用方状态错了：不释放（泄漏一块）比 UB 安全。
-        allocs().insert(addr, allocated);
+        with_allocs(|allocs| {
+            allocs.insert(addr, allocated);
+        });
         return;
     }
-    drop(Vec::from_raw_parts(ptr.cast::<u8>(), len, len));
+    // SAFETY: 指针来自 `gf_alloc` 的 `Vec<u8>`，登记长度与调用方一致。
+    drop(unsafe { Vec::from_raw_parts(ptr.cast::<u8>(), len, len) });
 }
 
 /// 释放 [`gf_room_step`] 等返回的 JSON 字符串。
+///
+/// # Safety
+///
+/// `ptr` 必须是本 crate 的 [`out`] 返回、且尚未释放的指针。每个导出字符串只能
+/// free 一次；free 后指针不得再被解引用。JS 侧应把「调用 → TextDecoder 解码 →
+/// gf_str_free」包成一个同步辅助函数，避免异常路径漏掉 free。
 #[no_mangle]
-pub extern "C" fn gf_str_free(ptr: *mut u8) {
+pub unsafe extern "C" fn gf_str_free(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
+    // SAFETY: `out` 在 bytes 起点前固定放了 8 字节长度头；调用方保证指针有效且唯一。
     unsafe {
-        let list = &mut *STRINGS.0.get();
-        list.retain(|v| v.as_ptr() != ptr);
+        let base = ptr.sub(OUT_HEADER);
+        let len = u64::from_le_bytes(*(base.cast::<[u8; OUT_HEADER]>())) as usize;
+        let total = OUT_HEADER + len;
+        drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+            base, total,
+        )));
     }
 }
 
@@ -364,7 +494,7 @@ pub extern "C" fn gf_room_new_level(
             return 0;
         }
     }
-    *room() = Some(r);
+    replace_room(Some(r));
     1
 }
 
@@ -380,8 +510,8 @@ fn make_bot(level: u8) -> Box<dyn gf_table_runtime::BotPolicy> {
 /// 发牌开局。
 #[no_mangle]
 pub extern "C" fn gf_room_start(now_ms: u64) -> u8 {
-    match room() {
-        Some(r) => u8::from(r.start(now_ms).is_ok()),
+    match room_mut() {
+        Some(mut r) => u8::from(r.start(now_ms).is_ok()),
         None => 0,
     }
 }
@@ -389,16 +519,21 @@ pub extern "C" fn gf_room_start(now_ms: u64) -> u8 {
 /// 推进一步：bot 行动、托管、结算、场次终止都在这里出。
 #[no_mangle]
 pub extern "C" fn gf_room_step(now_ms: u64) -> *mut u8 {
-    let Some(r) = room() else {
+    let Some(mut r) = room_mut() else {
         return err("no room");
     };
     match r.step(now_ms) {
-        Ok(diff) => out(outcome_json(r, diff)),
+        Ok(diff) => out(outcome_json(&r, diff)),
         Err(e) => err(e),
     }
 }
 
 /// 人类提交动作。
+///
+/// # Safety
+///
+/// `cards_ptr` 必须指向 [`gf_alloc`] 登记、至少 `cards_len * 2` 字节且按 u16 对齐的块；
+/// `cards_len` 为 0 时可为空指针。函数只读这段内存，不接管所有权。
 #[no_mangle]
 pub unsafe extern "C" fn gf_room_submit(
     seat: u8,
@@ -407,17 +542,22 @@ pub unsafe extern "C" fn gf_room_submit(
     cards_ptr: *const u16,
     cards_len: usize,
 ) -> *mut u8 {
-    let Some(r) = room() else {
+    let Some(mut r) = room_mut() else {
         return err("no room");
     };
     let action = make_action(is_pass, read_cards(cards_ptr, cards_len));
     match r.submit(seat, action, now_ms) {
-        Ok(diff) => out(outcome_json(r, diff)),
+        Ok(diff) => out(outcome_json(&r, diff)),
         Err(e) => err(e),
     }
 }
 
 /// 续局重演单条录制动作（不校验玩家类型、不推进时钟）。
+///
+/// # Safety
+///
+/// 同 [`gf_room_submit`]：`cards_ptr` 必须落在 [`gf_alloc`] 登记块内，长度为
+/// `cards_len * 2` 字节且按 u16 对齐；为 0 时可为空指针。
 #[no_mangle]
 pub unsafe extern "C" fn gf_room_replay_action(
     seat: u8,
@@ -425,7 +565,7 @@ pub unsafe extern "C" fn gf_room_replay_action(
     cards_ptr: *const u16,
     cards_len: usize,
 ) -> u8 {
-    let Some(r) = room() else {
+    let Some(mut r) = room_mut() else {
         return 0;
     };
     let action = make_action(is_pass, read_cards(cards_ptr, cards_len));
@@ -435,7 +575,7 @@ pub unsafe extern "C" fn gf_room_replay_action(
 /// 再来一局（结算态调用）。
 #[no_mangle]
 pub extern "C" fn gf_room_next_round(now_ms: u64) -> *mut u8 {
-    let Some(r) = room() else {
+    let Some(mut r) = room_mut() else {
         return err("no room");
     };
     match r.next_round(now_ms) {
@@ -451,7 +591,7 @@ pub extern "C" fn gf_room_next_round(now_ms: u64) -> *mut u8 {
 /// 重开当前行动窗口（页面重载 / 杀进程后回放完调用，否则窗口 deadline 停在 0 会立即托管）。
 #[no_mangle]
 pub extern "C" fn gf_room_resume_window(now_ms: u64) -> u8 {
-    let Some(r) = room() else {
+    let Some(mut r) = room_mut() else {
         return 0;
     };
     u8::from(r.resume_window(now_ms).is_ok())
@@ -549,6 +689,11 @@ pub extern "C" fn gf_room_seats() -> *mut u8 {
 /// 预检一手牌能否出（「出牌」按钮的判定源）：`{"ok":true,"patternId":"straight-5"}`，
 /// 不可出时 `{"ok":false,"reason":"…"}`。与 `gf_room_submit` 的判定口径一致，
 /// 但不推进状态；`gf_room_legal` 只是候选清单，顺子/三带二的具体花色组合未必都在里面。
+///
+/// # Safety
+///
+/// `cards_ptr` 必须落在 [`gf_alloc`] 登记块内，至少 `cards_len * 2` 字节且按 u16
+/// 对齐；为 0 时可为空指针。只读，不接管所有权。
 #[no_mangle]
 pub unsafe extern "C" fn gf_room_can_play(cards_ptr: *const u16, cards_len: usize) -> *mut u8 {
     let Some(r) = room() else {
@@ -777,10 +922,32 @@ pub extern "C" fn gf_l0_probe(seat: u8) -> *mut u8 {
 // - `gf_theme_preview()`        取「主题选择界面」要的那几张（`theme.json` 的 `preview` 配）
 // - `gf_theme_card(code, level, cornerPct)` 取任意一张（牌桌用，`level` 由服务端下发）
 
-static DECK: Global<Option<gf_deckart::Theme>> = Global(UnsafeCell::new(None));
+static DECK: Global<Option<gf_deckart::Theme>> = Global::new(None);
 
-fn deck() -> &'static mut Option<gf_deckart::Theme> {
-    unsafe { &mut *DECK.0.get() }
+fn deck() -> Option<SlotRef<gf_deckart::Theme>> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        // SAFETY: 单线程 wasm；只取一次裸指针，随后由 `SlotRef` 独占。
+        let slot = unsafe { &mut *DECK.0.get() };
+        slot.is_some().then_some(SlotRef { slot })
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let guard = DECK.0.lock().unwrap_or_else(|e| e.into_inner());
+        guard.is_some().then_some(SlotRef { guard })
+    }
+}
+
+fn replace_deck(theme: Option<gf_deckart::Theme>) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        // SAFETY: 单线程 wasm；替换整个槽，不留下别名。
+        unsafe { *DECK.0.get() = theme };
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        *DECK.0.lock().unwrap_or_else(|e| e.into_inner()) = theme;
+    }
 }
 
 /// 把宿主传进来的字节块读成 slice；长度 0 视为空。
@@ -810,6 +977,11 @@ fn theme_err(e: impl std::fmt::Debug) -> *mut u8 {
 /// 返回 `{"ok":true,"themeId","version","name","license","layout","cornerScale","bytes","preview":[...]}`，
 /// 其中 `cornerScale` 是主题声明的默认角标倍率（`null` = 主题没声明，由宿主自己兜底），
 /// `preview` 是 `[{"code","svg"}]`，省掉客户端再调一次 `gf_theme_preview`。
+///
+/// # Safety
+///
+/// `pack_ptr` 必须落在 [`gf_alloc`] 登记、至少 `pack_len` 字节的块内（`pack_len` 为 0
+/// 时可传空指针）；`pub_ptr` 同理，`pub_len` 应为 0 或 32。函数只读这两段内存。
 #[no_mangle]
 pub unsafe extern "C" fn gf_theme_load(
     pack_ptr: *const u8,
@@ -825,6 +997,11 @@ pub unsafe extern "C" fn gf_theme_load(
 }
 
 /// 生产入口：必须提供公钥，签名包缺失/伪造一律拒绝（不提供 `gf_theme_load` 的无密钥降级）。
+///
+/// # Safety
+///
+/// 同 [`gf_theme_load`]：`pack_ptr`/`pub_ptr` 必须落在 [`gf_alloc`] 登记块内，
+/// 长度分别不少于 `pack_len`/`pub_len`；`pub_len` 必须为 32（为 0 直接返回错误）。
 #[no_mangle]
 pub unsafe extern "C" fn gf_theme_load_verified(
     pack_ptr: *const u8,
@@ -864,7 +1041,7 @@ unsafe fn theme_load_impl(
         Ok(t) => t,
         Err(e) => return theme_err(e),
     };
-    *deck() = Some(theme);
+    replace_deck(Some(theme));
     let Some(t) = deck() else {
         return theme_err("theme disappeared");
     };
@@ -878,7 +1055,7 @@ unsafe fn theme_load_impl(
         Err(e) => return theme_err(e),
     };
     let codes: Vec<String> = faces.iter().map(|f| json_str(&f.code())).collect();
-    let preview = match gf_deckart::render_preview(t) {
+    let preview = match gf_deckart::render_preview(&t) {
         Ok(v) => v
             .iter()
             .map(|r| card_json(&r.code, &r.svg))
@@ -914,7 +1091,7 @@ fn theme_preview_impl() -> *mut u8 {
     let Some(t) = deck() else {
         return theme_err("no theme loaded");
     };
-    match gf_deckart::render_preview(t) {
+    match gf_deckart::render_preview(&t) {
         Ok(v) => {
             let cards: Vec<String> = v.iter().map(|r| card_json(&r.code, &r.svg)).collect();
             out(format!("{{\"ok\":true,\"cards\":[{}]}}", cards.join(",")))
@@ -926,6 +1103,11 @@ fn theme_preview_impl() -> *mut u8 {
 /// 单张牌面。`level_rank` 传 0 表示「不带级牌态」（主题选择页看纯牌面时用）；
 /// `corner_pct` 是角标字号百分比（100 = 素材原样，`0` = 用主题声明的默认倍率）。
 /// 返回 `{"ok":true,"code","svg"}`。缓存键建议 `(themeId, themeVersion, code, levelRank, cornerPct)`。
+///
+/// # Safety
+///
+/// `code_ptr` 必须落在 [`gf_alloc`] 登记、至少 `code_len` 字节的块内；`code_len` 为 0
+/// 时可传空指针。函数只读这段内存。
 #[no_mangle]
 pub unsafe extern "C" fn gf_theme_card(
     code_ptr: *const u8,
@@ -965,7 +1147,7 @@ unsafe fn theme_card_impl(
         }
     };
     match gf_deckart::render_face_opts(
-        t,
+        &t,
         face,
         gf_deckart::FaceOptions {
             level,
@@ -996,7 +1178,7 @@ fn theme_back_impl() -> *mut u8 {
     let Some(t) = deck() else {
         return theme_err("no theme loaded");
     };
-    match gf_deckart::render_back(t) {
+    match gf_deckart::render_back(&t) {
         Ok(svg) => out(format!("{{\"ok\":true,\"svg\":{}}}", json_str(&svg))),
         Err(e) => theme_err(e),
     }
@@ -1005,7 +1187,7 @@ fn theme_back_impl() -> *mut u8 {
 /// 卸载当前主题（换主题前先断引用，避免同时挂两份素材）。
 #[no_mangle]
 pub extern "C" fn gf_theme_unload() -> u8 {
-    *deck() = None;
+    replace_deck(None);
     1
 }
 
@@ -1030,5 +1212,18 @@ mod memory_tests {
             "未登记指针一律拒绝"
         );
         unsafe { gf_mem_free(p, 8) };
+    }
+
+    #[test]
+    fn output_string_is_independent_and_freeable() {
+        let p = out("hello".to_string());
+        assert!(!p.is_null());
+        // SAFETY: `out` 返回以 NUL 结尾的块，长度头在 p 前 8 字节。
+        let len = unsafe { u64::from_le_bytes(*(p.sub(OUT_HEADER).cast::<[u8; 8]>())) };
+        assert_eq!(len, 6, "5 字节正文 + NUL");
+        // SAFETY: 同上；只读，不越过块尾。
+        let text = unsafe { std::slice::from_raw_parts(p, len as usize) };
+        assert_eq!(text, b"hello\0");
+        unsafe { gf_str_free(p) };
     }
 }

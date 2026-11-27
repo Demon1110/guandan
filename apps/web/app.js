@@ -126,8 +126,11 @@ async function loadMatch(db, matchId) {
 }
 
 async function loadActions(db, matchId) {
-  const all = await reqToPromise(tx(db, STORE_ACTION, 'readonly').getAll());
-  return all.filter((a) => a.matchId === matchId).sort((x, y) => x.seq - y.seq);
+  // keyPath 是复合键 [matchId, seq]：用 IDBKeyRange 只取本局记录，
+  // 不再把整库动作读进 JS 再 filter。
+  const range = IDBKeyRange.bound([matchId, 0], [matchId, Number.MAX_SAFE_INTEGER]);
+  const acts = await reqToPromise(tx(db, STORE_ACTION, 'readonly').getAll(range));
+  return acts.sort((x, y) => x.seq - y.seq);
 }
 
 async function clearMatch(db, matchId) {
@@ -152,12 +155,16 @@ function now() {
 
 function cstr(ptr) {
   if (!ptr) throw new Error('wasm 返回空指针');
-  const view = new Uint8Array(ex.memory.buffer, ptr);
-  let end = 0;
-  while (end < view.length && view[end] !== 0) end += 1;
-  const text = new TextDecoder().decode(view.subarray(0, end));
-  ex.gf_str_free(ptr);
-  return text;
+  try {
+    const view = new Uint8Array(ex.memory.buffer, ptr);
+    let end = 0;
+    while (end < view.length && view[end] !== 0) end += 1;
+    return new TextDecoder().decode(view.subarray(0, end));
+  } finally {
+    // 导出字符串的生命周期只到这次解码为止；异常路径也必须归还，避免
+    // 一段 wasm 字符串因 decode 抛错而永久留在线性内存里。
+    ex.gf_str_free(ptr);
+  }
 }
 
 function withCards(cards, fn) {

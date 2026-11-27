@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -53,6 +53,10 @@ const WS_SEND_QUEUE: usize = 256;
 const WS_MAX_MESSAGE: usize = 64 * 1024;
 /// WS 单连接每秒最多处理的消息数（含心跳）。
 const WS_MSG_PER_SEC: u32 = 30;
+/// HTTP JSON 请求体上限：这些接口只收手机号、验证码、房间码等短字段，
+/// 256 KiB 足够覆盖未来加字段；不沿用 axum 默认的 2 MiB，避免匿名请求
+/// 用大 JSON 抬高内存/解析成本。（WS 帧另有 [`WS_MAX_MESSAGE`]。）
+const MAX_HTTP_BODY: usize = 256 * 1024;
 
 /// 进程级共享状态。
 pub struct App {
@@ -457,6 +461,7 @@ impl App {
             .route("/api/profile", get(profile))
             .route("/api/replays/{match_id}", get(replay_package))
             .route("/ws", get(ws_upgrade))
+            .layer(DefaultBodyLimit::max(MAX_HTTP_BODY))
             .with_state(self.clone())
     }
 

@@ -246,6 +246,84 @@ fn header_flags_are_bound_into_signature() {
 }
 
 #[test]
+fn new_pack_uses_v2_format() {
+    let dir = theme_dir();
+    let out = tmp("v2").with_extension("gfdeck");
+    let (key, key_id) = builtin_key();
+    pack_dir(
+        &dir,
+        &out,
+        &PackOptions {
+            key: &key,
+            key_id: &key_id,
+            signing_key: None,
+        },
+    )
+    .unwrap();
+    let bytes = std::fs::read(&out).unwrap();
+    let version = u16::from_le_bytes([bytes[4], bytes[5]]);
+    assert_eq!(version, 2, "新包应写 v2，旧 v1 只保留读取兼容");
+}
+
+#[test]
+fn tampering_version_breaks_v2_signature() {
+    let dir = theme_dir();
+    let out = tmp("version-sig").with_extension("gfdeck");
+    let (key, key_id) = builtin_key();
+    pack_dir(
+        &dir,
+        &out,
+        &PackOptions {
+            key: &key,
+            key_id: &key_id,
+            signing_key: Some(&sign_key()),
+        },
+    )
+    .unwrap();
+    let mut bytes = std::fs::read(&out).unwrap();
+    assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), 2);
+    // 把 v2 头改成 v1：v1 验签公式不覆盖 magic/version，若还能通过就说明 v2 没把版本签进去。
+    bytes[4..6].copy_from_slice(&1u16.to_le_bytes());
+    let evil = tmp("version-sig-evil").with_extension("gfdeck");
+    std::fs::write(&evil, &bytes).unwrap();
+    let err = open(&evil, &key, Some(&sign_key().verifying_key())).unwrap_err();
+    assert_eq!(err.code(), "DK-PACK-SIGNATURE", "改版本号必须破坏 v2 签名");
+}
+
+#[test]
+fn header_nonce_mismatch_is_rejected() {
+    let dir = theme_dir();
+    let out = tmp("nonce").with_extension("gfdeck");
+    let (key, key_id) = builtin_key();
+    pack_dir(
+        &dir,
+        &out,
+        &PackOptions {
+            key: &key,
+            key_id: &key_id,
+            signing_key: None,
+        },
+    )
+    .unwrap();
+    let mut bytes = std::fs::read(&out).unwrap();
+    let needle = b"\"nonce\":\"";
+    let pos = bytes
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .expect("header 必须带 nonce")
+        + needle.len();
+    bytes[pos] = if bytes[pos] == b'0' { b'1' } else { b'0' };
+    let evil = tmp("nonce-evil").with_extension("gfdeck");
+    std::fs::write(&evil, &bytes).unwrap();
+    let err = open(&evil, &key, None).unwrap_err();
+    assert_eq!(
+        err.code(),
+        "DK-PACK-CORRUPT",
+        "header nonce 与密文 nonce 不一致必须拒绝"
+    );
+}
+
+#[test]
 fn info_is_readable_without_key() {
     let dir = theme_dir();
     let out = tmp("info").with_extension("gfdeck");
