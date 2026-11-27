@@ -334,14 +334,26 @@ fn outcome_json(r: &Room, diff: StepOutcome) -> String {
         StepOutcome::Waiting { seat, deadline_ms } => format!(
             "{{\"kind\":\"waiting\",\"phase\":\"{phase}\",\"seat\":{seat},\"deadlineMs\":{deadline_ms},\"roundNo\":{round_no}}}"
         ),
-        StepOutcome::Applied { seat, action, auto } => format!(
-            "{{\"kind\":\"applied\",\"phase\":\"{phase}\",\"seat\":{},\"action\":{},\"auto\":{},\"roundNo\":{},\"roomSeq\":{}}}",
-            seat,
-            action_json(&action),
-            auto_json(auto),
-            round_no,
-            action_seq
-        ),
+        StepOutcome::Applied { seat, action, auto } => {
+            // 出牌动作把引擎判定的真实 patternId 一并带给前端：红配补位的炸弹牌结构看不出，
+            // 只有服务端 recognize 的 bomb-N 认得。last_play 即刚打出的这一手（pass 不动它）。
+            let pattern_id = match &action {
+                Action::Play { .. } => r.state()
+                    .ok()
+                    .and_then(|s| s.last_play.as_ref())
+                    .map(|lp| lp.pattern_id.clone())
+                    .unwrap_or_default(),
+                _ => String::new(),
+            };
+            format!(
+                "{{\"kind\":\"applied\",\"phase\":\"{phase}\",\"seat\":{},\"action\":{},\"auto\":{},\"roundNo\":{},\"roomSeq\":{}}}",
+                seat,
+                action_json_patterned(&action, &pattern_id),
+                auto_json(auto),
+                round_no,
+                action_seq
+            )
+        }
         StepOutcome::Settled(_) => format!(
             "{{\"kind\":\"settled\",\"phase\":\"{phase}\",\"roundNo\":{},\"roomSeq\":{},\"summary\":{}}}",
             round_no,
