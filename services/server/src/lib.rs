@@ -344,6 +344,11 @@ impl App {
         self.rooms.read().await.get(match_id).cloned()
     }
 
+    /// 所有在册房间句柄（运营后台巡检只读；顺序由调用方决定）。
+    pub async fn room_handles(&self) -> Vec<Arc<RoomHost>> {
+        self.rooms.read().await.values().cloned().collect()
+    }
+
     /// 回收已结束/空置房间，返回清掉的个数。每 60 秒由后台任务调一次。
     pub async fn reap_rooms(&self) -> usize {
         let retention = std::time::Duration::from_millis(self.cfg.room_retention_ms);
@@ -396,6 +401,7 @@ impl App {
             }
         };
         let room = self.room_or_create(&match_id).await?;
+        room.set_mode(mode.as_str()).await;
         if let Some(store) = self.store() {
             store
                 .insert_match(
@@ -500,10 +506,14 @@ impl App {
             &taken,
         )?;
         drop(lobby);
-        if self.room_or_create(&match_id).await.is_err() {
-            // 房间数触顶：本批票先不放行，避免客户端拿着票找不到房。
-            return None;
-        }
+        let room = match self.room_or_create(&match_id).await {
+            Ok(room) => room,
+            Err(_) => {
+                // 房间数触顶：本批票先不放行，避免客户端拿着票找不到房。
+                return None;
+            }
+        };
+        room.set_mode(mode.as_str()).await;
         if let Some(store) = self.store() {
             store
                 .insert_match(

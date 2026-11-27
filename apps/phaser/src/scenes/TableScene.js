@@ -46,6 +46,7 @@ export class TableScene extends Phaser.Scene {
     this.cornerViews = new Map(); // id -> 角标高亮浮层（fan 模式保证点数恒可见）
     this.lockViews = new Map(); // id -> 理牌分组小锁图标（右上角）
     this.trickViews = new Map(); // seat -> 该座位出牌区视图（每座只留最近一手）
+    this.teammateViews = []; // 我出完牌后：队友手牌只读展示（不进 cardViews、不挂交互）
     this.flyViews = []; // 飞牌/发牌临时对象
     this.bombFx = []; // 炸弹特效临时对象（闪光/冲击波/火花/横幅）
     this.bombTimer = null; // 横幅退场定时器
@@ -847,6 +848,7 @@ export class TableScene extends Phaser.Scene {
   onEvent(ev) {
     if (ev.type === 'deal') {
       this.hideSettle();
+      this.clearTeammateHand(); // 新一局：清掉上一局的队友手牌只读展示
       this.stopCountdown();
       this.arranged = [];
       this.flushCursor = {};
@@ -854,6 +856,7 @@ export class TableScene extends Phaser.Scene {
     } else if (ev.type === 'resume') {
       // 读档恢复：跳过发牌动画，直接渲染恢复后的牌桌状态。
       this.hideSettle();
+      this.clearTeammateHand(); // 读档恢复：先清，render 会按恢复状态重建
       this.stopCountdown();
       this.arranged = [];
       this.flushCursor = {};
@@ -981,7 +984,10 @@ export class TableScene extends Phaser.Scene {
         scale: FLY_SCALE * 0.5, faceUp: true, level,
       });
       this.flyViews.push(card);
-      card.setDepth(20 + index);
+      // 必须与正式手牌同规则：cols 模式下 depth 按落点 y 递增（下压上），
+      // 否则飞牌按发牌顺序叠，动画中上牌盖住下牌角标；落位 render 才恢复。
+      // fan 模式正式手牌统一 depth=12，靠创建顺序横叠，飞牌保持一致。
+      card.setDepth(this.handStyle === 'cols' ? 20 + Math.round(targetY / 8) : 12);
       card.rotation = index % 2 ? 0.06 : -0.06; // 起手略带倾角，飞行中平滑归零
       this.tweens.add({
         targets: card,
@@ -1293,6 +1299,79 @@ export class TableScene extends Phaser.Scene {
     this.trickViews.clear();
   }
 
+  // 我出完牌后：把队友（对家）的真实剩余手牌摊在「我的出牌区」下方，仅供查看。
+  // 只读保证：不进 cardViews、不挂 pointerdown、不 setInteractive；纯 image + 文字标签。
+  // 结算弹窗出现时（offsetY）整体下移到弹窗下方，避免被中央弹窗压住看不到。
+  showTeammateHand(offsetY = 0) {
+    const g = this.gameModel;
+    const teammate = (g.humanSeat + 2) % 4; // 掼蛋对家 = 同队队友
+    let cards = [];
+    try { cards = g.wasm.view(teammate)?.hand?.cards ?? []; } catch { /* 视图不可用则不展示 */ }
+    // 队友已出完（无牌）时清掉旧展示。
+    if (!cards.length) { this.clearTeammateHand(); return; }
+
+    const rank = g.wasm.info()?.seats?.find((s) => s.seat === teammate)?.rank ?? 0;
+    const sig = `${rank}|${cards.slice().sort((a, b) => a - b).join(',')}|${offsetY}`;
+    if (this.teammateSig === sig) return; // 手牌/名次/位置没变，不重建（render 高频触发）
+    this.teammateSig = sig;
+    this.clearTeammateHand();
+
+    const level = g.levelRankLabel();
+    const p = SLOTS.bottom;
+    // 我的出牌区在 (640,372)，结算弹窗压住 150~570；offsetY 时搬到弹窗下方 y≈600。
+    const anchorX = p.cx;
+    const anchorY = offsetY ? 610 : p.cy + 58;
+    const SCALE = 0.4;
+    const cw = CARD_W * SCALE;
+    const rowStep = 13;
+    const cols = new Map();
+    for (const id of cards) {
+      const key = columnKey(id, level);
+      if (!cols.has(key)) cols.set(key, []);
+      cols.get(key).push(id);
+    }
+    const keys = [...cols.keys()].sort((a, b) => b - a);
+    const colGap = cw * 0.6;
+    const totalW = (keys.length - 1) * colGap;
+    // 同点数叠列必须「下面的牌压上面的牌」，否则上牌盖住下牌角标看不到所有数字。
+    // ri=0 最下、ri 越大越往上；depth 随 y 递增（y 越大越靠下 depth 越高）。
+    const maxRows = Math.max(1, ...[...cols.values()].map((ids) => ids.length));
+    keys.forEach((key, ci) => {
+      const ids = cols.get(key).slice().sort((a, b) => a - b);
+      const x = anchorX - totalW / 2 + ci * colGap;
+      ids.forEach((id, ri) => {
+        const y = anchorY - ri * rowStep;
+        const view = this.makeCardView(id, x, y, { scale: SCALE, faceUp: true, level });
+        // 基础 208 在结算遮罩(200)/弹窗(201~204)之上；叠列内按行号递增。
+        view.setDepth(208 + (maxRows - 1 - ri));
+        this.teammateViews.push(view);
+      });
+    });
+    const rankText = rank >= 1 && rank <= 4 ? RANK_LABELS[rank] : '';
+    // 标签按牌的实际上边缘定位，留出固定间隔，避免压住牌面。
+    // 牌中心 y = anchorY - ri*rowStep，牌半高 = CARD_H*SCALE/2；标签 origin 0.5、高约 20。
+    const cardHalfH = (CARD_H * SCALE) / 2;
+    const labelHalfH = 12; // 13px 字 + padding(3*2) ≈ 23px 高
+    const gap = 24;
+    const topCardY = anchorY - (maxRows - 1) * rowStep;
+    // 结算时弹窗底边 y=570：标签放牌下方，否则上移会钻进弹窗被遮住。
+    const labelY = offsetY
+      ? anchorY + cardHalfH + gap + labelHalfH
+      : topCardY - cardHalfH - gap - labelHalfH;
+    const label = this.add.text(anchorX, labelY,
+      `队友（座位 ${teammate}）手牌 ${cards.length} 张${rankText ? ' · ' + rankText : ''} · 仅查看`, {
+        fontFamily: 'sans-serif', fontSize: '13px', color: '#ffe9a8', fontStyle: 'bold',
+        backgroundColor: '#0f2d3a', padding: { x: 6, y: 3 },
+      }).setOrigin(0.5).setDepth(208 + maxRows + 1); // 高于所有叠列牌
+    this.teammateViews.push(label);
+  }
+
+  clearTeammateHand() {
+    this.teammateViews.forEach((v) => v.destroy());
+    this.teammateViews = [];
+    this.teammateSig = '';
+  }
+
   clearFly() {
     this.flyViews.forEach((v) => v.destroy());
     this.flyViews = [];
@@ -1335,17 +1414,17 @@ export class TableScene extends Phaser.Scene {
       const keys = [...cols.keys()].sort((a, b) => b - a);
       const colGap = cw * 0.62; // 小牌列稍重叠，紧凑
       const totalW = (keys.length - 1) * colGap;
-      let maxRows = 1;
+      // 下压上：ri=0 最下 depth 最高，上牌不盖住下牌角标。
+      const maxRows = Math.max(1, ...[...cols.values()].map((ids) => ids.length));
       keys.forEach((key, ci) => {
         const ids = cols.get(key).slice().sort((a, b) => a - b);
         const x = anchorX - totalW / 2 + ci * colGap;
         ids.forEach((id, ri) => {
           const y = anchorY - ri * rowStep;
           const view = this.makeCardView(id, x, y, { scale: SCALE, faceUp: true, level });
-          view.setDepth(210);
+          view.setDepth(210 + (maxRows - 1 - ri));
           L.push(view);
         });
-        maxRows = Math.max(maxRows, ids.length);
       });
       // 剩余张数标签：顶部放牌下方，其余放牌上方（避开牌区）。
       const labelY = isTop
@@ -1355,7 +1434,7 @@ export class TableScene extends Phaser.Scene {
         `座位 ${seat} 剩 ${cards.length} 张`, {
           fontFamily: 'sans-serif', fontSize: '13px', color: '#ffe9a8', fontStyle: 'bold',
           backgroundColor: '#0f2d3a', padding: { x: 6, y: 3 },
-        }).setOrigin(0.5).setDepth(211);
+        }).setOrigin(0.5).setDepth(210 + maxRows + 1);
       L.push(label);
     }
   }
@@ -1406,6 +1485,8 @@ export class TableScene extends Phaser.Scene {
     L.push(nextBtn.labelText);
     this.statusText.setText(ended ? '全场结束' : '本局结算');
     this.settleLayer = L;
+    // 结算弹窗已就位：把队友手牌展示从出牌区挪到弹窗下方（render 传 settleLayer 判断需要重新定位）。
+    if (this.lastSnapshot) this.render(this.lastSnapshot);
   }
 
   // ---- 渲染（响应 state 变化） ----
@@ -1464,6 +1545,9 @@ export class TableScene extends Phaser.Scene {
     this.updateCountdown(snap, iAmFinished);
     this.renderHand(snap);
     this.syncSuitTabs(snap);
+    // 我出完牌后：把队友手牌只读摊在我的出牌区（结算弹窗出现时下移避让）。
+    if (iAmFinished) this.showTeammateHand(this.settleLayer ? 1 : 0);
+    else this.clearTeammateHand();
   }
 
   // 四花色按钮：能凑出同花顺→用主题花色墨色高亮、可点；否则灰显、不可点。

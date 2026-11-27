@@ -159,14 +159,20 @@ impl AdminState {
     }
 
     /// 记一条审计并放进内存；返回副本供 PG 持久化。
-    pub async fn record_audit(&self, action: &str, target: &str, detail: Value) -> AdminAudit {
+    pub async fn record_audit(
+        &self,
+        action: &str,
+        target: &str,
+        detail: Value,
+        actor: &str,
+    ) -> AdminAudit {
         let now = now_unix_ms();
         let seq = self.audit_seq.fetch_add(1, Ordering::Relaxed);
         let audit = AdminAudit {
             audit_id: format!("a-{now:x}-{seq:08x}"),
             action: action.to_owned(),
             target: target.to_owned(),
-            actor: "admin".to_owned(),
+            actor: audit_actor(actor),
             detail,
             created_at_ms: now,
         };
@@ -184,6 +190,7 @@ pub fn router() -> Router<std::sync::Arc<App>> {
         .route("/api/admin/overview", get(overview))
         .route("/api/admin/users", get(users))
         .route("/api/admin/users/{player_id}", patch(update_user))
+        .route("/api/admin/rooms", get(rooms))
         .route("/api/admin/games", get(games))
         .route("/api/admin/games/{game_id}", put(update_game))
         .route("/api/admin/matches", get(matches))
@@ -298,6 +305,107 @@ async fn overview(State(app): State<std::sync::Arc<App>>, headers: HeaderMap) ->
         "uptimeMs": app.started_at.elapsed().as_millis() as u64,
     }))
     .into_response()
+}
+
+/// 房间巡检：只读当前在册房间，按建房时间倒序；不含手牌与任何令牌。
+async fn rooms(
+    State(app): State<std::sync::Arc<App>>,
+    headers: HeaderMap,
+    Query(query): Query<PageQuery>,
+) -> Response {
+    if let Err(resp) = check_admin(&app, &headers) {
+        return *resp;
+    }
+    let page = query.page.unwrap_or(1).max(1);
+    let page_size = query.page_size.unwrap_or(20).clamp(1, 100);
+    let mut handles = app.room_handles().await;
+    handles.sort_by_key(|room| std::cmp::Reverse(room.created_at_ms()));
+    let total = handles.len();
+    let offset = ((page - 1) as usize).saturating_mul(page_size as usize);
+    let selected = handles
+        .into_iter()
+        .skip(offset)
+        .take(page_size as usize)
+        .collect::<Vec<_>>();
+    let mut items = Vec::with_capacity(selected.len());
+    for handle in selected {
+        let seats = handle.seat_directory().await;
+        let online = handle.connected_seats().await;
+        let meta = handle.snapshot_meta().await;
+        let started = handle.started();
+        let seated = seats.iter().filter(|(_, owner)| owner.is_some()).count();
+        let item = json!({
+            "matchId": handle.match_id(),
+            "gameId": DEFAULT_GAME_ID,
+            "mode": handle.mode().await,
+            "phase": meta.as_ref().map(|m| m.3),
+            "phaseLabel": if !started {
+                "waiting"
+            } else {
+                meta.as_ref().map(|m| phase_label(m.3)).unwrap_or("unknown")
+            },
+            "roundNo": meta.as_ref().map(|m| m.1),
+            "roomSeq": meta.as_ref().map(|m| m.0),
+            "stateHash": meta.as_ref().map(|m| hex32(&m.2)),
+            "seatsCount": crate::host::SEATS,
+            "seated": seated,
+            "online": online.len(),
+            "closed": handle.closed(),
+            "createdAtMs": handle.created_at_ms(),
+            "uptimeMs": handle.now_ms(),
+            "seats": seats.iter().map(|(seat, owner)| json!({
+                "seat": seat,
+                "playerId": owner,
+                "online": online.contains(seat),
+            })).collect::<Vec<_>>(),
+        });
+        items.push(item);
+    }
+    Json(json!({
+        "items": items,
+        "total": total,
+        "page": page,
+        "pageSize": page_size,
+    }))
+    .into_response()
+}
+
+fn phase_label(phase: u16) -> &'static str {
+    match phase {
+        0 => "deal",
+        1 => "tribute",
+        2 => "play",
+        3 => "settle",
+        _ => "unknown",
+    }
+}
+
+fn hex32(bytes: &[u8; 32]) -> String {
+    let mut out = String::with_capacity(64);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
+/// 审计操作者：单令牌后台没有账号体系，允许运维在请求头 `X-Admin-Actor`
+/// 里自报一个 1–32 字符的标识（中文名也可以）；缺省记 `admin`。
+fn audit_actor(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.chars().count() > 32 || trimmed.chars().any(|c| c.is_control())
+    {
+        return "admin".to_owned();
+    }
+    trimmed.to_owned()
+}
+
+fn actor_from_headers(headers: &HeaderMap) -> String {
+    headers
+        .get("x-admin-actor")
+        .and_then(|value| std::str::from_utf8(value.as_bytes()).ok())
+        .map(audit_actor)
+        .unwrap_or_else(|| "admin".to_owned())
 }
 
 async fn memory_stats(app: &App, since: u64) -> AdminStats {
@@ -464,6 +572,7 @@ async fn update_user(
             "user.status",
             &player_id,
             json!({"from": from_status, "to": body.status}),
+            &actor_from_headers(&headers),
         )
         .await;
     persist_audit(&app, &audit).await;
@@ -583,6 +692,7 @@ async fn update_game(
                     "nextDealMs": setting.next_deal_ms,
                 },
             }),
+            &actor_from_headers(&headers),
         )
         .await;
     persist_audit(&app, &audit).await;

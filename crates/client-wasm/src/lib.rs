@@ -489,9 +489,7 @@ fn display_order_impl(cards: &[u16], pattern: &str, level_rank: i8) -> Vec<u16> 
     }
     let mut ds: Vec<DispCard> = cards.iter().copied().map(disp_decode).collect();
     for d in ds.iter_mut() {
-        d.wild = level_rank >= 0
-            && d.rank.map_or(false, |r| r as i8 == level_rank)
-            && d.suit == 1;
+        d.wild = level_rank >= 0 && d.rank.map_or(false, |r| r as i8 == level_rank) && d.suit == 1;
     }
 
     // 排序键：(主序, 花色序, 副本, id) —— 主序越小越靠前，同主序按 ♠♥♣♦。
@@ -541,9 +539,8 @@ fn display_order_impl(cards: &[u16], pattern: &str, level_rank: i8) -> Vec<u16> 
         } else {
             win.clone()
         };
-        let pos_of = |r: usize| -> i32 {
-            display.iter().position(|&x| x == r).unwrap_or(len) as i32
-        };
+        let pos_of =
+            |r: usize| -> i32 { display.iter().position(|&x| x == r).unwrap_or(len) as i32 };
         for d in &ds {
             if d.wild {
                 continue;
@@ -577,7 +574,9 @@ fn display_order_impl(cards: &[u16], pattern: &str, level_rank: i8) -> Vec<u16> 
                 }
             }
         }
-        let main = (0..13).filter(|&r| cnt[r] >= 2).max_by_key(|&r| (cnt[r], r));
+        let main = (0..13)
+            .filter(|&r| cnt[r] >= 2)
+            .max_by_key(|&r| (cnt[r], r));
         let pair = (0..13)
             .filter(|&r| Some(r) != main && cnt[r] >= 1)
             .max_by_key(|&r| (cnt[r], r));
@@ -608,7 +607,13 @@ fn display_order_impl(cards: &[u16], pattern: &str, level_rank: i8) -> Vec<u16> 
             .iter()
             .find(|d| !d.wild && d.rank.is_some())
             .and_then(|d| d.rank)
-            .or_else(|| if level_rank >= 0 { Some(level_rank as usize) } else { None })
+            .or_else(|| {
+                if level_rank >= 0 {
+                    Some(level_rank as usize)
+                } else {
+                    None
+                }
+            })
             .unwrap_or(0);
         for d in &ds {
             let p = if d.wild {

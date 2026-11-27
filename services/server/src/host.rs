@@ -124,6 +124,10 @@ pub struct RoomHost {
     /// 否则同一个 requestId 并发进来会双双错过缓存，产生不一致回执。
     submit_lock: tokio::sync::Mutex<()>,
     started_at: Instant,
+    /// 建房墙钟毫秒（运营后台巡检用；房间没有真实开局时间字段）。
+    created_at_ms: u64,
+    /// 组局模式（`casual` / `ranked` / `mixed`）：建房接口写入，后台只读展示。
+    mode: RwLock<String>,
     opts: RoomOptions,
     started: AtomicBool,
     next_deal_at: AtomicU64,
@@ -162,6 +166,8 @@ impl RoomHost {
             ack_cache: Mutex::new(HashMap::new()),
             submit_lock: tokio::sync::Mutex::new(()),
             started_at: Instant::now(),
+            created_at_ms: crate::now_unix_ms(),
+            mode: RwLock::new("mixed".to_owned()),
             opts,
             started: AtomicBool::new(false),
             next_deal_at: AtomicU64::new(0),
@@ -666,6 +672,36 @@ impl RoomHost {
     /// 房间号。
     pub fn match_id(&self) -> &str {
         &self.match_id
+    }
+
+    /// 建房墙钟毫秒。
+    pub fn created_at_ms(&self) -> u64 {
+        self.created_at_ms
+    }
+
+    /// 是否已经凑满开桌（未开桌时引擎还没有可读状态）。
+    pub fn started(&self) -> bool {
+        self.started.load(Ordering::Relaxed)
+    }
+
+    /// 组局模式；建房接口写入，后台巡检只读。
+    pub async fn mode(&self) -> String {
+        self.mode.read().await.clone()
+    }
+
+    /// 建房后由大厅接口登记模式；只接受三个已知值，未知值不改写。
+    pub async fn set_mode(&self, mode: &str) {
+        if matches!(mode, "casual" | "ranked" | "mixed") {
+            *self.mode.write().await = mode.to_owned();
+        }
+    }
+
+    /// 座位与账号绑定快照（后台巡检用；不暴露 token）。
+    pub async fn seat_directory(&self) -> Vec<(u8, Option<String>)> {
+        let owners = self.owners.read().await;
+        (0..SEATS)
+            .map(|seat| (seat, owners.get(&seat).cloned()))
+            .collect()
     }
 
     /// 重连前把本座位的新连接登记为下行通道（旧连接若还在，直接被顶掉）。

@@ -181,6 +181,71 @@ async fn admin_users_can_be_disabled_and_reenabled() {
 }
 
 #[tokio::test]
+async fn admin_lists_rooms_with_mode_and_seats() {
+    let app = make_app(ADMIN_TOKEN);
+    request_sms(&app, PHONE_A).await;
+    let (_, login_body) = login(&app, PHONE_A).await;
+    let player_token = login_body["token"].as_str().unwrap().to_owned();
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/room/create",
+        Some(&player_token),
+        Some(json!({"mode": "casual"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "建房失败：{body}");
+    let match_id = body["matchId"].as_str().expect("matchId").to_owned();
+
+    let (status, body) = admin(&app, "GET", "/api/admin/rooms", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["total"], 1);
+    let room = &body["items"][0];
+    assert_eq!(room["matchId"], match_id);
+    assert_eq!(room["mode"], "casual");
+    assert_eq!(room["seatsCount"], 4);
+    assert_eq!(room["seated"], 0);
+    assert_eq!(room["online"], 0);
+    assert_eq!(room["phaseLabel"], "waiting");
+    assert_eq!(room["seats"].as_array().expect("seats").len(), 4);
+    assert!(room["stateHash"].is_null());
+
+    let (status, body) = admin(&app, "GET", "/api/admin/rooms?page=2&pageSize=1", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["total"], 1);
+    assert_eq!(body["items"].as_array().expect("items").len(), 0);
+}
+
+#[tokio::test]
+async fn admin_audit_records_operator_header() {
+    let app = make_app(ADMIN_TOKEN);
+    request_sms(&app, PHONE_A).await;
+    let (_, login_body) = login(&app, PHONE_A).await;
+    let player_id = login_body["playerId"].as_str().unwrap().to_owned();
+
+    let request = Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/admin/users/{player_id}"))
+        .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
+        .header("x-admin-actor", "张三")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"status": "disabled"}).to_string()))
+        .expect("请求构造失败");
+    let response = app
+        .clone()
+        .router()
+        .oneshot(request)
+        .await
+        .expect("路由失败");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let (status, body) = admin(&app, "GET", "/api/admin/audits", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["items"][0]["actor"], "张三");
+}
+
+#[tokio::test]
 async fn admin_game_setting_validates_and_gates_room_create() {
     let app = make_app(ADMIN_TOKEN);
     request_sms(&app, PHONE_A).await;

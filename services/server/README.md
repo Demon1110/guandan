@@ -127,6 +127,8 @@ cargo clippy -p gf-server --all-targets -- -D warnings
 
 后台令牌独立于玩家 JWT：请求头 `Authorization: Bearer <GF_ADMIN_TOKEN>`。令牌留空时所有
 `/api/admin/*` 返回 `503 ADMIN_DISABLED`；缺失或错误返回 `401 ADMIN_UNAUTHORIZED`。
+写操作可选带 `X-Admin-Actor: <操作者>`（1–32 字符，缺省记 `admin`），会原样写进审计的
+`actor` 字段，用来区分同一令牌下的值班人。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -134,6 +136,7 @@ cargo clippy -p gf-server --all-targets -- -D warnings
 | `GET` | `/api/admin/overview` | 账号、对局、房间、存储开关与运行时长 |
 | `GET` | `/api/admin/users` | `keyword`（玩家 ID / 昵称 / 尾号）+ `status`（`active` / `disabled`）+ `page` / `pageSize` |
 | `PATCH` | `/api/admin/users/{playerId}` | `{status}`；禁用后旧 access 立即失效，无法再登录/刷新 |
+| `GET` | `/api/admin/rooms` | 在册房间巡检：模式、相位、局号、`stateHash`、入座/在线人数与逐座位 `playerId`；`page` / `pageSize` |
 | `GET` | `/api/admin/games` | 玩法配置（含只读的规则集版本、座位数） |
 | `PUT` | `/api/admin/games/guandan` | `{displayName, enabled, modes, nextDealMs}`；即时作用到建房与匹配 |
 | `GET` | `/api/admin/matches` | 已结束对局列表（PG 的 `match_record`） |
