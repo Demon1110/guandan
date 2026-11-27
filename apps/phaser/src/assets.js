@@ -16,10 +16,9 @@ export const ASSETS = {
   avatarSelf: { mode: 'programmatic', glyph: '我', color: 0xf0c751, text: '#3b2a10' },
   avatarBot: { mode: 'programmatic', glyph: '掼', color: 0xf0c751, text: '#3b2a10' },
 
-  // 级牌徽标 / 倍数牌 / 牌背
+  // 级牌徽标 / 倍数牌（牌背走 gfdeck 主题纹理，不再自画）
   levelBadge: { mode: 'programmatic', color: 0xf3a017 },
   multiplier: { mode: 'programmatic', color: 0x27424a },
-  cardBack: { mode: 'programmatic', color: 0x174a7a, inner: 0x123a5e, glyph: '掼' },
 
   // 倒计时环：正常 / 告急
   countdownOk: { mode: 'programmatic', color: 0xf3c34a },

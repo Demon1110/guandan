@@ -1063,8 +1063,14 @@ unsafe fn theme_load_impl(
             .join(","),
         Err(e) => return theme_err(e),
     };
+    // 四花色墨色（♠♥♦♣）：palette.suits 优先、回落 red/black，与牌面 suit_ink 一致。
+    // 供 UI 给花色按钮等着色，避免 JS 侧再解gfdeck 加密包。
+    let suit_inks: Vec<String> = gf_deckart::card::Suit::ALL
+        .iter()
+        .map(|s| json_str(meta.suit_ink(*s)))
+        .collect();
     out(format!(
-        "{{\"ok\":true,\"themeId\":{},\"version\":{},\"name\":{},\"license\":{},\"layout\":\"{layout}\",\"cornerScale\":{},\"bytes\":{},\"levelRank\":{},\"faces\":[{}],\"preview\":[{}]}}",
+        "{{\"ok\":true,\"themeId\":{},\"version\":{},\"name\":{},\"license\":{},\"layout\":\"{layout}\",\"cornerScale\":{},\"bytes\":{},\"levelRank\":{},\"suitInks\":[{}],\"faces\":[{}],\"preview\":[{}]}}",
         json_str(&meta.id),
         meta.version,
         json_str(&meta.name),
@@ -1074,6 +1080,7 @@ unsafe fn theme_load_impl(
             .unwrap_or_else(|| "null".to_string()),
         pack.len(),
         level.map(|l| l.level_rank.value()).unwrap_or(0),
+        suit_inks.join(","),
         codes.join(","),
         preview
     ))

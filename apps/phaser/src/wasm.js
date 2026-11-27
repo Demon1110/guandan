@@ -61,12 +61,15 @@ export class WasmBridge {
   }
 
   // ---- 房间生命周期 ----
-  create(seedHi, seedLo, humanMask, level = 2) {
+  // botLevel 独立于级牌：0=L0简单 / 1=L1普通 / 2=L2困难。
+  create(seedHi, seedLo, humanMask, botLevel = 2) {
     const ok = this.ex.gf_room_new_level
-      ? this.ex.gf_room_new_level(seedHi, seedLo, humanMask, level)
+      ? this.ex.gf_room_new_level(seedHi, seedLo, humanMask, botLevel)
       : this.ex.gf_room_new(seedHi, seedLo, humanMask);
     if (ok !== 1) throw new Error('建桌失败');
-    if (this.ex.gf_room_start(BigInt(0)) !== 1) throw new Error('发牌失败');
+    // 必须与 step/submit 用同一时钟（performance.now），否则 deadline 停在极小值，
+    // 引擎会在还贡/出牌窗口立即判定超时自动托管，玩家永远轮不到手动操作。
+    if (this.ex.gf_room_start(BigInt(Math.round(this.now()))) !== 1) throw new Error('发牌失败');
   }
 
   step(at = this.now()) {
@@ -87,8 +90,8 @@ export class WasmBridge {
     );
   }
 
-  nextRound(at = 0) {
-    return this.json(this.ex.gf_room_next_round(BigInt(at))).kind === 'dealt';
+  nextRound(at = this.now()) {
+    return this.json(this.ex.gf_room_next_round(BigInt(Math.round(at)))).kind === 'dealt';
   }
 
   resumeWindow(at = this.now()) {
@@ -164,7 +167,7 @@ export class WasmBridge {
     }
   }
 
-  // ---- 主题（可选，包损坏时调用方回退字卡） ----
+  // ---- 主题（硬依赖，包损坏时由 main.js 中止启动） ----
   // 用 gf_theme_load_verified（强制验签），审计中 gf_theme_load 的 FLAG_SIGNED 可被清除绕过。
   themeLoad(packBytes, pubBytes) {
     const fn = this.ex.gf_theme_load_verified ?? this.ex.gf_theme_load;
@@ -179,6 +182,12 @@ export class WasmBridge {
     return this.withBytes(new TextEncoder().encode(code), (ptr, len) =>
       this.json(this.ex.gf_theme_card(ptr, len, level, pct)),
     );
+  }
+
+  // 牌背 SVG（与级牌无关，一个主题一张）。返回 {"ok":true,"svg"}。
+  themeBack() {
+    if (!this.ex.gf_theme_back) return null;
+    return this.json(this.ex.gf_theme_back());
   }
 
   themeUnload() {

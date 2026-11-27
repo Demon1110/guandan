@@ -1,7 +1,7 @@
 // 主题皮肤管理：加载 .gfdeck（强制验签）、缓存 wasm 合成的牌面 SVG、登记为 Phaser 纹理。
-// 加载失败（包损坏 / 验签不符 / 无 wasm 导出）一律回退字卡，牌桌不阻塞。
+// 主题是硬依赖：加载/验签失败返回 {ok:false}，由 main.js 中止启动，不回退自画字卡。
 // 支持运行时热切换：wasm 的 themeLoad 是全局替换式，切换时旧纹理/SVG 缓存全部失效。
-import { faceCode } from './cards.js';
+import { faceCode, rankCode } from './cards.js';
 
 const PUBKEY_HEX = 'd04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737';
 const SUITS = ['S', 'H', 'D', 'C'];
@@ -34,9 +34,11 @@ export class Skin {
     this.loaded = false;
     this.meta = null;
     this.themeId = null;
+    this.suitInks = null; // wasm 导出的四花色墨色 [#RRGGBB ×4]，与牌面 suit_ink 一致
     this.cornerPct = 220; // 加载后由主题元数据覆盖
     this.svgCache = new Map(); // key -> svg|null
     this.texKeys = new Set(); // 已登记的纹理键（带主题前缀）
+    this.backKey = null; // 牌背纹理键（主题加载后登记）
   }
 
   // 选初始主题：URL ?theme= 优先，其次 localStorage，最后默认 squabby。
@@ -61,7 +63,7 @@ export class Skin {
       const pack = new Uint8Array(await res.arrayBuffer());
       const r = this.wasm.themeLoad(pack, hexToBytes(PUBKEY_HEX));
       if (!r || !r.ok) {
-        console.warn('[skin] 主题加载失败，回退字卡：', r?.error ?? '无导出');
+        console.error('[skin] 主题加载失败（中止启动）：', r?.error ?? '无导出');
         return { ok: false, id: this.themeId, label: null, error: r?.error ?? '无导出' };
       }
       // 主题切换：清掉上一主题的纹理与 SVG 缓存，避免纹理键串味。
@@ -69,14 +71,21 @@ export class Skin {
       this.themeId = themeKey;
       this.meta = r;
       this.loaded = true;
+      // 四花色墨色由 wasm 从 palette.suits（或 red/black 回落）算出，UI 直接用它着色。
+      this.suitInks = Array.isArray(r.suitInks) && r.suitInks.length === 4 ? r.suitInks.slice() : null;
       // 角标倍率跟随主题声明（squabby 2.5→250，defaults 2.2→220），未声明回退 220。
       const scale = Number(r.cornerScale);
       this.cornerPct = Number.isFinite(scale) && scale > 0 ? Math.round(scale * 100) : 220;
+      // 牌背：从 gfdeck 取 SVG 并登记纹理（主题硬依赖，失败即中止）。
+      this.backKey = await this.registerBack();
+      if (!this.backKey) {
+        return { ok: false, id: themeKey, label: null, error: '牌背素材缺失（gfdeck 未提供可用 back.svg）' };
+      }
       try { localStorage.setItem(STORAGE_KEY, themeKey); } catch { /* 忽略 */ }
       console.info(`[skin] 主题 ${r.themeId}@${r.version}「${r.name}」已载入，角标 ${this.cornerPct}%`);
       return { ok: true, id: themeKey, label: spec.label };
     } catch (e) {
-      console.warn('[skin] 主题加载异常，回退字卡：', e.message);
+      console.error('[skin] 主题加载异常（中止启动）：', e.message);
       return { ok: false, id: this.themeId, label: null, error: e.message };
     }
   }
@@ -87,6 +96,7 @@ export class Skin {
   clearCache() {
     this.texKeys.clear();
     this.svgCache.clear();
+    this.backKey = null; // 随后 load 会 registerBack 重设
   }
 
   texKey(code, level, pct) {
@@ -100,7 +110,7 @@ export class Skin {
     try {
       const r = this.wasm.themeCard(code, level, pct);
       svg = r?.ok ? r.svg : null;
-    } catch { /* 回退字卡 */ }
+    } catch { /* 单张 SVG 合成失败 → 返回 null，上层 makeCardView 抛错中止 */ }
     this.svgCache.set(key, svg);
     return svg;
   }
@@ -114,6 +124,23 @@ export class Skin {
     if (this.texKeys.has(key)) return Promise.resolve(key);
     const svg = this.ensureSvg(code, level, pct);
     if (!svg) return Promise.resolve(null);
+    return this.rasterize(key, svg);
+  }
+
+  // 把主题牌背 SVG 登记为纹理（与级牌无关，key 固定带 BACK）。
+  // 主题硬依赖：失败由 load 返回 ok:false 中止启动。
+  registerBack() {
+    const key = `card_${this.themeId}_BACK`;
+    if (!this.scene) return Promise.resolve(null);
+    if (this.texKeys.has(key)) return Promise.resolve(key);
+    let svg = null;
+    try { svg = this.wasm.themeBack?.()?.svg ?? null; } catch { /* 由下方判空处理 */ }
+    if (!svg) return Promise.resolve(null);
+    return this.rasterize(key, svg);
+  }
+
+  // SVG → Phaser canvas 纹理（牌面/牌背共用）：500×700 光栅化 + 内缘圆角描边。
+  rasterize(key, svg) {
     return new Promise((resolve) => {
       try {
         const image = new Image();
@@ -165,10 +192,23 @@ export class Skin {
     await Promise.all(ALL_CODES.map((code) => this.registerTexture(code, level, pct)));
   }
 
-  // 取已登记的纹理键（同步）；未预热/失败返回 null → 场景回退字卡。
+  // 取某花色的主题墨色（0xRRGGBB）。wasm 在 themeLoad 时已按
+  // palette.suits.{spade|heart|diamond|club} 优先、回落 red/black 算出四色，
+  // 这里只做 #RRGGBB 解析；无主题/格式非法返回 null（调用方自行回退）。
+  suitInk(suit) {
+    const hex = this.suitInks?.[suit];
+    if (typeof hex !== 'string') return null;
+    const m = /^#([0-9a-fA-F]{6})$/.exec(hex.trim());
+    return m ? parseInt(m[1], 16) : null;
+  }
+
+  // 取已登记的纹理键（同步）；未预热/失败返回 null → 场景抛错中止（不回退字卡）。
+  // level 兼容数字级牌码(1..13)与字符串标签('A'/'10'…)，统一成数字 key，
+  // 避免发牌/出牌等场景传不同形态导致 key 不匹配、牌面突然从字卡变主题。
   textureKey(cardId, level) {
     if (!this.loaded) return null;
-    const key = this.texKey(faceCode(cardId), level, this.cornerPct);
+    const lv = typeof level === 'string' ? rankCode(level) : level;
+    const key = this.texKey(faceCode(cardId), lv, this.cornerPct);
     return this.texKeys.has(key) ? key : null;
   }
 }

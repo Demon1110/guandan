@@ -71,6 +71,22 @@ export function rankCode(label) {
   return Number(label);
 }
 
+// 点数索引 0..12（2..A）；王为 -1。
+export function rankIndexOf(id) {
+  if (id >= JOKER_BASE) return -1;
+  return Math.floor(id / 2) % 13;
+}
+
+// 花色索引 0..3（♠♥♦♣）；小王=4、大王=5（对齐 web）。
+export function suitIndexOf(id) {
+  if (id >= JOKER_BASE) return id < JOKER_BASE + 2 ? 4 : 5;
+  return Math.floor(Math.floor(id / 2) / 13);
+}
+
+// 特殊牌型（炸弹/王炸/同花顺）：理牌时理到最左列。对齐 web 的 SPECIAL_PATTERN。
+export const SPECIAL_PATTERN = (pid) =>
+  pid === 'joker-bomb' || pid.startsWith('bomb-') || pid.startsWith('straight-flush');
+
 // 牌 id → deckart Face code（gf_theme_card 的入参）。S/H/D/C + 点数；王为 JOKER-B/S。
 const CODE_SUIT = ['S', 'H', 'D', 'C'];
 const CODE_RANK = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
@@ -80,14 +96,31 @@ export function faceCode(id) {
   return CODE_SUIT[Math.floor(base / 13)] + CODE_RANK[base % 13];
 }
 
-// 掼蛋炸弹识别。wasm 的 applied 事件只带 {pass, cards}，不带 patternId，
-// 所以这里按牌结构判定（与引擎 BombRole 对齐：同点炸弹 / 四王 / 同花顺）。
+// 掼蛋炸弹识别。优先用引擎 canPlay 返回的 patternId 判定（权威，含红配补位的炸弹），
+// 没有 patternId 时（如 step 的 applied 事件）再按牌结构判定（同点炸弹 / 四王 / 同花顺）。
 // 返回 null 或 { kind:'rank'|'joker'|'flush', label, count }。
-export function detectBomb(cards) {
+export function detectBomb(cards, patternId = null) {
   if (!Array.isArray(cards)) return null;
   const list = cards.filter((c) => Number.isInteger(c));
   const n = list.length;
   if (n < 4) return null;
+
+  // 引擎权威判定：红桃级牌（红配）可补位成炸弹，牌结构看点数不一致，只有 patternId 认得出。
+  if (typeof patternId === 'string' && patternId) {
+    if (patternId === 'joker-bomb') {
+      return { kind: 'joker', label: n === 4 ? '王炸' : '四王炸', count: n };
+    }
+    const bm = /^bomb-(\d+)$/.exec(patternId);
+    if (bm) {
+      const k = Number(bm[1]);
+      return { kind: 'rank', label: k >= 6 ? `${k} 张炸` : '炸弹', count: k };
+    }
+    if (patternId.startsWith('straight-flush')) {
+      return { kind: 'flush', label: '同花顺', count: n };
+    }
+    // 明确不是炸弹（single/pair/triple/...）：不再走牌结构猜测，避免红配牌误判。
+    return null;
+  }
 
   const jokers = list.filter((c) => c >= JOKER_BASE);
   if (jokers.length === n) {

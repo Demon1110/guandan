@@ -9,7 +9,9 @@ export class Game {
     this.seedHi = 0x51ed;
     this.seedLo = 0xa106;
     this.humanSeat = 0;
-    this.level = 2;
+    this.level = 2; // 级牌（本局打几），与 bot 难度无关
+    this.botLevel = 2; // 0=L0简单 / 1=L1普通 / 2=L2困难
+    this.actions = []; // 已发生动作序列，用于存档恢复（replay）
     this.running = false;
     this.phase = 'idle'; // idle | tribute | play | settle | ended
     this.waitingSeat = null;
@@ -18,6 +20,7 @@ export class Game {
     this.hintIdx = 0;
     this.listeners = { change: [], event: [] };
     this.timer = null;
+    this.settleTimer = null; // 延迟结算定时器（等最后一手特效播完）
     this.speed = 320; // bot 每手间隔毫秒
     this.roundNo = 0; // 进贡事件去重用
     this.tributeSeen = new Set();
@@ -76,18 +79,20 @@ export class Game {
 
   // 第一步：只建桌 + 进入独立的「发牌」阶段。真正的对局要等 beginPlay() 才开始，
   // 让 TableScene 有机会把发牌动画完整播完（见 deal 事件）。
-  start({ seedHi, seedLo, humanSeat = 0, level = 2 } = {}) {
+  start({ seedHi, seedLo, humanSeat = 0, level = 2, botLevel = 2 } = {}) {
     this.stop();
     this.seedHi = seedHi ?? 0x51ed;
     this.seedLo = seedLo ?? 0xa106;
     this.humanSeat = humanSeat;
     this.level = level;
+    this.botLevel = botLevel;
     const mask = 1 << humanSeat;
-    this.wasm.create(this.seedHi, this.seedLo, mask, level);
+    this.wasm.create(this.seedHi, this.seedLo, mask, botLevel);
     this.phase = 'dealing';
     this.waitingSeat = null;
     this.selected.clear();
     this.lastBySeat = {};
+    this.actions = [];
     this.hintIdx = 0;
     this.roundNo = 0;
     this.tributeSeen.clear();
@@ -113,6 +118,8 @@ export class Game {
     this.running = false;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    if (this.settleTimer) clearTimeout(this.settleTimer);
+    this.settleTimer = null;
   }
 
   // 主循环：连续 step，遇到 waiting 让出控制权（人类回合挂起，bot 回合稍后继续）。
@@ -149,7 +156,11 @@ export class Game {
             this.pump();
             return;
           }
-          // 人类回合挂起，等待 submit/pass 后由调用方再次 pump。
+          // 人类回合：若全部手牌能作为一手直接出完，自动打出，无需手动选牌。
+          const auto = this.tryAutoFinish();
+          if (auto === 'settled') return; // 这一手已终局，结算事件已派发
+          if (auto === 'played') continue; // 已出完这一手，继续主循环推进其他家
+          // 否则挂起，等待 submit/pass 后由调用方再次 pump。
           this.running = false;
           return;
         }
@@ -224,6 +235,25 @@ export class Game {
 
   remember(s) {
     const a = s.action ?? {};
+    // 累积动作序列（含 seat/pass/cards/tributeReturn）用于存档恢复。
+    // roomSeq 递增即一条新动作，去重避免 submit 自己派发与 step 重复记录。
+    if (s.roomSeq != null) {
+      if (this.actions.length < s.roomSeq) {
+        this.actions.push({
+          seat: s.seat,
+          pass: !!a.pass,
+          tributeReturn: !!a.tributeReturn,
+          cards: a.cards ?? [],
+        });
+      }
+    } else {
+      this.actions.push({
+        seat: s.seat,
+        pass: !!a.pass,
+        tributeReturn: !!a.tributeReturn,
+        cards: a.cards ?? [],
+      });
+    }
     this.lastBySeat[s.seat] = {
       pass: !!a.pass,
       tributeReturn: !!a.tributeReturn,
@@ -248,6 +278,81 @@ export class Game {
     this.emitChange();
   }
 
+  // 自动出完：轮到我方且手牌能作为一手合法牌全部打出时，直接出完（如剩一手炸弹/顺子/单牌）。
+  // canPlay 与 submit 判定口径一致（含压牌），故用它判定；legal() 只是候选清单不保证含整手组合。
+  // 返回 'settled'（这一手已终局）/ 'played'（已出牌，主循环继续）/ null（不能一把出完，交给玩家）。
+  tryAutoFinish() {
+    if (this.phase !== 'play' || this.waitingSeat !== this.humanSeat) return null;
+    const hand = this.myHand();
+    if (!hand.length) return null;
+    const check = this.wasm.canPlay?.(hand);
+    if (!check || !check.ok) return null;
+
+    const out = this.wasm.submit(this.humanSeat, this.wasm.now(), {
+      cards: hand, pass: false, tributeReturn: false,
+    });
+    // 出完最后一张直接结算：submit 返回 settled/matchEnd。
+    if (out.kind === 'settled' || out.kind === 'matchEnd') {
+      this.settleFromSubmit(out, { seat: this.humanSeat, pass: false, cards: hand, roomSeq: out.roomSeq }, check?.patternId);
+      return 'settled';
+    }
+    if (out.kind === 'applied' || out.kind === 'ok') {
+      this.selected.clear();
+      this.waitingSeat = null;
+      this.remember(out);
+      this.emitEvent({
+        type: 'play',
+        seat: out.seat ?? this.humanSeat,
+        action: out.action ?? { pass: false, cards: hand, patternId: check?.patternId },
+        auto: true,
+        snapshot: this.snapshot(),
+      });
+      this.emitChange();
+      return 'played';
+    }
+    return null; // submit 意外被拒：交还玩家手动处理
+  }
+
+  // 还贡：tribute 阶段 canPlay 会报"当前不在 play 相位"，必须走专用提交。
+  // 校验：轮到我 + phase=tribute + 恰好一张 + 在引擎 eligible（≤10 的合规牌）内。
+  tributeReturn(cardId) {
+    if (this.waitingSeat !== this.humanSeat) return { ok: false, reason: '还没轮到你还贡' };
+    if (this.phase !== 'tribute') return { ok: false, reason: '当前不是还贡阶段' };
+    const id = cardId ?? [...this.selected][0];
+    if (id == null) return { ok: false, reason: '请先选一张 ≤10 的牌' };
+    const pending = this.wasm.info()?.tribute?.pending?.find((p) => p.receiver === this.humanSeat);
+    const eligible = pending?.eligible ?? [];
+    if (!eligible.includes(id)) return { ok: false, reason: '只能还 ≤10 的合规牌' };
+    const out = this.wasm.submit(this.humanSeat, this.wasm.now(), {
+      cards: [id], pass: false, tributeReturn: true,
+    });
+    if (out.kind === 'settled' || out.kind === 'matchEnd') {
+      this.settleFromSubmit(out, { seat: this.humanSeat, pass: false, cards: [id], tributeReturn: true, roomSeq: out.roomSeq });
+      return { ok: true, out };
+    }
+    if (out.kind === 'applied' || out.kind === 'ok') {
+      this.selected.clear();
+      this.waitingSeat = null;
+      this.remember(out);
+      this.emitEvent({
+        type: 'play', seat: out.seat ?? this.humanSeat,
+        action: out.action ?? { pass: false, tributeReturn: true, cards: [id] },
+        auto: out.auto, snapshot: this.snapshot(),
+      });
+      this.emitChange();
+      this.pump();
+      return { ok: true, out };
+    }
+    return { ok: false, reason: out.error || out.reason || '还贡被拒' };
+  }
+
+  // 当前我方还贡可选的牌（≤10 合规牌），供场景限制选牌。
+  tributeEligible() {
+    if (this.phase !== 'tribute') return [];
+    const pending = this.wasm.info()?.tribute?.pending?.find((p) => p.receiver === this.humanSeat);
+    return pending?.eligible ?? [];
+  }
+
   // 出牌：先 canPlay 预检，通过才 submit，避免误点被引擎拒绝。
   play() {
     if (this.waitingSeat !== this.humanSeat) return { ok: false, reason: '还没轮到你' };
@@ -261,16 +366,23 @@ export class Game {
       pass: false,
       tributeReturn: isTribute,
     });
+    // 出最后一张牌会直接触发结算：submit 返回 settled/matchEnd（而非 applied）。
+    // 此时牌已被引擎消耗、名次已定，必须按结算处理，否则误判"出牌被拒"卡死。
+    if (out.kind === 'settled' || out.kind === 'matchEnd') {
+      this.settleFromSubmit(out, { seat: this.humanSeat, pass: false, cards, roomSeq: out.roomSeq }, check?.patternId);
+      return { ok: true, out };
+    }
     if (out.kind === 'applied' || out.kind === 'ok') {
       this.selected.clear();
       this.waitingSeat = null;
       // submit 已经消费了这一手，后续 step() 只会返回别人的动作。
       // 这里必须自己派发 play 事件，否则自己的出牌动画（含炸弹特效）永远不会播。
+      // action 带引擎 patternId（含红配炸弹），场景据此识别炸弹，不靠牌结构猜测。
       this.remember(out);
       this.emitEvent({
         type: 'play',
         seat: out.seat ?? this.humanSeat,
-        action: out.action ?? { pass: false, cards },
+        action: out.action ?? { pass: false, cards, patternId: check?.patternId },
         auto: out.auto,
         snapshot: this.snapshot(),
       });
@@ -285,6 +397,11 @@ export class Game {
     if (this.waitingSeat !== this.humanSeat) return { ok: false, reason: '还没轮到你' };
     if (this.phase === 'tribute') return { ok: false, reason: '进贡阶段不能过牌' };
     const out = this.wasm.submit(this.humanSeat, this.wasm.now(), { pass: true, cards: [] });
+    // 过牌后其余三家也出完会直接结算（最后一手是别人的牌），同样按结算处理。
+    if (out.kind === 'settled' || out.kind === 'matchEnd') {
+      this.settleFromSubmit(out, { seat: this.humanSeat, pass: true, cards: [], roomSeq: out.roomSeq });
+      return { ok: true, out };
+    }
     if (out.kind === 'applied' || out.kind === 'ok') {
       this.selected.clear();
       this.waitingSeat = null;
@@ -302,6 +419,42 @@ export class Game {
       return { ok: true };
     }
     return { ok: false, reason: out.error || out.reason || '过牌被拒' };
+  }
+
+  // submit 直接返回结算态（出完最后一张 / 最后一手过牌后收尾）时的统一处理。
+  // 与 pump() 的 settled 分支保持一致：补记这一手动作 → 派发 settle → 停在主循环外。
+  // patternId：最后一手若是炸弹（含红配补位），先派发 play 让特效播完，再弹结算层。
+  settleFromSubmit(out, action, patternId = null) {
+    this.selected.clear();
+    this.waitingSeat = null;
+    // 结算返回不带 action，用调用方提供的这一手补记，保证存档 replay 序列完整。
+    this.remember({ ...action, roomSeq: action.roomSeq ?? out.roomSeq });
+    const ended = out.kind === 'matchEnd' || !!out.summary?.matchEnd;
+    this.phase = ended ? 'ended' : 'settle';
+
+    const isBomb = typeof patternId === 'string' && /^(bomb-|joker-bomb|straight-flush)/.test(patternId);
+    const targetPhase = this.phase;
+    // 延迟结算期间若已开新局/重开，旧定时器不得再弹结算层污染新对局。
+    const fireSettle = () => {
+      if (this.phase !== targetPhase) return;
+      this.emitEvent({ type: 'settle', summary: out.summary, ended, snapshot: this.snapshot() });
+    };
+    if (!action.pass && !action.tributeReturn && (action.cards?.length ?? 0) > 0) {
+      // 最后一手是出牌：先派发 play（出牌动画 + 炸弹特效），结算层延迟到特效之后。
+      this.emitEvent({
+        type: 'play',
+        seat: action.seat ?? this.humanSeat,
+        action: { pass: false, cards: action.cards, patternId },
+        auto: true,
+        snapshot: this.snapshot(),
+      });
+      if (this.settleTimer) clearTimeout(this.settleTimer);
+      this.settleTimer = setTimeout(() => { this.settleTimer = null; fireSettle(); },
+        isBomb ? 1100 : 320); // 炸弹特效约 1s，先播完再弹结算；普通出牌等落位
+    } else {
+      fireSettle(); // 过牌收尾：无出牌动画，立即结算
+    }
+    this.emitChange();
   }
 
   // 提示：优先从合法动作集取，其次用组牌推荐 plan 的最小组。
@@ -334,10 +487,11 @@ export class Game {
   // 下一局同样走独立发牌阶段：引擎跨局发牌后，交给场景播动画，再 beginPlay。
   nextRound() {
     if (this.phase !== 'settle') return;
-    if (this.wasm.nextRound(0)) {
+    if (this.wasm.nextRound()) {
       this.phase = 'dealing';
       this.waitingSeat = null;
       this.lastBySeat = {};
+      this.actions = []; // 新一局重新记录动作（存档按局恢复）
       this.selected.clear();
       const info = this.wasm.info();
       this.emitEvent({
@@ -352,6 +506,68 @@ export class Game {
   // 结算界面点「再来一局」：场次未结束走 nextRound，结束则重开一桌。
   restart() {
     this.stop();
-    this.start({ seedHi: this.seedHi, seedLo: this.seedLo, humanSeat: this.humanSeat, level: this.level });
+    this.start({
+      seedHi: this.seedHi, seedLo: this.seedLo, humanSeat: this.humanSeat,
+      level: this.level, botLevel: this.botLevel,
+    });
+  }
+
+  // ---- 存档 / 恢复 ----
+  // 存档只存"种子 + 难度 + 动作序列"，不存 whole state。
+  // 恢复时用同种子重建房间并按序 replay 动作，哈希与进度可精确还原（wasm 已验证）。
+  save() {
+    return {
+      v: 1,
+      seedHi: this.seedHi,
+      seedLo: this.seedLo,
+      botLevel: this.botLevel,
+      level: this.level,
+      humanSeat: this.humanSeat,
+      actions: this.actions.slice(),
+      phase: this.phase,
+    };
+  }
+
+  // 从存档恢复：返回 {ok, resume:boolean}。场景拿到 ok 后跳过发牌动画直接渲染。
+  resume(save) {
+    if (!save || save.v !== 1 || !Array.isArray(save.actions)) return { ok: false };
+    this.stop();
+    this.seedHi = save.seedHi >>> 0;
+    this.seedLo = save.seedLo >>> 0;
+    this.botLevel = Number.isInteger(save.botLevel) ? save.botLevel : 2;
+    this.level = save.level ?? 2;
+    this.humanSeat = save.humanSeat ?? 0;
+    const mask = 1 << this.humanSeat;
+    this.wasm.create(this.seedHi, this.seedLo, mask, this.botLevel);
+    this.selected.clear();
+    this.lastBySeat = {};
+    this.hintIdx = 0;
+    this.roundNo = 0;
+    this.tributeSeen.clear();
+    // 按序重放所有已发生动作
+    let replayed = 0;
+    for (const a of save.actions) {
+      if (!this.wasm.replay(a)) break;
+      replayed += 1;
+      // 同步 lastBySeat 的表现层状态
+      this.remember({ seat: a.seat, roomSeq: replayed, action: a });
+    }
+    this.actions = save.actions.slice(0, replayed);
+    // 读档后进入 play（跳过发牌动画）；若存档在结算态则保持 settle 展示由场景决定。
+    const restoredPhase = save.phase === 'settle' || save.phase === 'ended'
+      ? save.phase
+      : 'play';
+    this.phase = restoredPhase;
+    const info = this.wasm.info();
+    this.waitingSeat = info?.turnSeat ?? null;
+    this.emitEvent({
+      type: 'resume',
+      snapshot: this.snapshot(),
+      info,
+      actions: replayed,
+    });
+    this.emitChange();
+    if (this.phase === 'play') this.pump();
+    return { ok: true, actions: replayed };
   }
 }

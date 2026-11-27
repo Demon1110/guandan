@@ -2,8 +2,8 @@
 // 逻辑一句都不在这里判定，全部读 Game.snapshot()，点牌回调 game.toggleCard。
 // Phaser 由 index.html 以 UMD <script> 引入，走全局 window.Phaser。
 import { ASSETS, resolveAsset } from '../assets.js';
-import { cardFace, columnKey, detectBomb } from '../cards.js';
-import { THEMES, THEME_ORDER } from '../skin.js';
+import { cardFace, columnKey, detectBomb, rankCode, rankIndexOf, SPECIAL_PATTERN, suitIndexOf } from '../cards.js';
+import { THEME_ORDER, THEMES } from '../skin.js';
 
 const Phaser = window.Phaser;
 
@@ -17,19 +17,25 @@ const CARD_H = 120;
 
 // 四个方位的几何配置（相对人类座位）。center 为该座位出牌区锚点。
 // 重排垂直空间：顶部徽标条 → top 座位 → 出牌区 → 操作栏 → 手牌区（贴底）。
+// seatX/seatY 是座位卡片锚点（左右贴边居中），cx/cy 是出牌区锚点。
 const SLOTS = {
-  bottom: { name: 'bottom', cx: 640, cy: 385, handY: 648, labelY: 452 },
-  right: { name: 'right', cx: 980, cy: 318, handY: 250, labelY: 150 },
-  top: { name: 'top', cx: 640, cy: 170, handY: 80, labelY: 78 },
-  left: { name: 'left', cx: 300, cy: 318, handY: 250, labelY: 150 },
+  bottom: { name: 'bottom', cx: 640, cy: 372, handY: 600, labelY: 316, seatX: 640, seatY: 316 },
+  right: { name: 'right', cx: 980, cy: 318, handY: 250, labelY: 150, seatX: 1186, seatY: 360 },
+  top: { name: 'top', cx: 640, cy: 168, handY: 80, labelY: 78, seatX: 640, seatY: 60 },
+  left: { name: 'left', cx: 300, cy: 318, handY: 250, labelY: 150, seatX: 94, seatY: 360 },
 };
 const SLOT_ORDER = ['bottom', 'right', 'top', 'left'];
 const DECK_X = 640;
 const DECK_Y = 318;
 
-// 操作栏（倒计时 + 功能按钮）位于手牌正上方；留出空间给 cols 模式向上叠放。
-const BAR_Y = 490;
+// 操作栏（出牌/提示/过牌，或要不起）居中上移，紧贴手牌上方；底部工具条在手牌下方。
+const BAR_Y = 424;
+const HAND_TOOLS_Y = 690; // 组牌建议/四花色/理成一列/恢复理牌
+const HAND_BASE_Y = 600; // 手牌区基准 y（上移给底部工具条让位）
 const COUNTDOWN_SECONDS = 30;
+
+// 名次标签（头游/二游/三游/末游）
+const RANK_LABELS = ['', '头游', '二游', '三游', '末游'];
 
 export class TableScene extends Phaser.Scene {
   constructor(game, skin) {
@@ -38,6 +44,7 @@ export class TableScene extends Phaser.Scene {
     this.skin = skin;
     this.cardViews = new Map(); // id -> Container（人类手牌）
     this.cornerViews = new Map(); // id -> 角标高亮浮层（fan 模式保证点数恒可见）
+    this.lockViews = new Map(); // id -> 理牌分组小锁图标（右上角）
     this.trickViews = new Map(); // seat -> 该座位出牌区视图（每座只留最近一手）
     this.flyViews = []; // 飞牌/发牌临时对象
     this.bombFx = []; // 炸弹特效临时对象（闪光/冲击波/火花/横幅）
@@ -45,8 +52,14 @@ export class TableScene extends Phaser.Scene {
     this.lastSnapshot = null;
     this.dealing = false;
     this.handStyle = 'cols'; // 默认按设计图：同点数纵向叠列；?hand=fan 可切横排
-    // 出牌倒计时（纯 UI + 交互，不改 Game 状态机）
-    this.countdown = { active: false, left: COUNTDOWN_SECONDS, total: COUNTDOWN_SECONDS, timer: null };
+    this.cardScale = 1; // 手牌牌面大小倍率（设置面板可调 0.8/1/1.2）
+    // 理牌分组（对齐 web）：只改布局，不动手牌/选中/合法判定。
+    // 每项 { cards:[id], patternId, layout:'left'|'right', suit? }。
+    this.arranged = [];
+    this.flushCursor = {}; // 各花色同花顺方案切换游标
+    // 倒计时（纯 UI + 交互，不改 Game 状态机）：出牌 30s、还贡 15s 可调
+    this.tributeSeconds = 15;
+    this.countdown = { active: false, left: COUNTDOWN_SECONDS, total: COUNTDOWN_SECONDS, timer: null, seat: null };
     // 鼠标按住拖动连选：{ mode:'add'|'remove', touched:Set }
     this.dragSelect = null;
   }
@@ -62,13 +75,18 @@ export class TableScene extends Phaser.Scene {
     //  pointerup / 离开画布：结束拖动连选
     this.input.on('pointerup', () => { this.dragSelect = null; });
     this.input.on('gameout', () => { this.dragSelect = null; });
+    // 点非牌面（牌桌空白/无交互对象处）即取消选牌，替代原"取消选牌"按钮。
+    // 点手牌/按钮时 over 非空，不会误清；拖选 pointerdown 命中牌也不受影响。
+    this.input.on('pointerdown', (pointer, over) => {
+      if (!over || !over.length) this.gameModel.clearSelection();
+    });
 
     // ?hand=cols 切到同点数纵向罗列（参照 web）；默认 fan 横排铺满。
     const handParam = new URLSearchParams(location.search).get('hand');
     if (handParam === 'cols' || handParam === 'fan') this.handStyle = handParam;
     this.updateHandBtn();
 
-    this.statusText.setText('点「新局」开始');
+    this.statusText.setText('请选择开局方式');
     this.render = this.render.bind(this);
   }
 
@@ -91,6 +109,83 @@ export class TableScene extends Phaser.Scene {
     if (this.themeBtn?.labelText) this.themeBtn.labelText.setText(`主题 ${label ?? '?'}`.slice(0, 8));
   }
 
+  // ---- 设置面板调用 ----
+  setHandStyleDirect(style) {
+    if (style !== 'cols' && style !== 'fan') return;
+    if (this.handStyle === style) return;
+    this.handStyle = style;
+    this.updateHandBtn();
+    if (this.dealing) return;
+    this.lastSnapshot = this.gameModel.snapshot();
+    this.renderHand(this.lastSnapshot);
+  }
+
+  // 牌面大小：倍率作用于手牌视图与布局间距，reflow 后保持落位一致。
+  // 还贡倒计时秒数（设置面板可调，范围 5–60）。
+  setTributeSeconds(sec) {
+    const s = Number(sec);
+    if (Number.isFinite(s) && s >= 5 && s <= 60) this.tributeSeconds = Math.round(s);
+  }
+
+  setCardScale(scale) {
+    const s = Number(scale);
+    if (!Number.isFinite(s) || s < 0.5 || s > 2 || s === this.cardScale) return;
+    this.cardScale = s;
+    if (this.dealing) return;
+    // 主题 Image 的基准 scale 已固化在创建时，改大小必须销毁重建，避免倍率叠加。
+    for (const view of this.cardViews.values()) view.destroy();
+    this.cardViews.clear();
+    for (const corner of this.cornerViews.values()) corner.destroy();
+    this.cornerViews.clear();
+    this.clearLocks();
+    this.lastSnapshot = this.gameModel.snapshot();
+    this.renderHand(this.lastSnapshot);
+  }
+
+  // 直接切到指定主题（区别于 cycleTheme 的循环切换）。
+  async setThemeById(themeKey) {
+    if (!THEMES[themeKey] || this.dealing || this.switchingTheme) return false;
+    if (this.skin.themeId === themeKey) return true;
+    this.switchingTheme = true;
+    const prevStatus = this.statusText.text;
+    this.statusText.setText(`切换主题：${THEMES[themeKey].label}…`);
+    for (const view of this.cardViews.values()) view.destroy();
+    this.cardViews.clear();
+    for (const corner of this.cornerViews.values()) corner.destroy();
+    this.cornerViews.clear();
+    this.clearLocks();
+    this.clearTrick();
+    this.clearFly();
+    this.clearBombFx();
+    try {
+      const r = await this.skin.load(this, themeKey);
+      if (!r.ok) {
+        this.statusText.setText(`主题切换失败：${r.error ?? '未知'}`);
+        this.lastSnapshot = this.gameModel.snapshot();
+        this.renderHand(this.lastSnapshot);
+        return false;
+      }
+      const lv = this.gameModel.levelRankLabel();
+      const rankCode = (label) => {
+        if (!label) return 0;
+        if (label === 'A') return 1;
+        if (label === 'J') return 11;
+        if (label === 'Q') return 12;
+        if (label === 'K') return 13;
+        return Number(label);
+      };
+      await this.skin.warmup(rankCode(lv));
+      this.refreshDeckStack(); // 牌背纹理键随主题变化，重建中央牌堆
+      this.lastSnapshot = this.gameModel.snapshot();
+      this.renderHand(this.lastSnapshot);
+      this.setThemeLabel(r.label);
+      this.statusText.setText(prevStatus);
+      return true;
+    } finally {
+      this.switchingTheme = false;
+    }
+  }
+
   // 循环切换主题：加载新包 → 重建纹理缓存 → 重绘当前手牌。
   async cycleTheme() {
     if (this.dealing || this.switchingTheme) return;
@@ -104,6 +199,7 @@ export class TableScene extends Phaser.Scene {
     this.cardViews.clear();
     for (const corner of this.cornerViews.values()) corner.destroy();
     this.cornerViews.clear();
+    this.clearLocks();
     this.clearTrick();
     this.clearFly();
     this.clearBombFx();
@@ -127,6 +223,7 @@ export class TableScene extends Phaser.Scene {
         return Number(label);
       };
       await this.skin.warmup(rankCode(lv));
+      this.refreshDeckStack(); // 牌背纹理键随主题变化，重建中央牌堆
 
       // 场上对象已在 load 前清空；这里直接用新纹理重建。
       this.lastSnapshot = this.gameModel.snapshot();
@@ -164,23 +261,14 @@ export class TableScene extends Phaser.Scene {
       }).setOrigin(0.5).setAlpha(0.5);
     }, DECK_X, 400);
 
-    // 中央牌堆占位（发牌从这里飞出）
-    this.deckStack = this.add.rectangle(DECK_X, DECK_Y, 68, 94, 0x2b6a52, 0.92)
-      .setStrokeStyle(2, 0xffffff, 0.7);
-    this.add.text(DECK_X, DECK_Y, '掼蛋', {
-      fontFamily: 'serif', fontSize: '21px', color: '#f3ead0',
-    }).setOrigin(0.5);
+    // 中央牌堆（发牌从这里飞出）：主题是硬依赖，牌堆在主题就绪后由
+    // refreshDeckStack() 用 gfdeck 牌背纹理创建（buildTable 时纹理尚未登记）。
+    this.deckStack = null;
+    this.deckStackLabel = null;
 
-    this.centerSub = this.add.text(DECK_X, 432, '', {
-      fontFamily: 'sans-serif', fontSize: '14px', color: '#5c4a2c',
-    }).setOrigin(0.5);
-
-    // 顶部：本局打 X（金色徽标）+ 倍数牌 + 局数
-    this.makeLevelBadge();
+    // 左上角记分板：我方/对方在上、级牌在下；打级方黄框高亮（无箭头/无行动方）。
+    this.makeScoreBoard();
     this.makeMultiplier(1120, 40);
-    this.hudText = this.add.text(140, 26, '', {
-      fontFamily: 'sans-serif', fontSize: '13px', color: '#334a52', lineSpacing: 2,
-    });
 
     // 四座位卡片（头像/昵称/分数/段位）；slotLabels 仍暴露内部文本以兼容 animateCountUp。
     this.slotLabels = {};
@@ -198,14 +286,45 @@ export class TableScene extends Phaser.Scene {
     }
   }
 
-  makeLevelBadge() {
-    const g = this.add.graphics();
-    g.fillStyle(ASSETS.levelBadge.color, 1).fillRoundedRect(20, 14, 108, 46, 8);
-    g.fillStyle(0xd88408, 1).fillRoundedRect(20, 46, 108, 14, 4);
-    this.add.text(30, 26, '本局打', { fontFamily: 'sans-serif', fontSize: '14px', color: '#fff4dd' });
-    this.levelBadgeText = this.add.text(120, 36, '2', {
-      fontFamily: 'sans-serif', fontSize: '32px', color: '#ffffff', fontStyle: 'bold',
-    }).setOrigin(1, 0.5);
+  // 左上角记分板：上排「我方 | 对方」，下排「级牌 X」。
+  // 左上角双方级牌板：每格显示「队伍名 + 该队当前级牌」（掼蛋双方各自升级）。
+  // attackingTeam(0=我方/1=对方) 为当前打级方，只给它黄框高亮；无箭头/无行动方。
+  makeScoreBoard() {
+    const x = 20, y = 14, w = 208, h = 62;
+    const g = this.add.graphics().setDepth(6);
+    g.fillStyle(0x0f2d3a, 0.9).fillRoundedRect(x, y, w, h, 10);
+    g.lineStyle(1.5, 0xf0d9a0, 0.7).strokeRoundedRect(x, y, w, h, 10);
+    this.teamBoxes = {};
+    [[0, '我方', x + 8], [1, '对方', x + w / 2 + 2]].forEach(([team, label, bx]) => {
+      const bw = w / 2 - 12;
+      const box = this.add.graphics().setDepth(7);
+      box.fillStyle(0x1a4a58, 1).fillRoundedRect(bx, y + 6, bw, 48, 6);
+      box.lineStyle(2, 0xffd45e, 0).strokeRoundedRect(bx, y + 6, bw, 48, 6); // 默认无高亮
+      this.add.text(bx + bw / 2, y + 14, label, {
+        fontFamily: 'sans-serif', fontSize: '13px', color: '#ffe9a8', fontStyle: 'bold',
+      }).setOrigin(0.5, 0).setDepth(8);
+      const levelText = this.add.text(bx + bw / 2, y + 38, '2', {
+        fontFamily: 'sans-serif', fontSize: '24px', color: '#ffffff', fontStyle: 'bold',
+      }).setOrigin(0.5).setDepth(8);
+      this.teamBoxes[team] = { box, bx, by: y + 6, bw, bh: 48, levelText };
+    });
+    this.levelBadgeText = this.teamBoxes[0].levelText; // 兼容旧引用
+  }
+
+  // 刷新记分板：双方各自级牌 + 只给打级方黄框高亮。
+  // levels: [team0级牌idx, team1级牌idx]；attackingTeam: 当前打级方。
+  refreshScoreBoard(attackingTeam, levels) {
+    const RANKS = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
+    const labelOf = (idx) => Number.isInteger(idx) && idx >= 0 && idx <= 12 ? RANKS[idx] : '2';
+    for (const team of [0, 1]) {
+      const t = this.teamBoxes?.[team];
+      if (!t) continue;
+      t.box.clear();
+      t.box.fillStyle(0x1a4a58, 1).fillRoundedRect(t.bx, t.by, t.bw, t.bh, 6);
+      t.box.lineStyle(2, 0xffd45e, attackingTeam === team ? 1 : 0)
+        .strokeRoundedRect(t.bx, t.by, t.bw, t.bh, 6);
+      if (Array.isArray(levels)) t.levelText.setText(labelOf(levels[team]));
+    }
   }
 
   makeMultiplier(x, y) {
@@ -222,7 +341,8 @@ export class TableScene extends Phaser.Scene {
     const isBottom = slot === 'bottom';
     const isTop = slot === 'top';
     const w = 158, h = 52;
-    const x = p.cx, y = p.labelY;
+    // 左右座位严格以 seatX 居中贴边；上下座位居中。
+    const x = p.seatX ?? p.cx, y = p.seatY ?? p.labelY;
     const g = this.add.graphics().setDepth(4);
     g.fillStyle(0x0f2d3a, 0.88).fillRoundedRect(x - w / 2, y - h / 2, w, h, 10);
     g.lineStyle(1.5, 0xf0d9a0, 0.9).strokeRoundedRect(x - w / 2, y - h / 2, w, h, 10);
@@ -236,12 +356,19 @@ export class TableScene extends Phaser.Scene {
     const label = this.add.text(x - w / 2 + 48, y - 17, '', {
       fontFamily: 'sans-serif', fontSize: '12px', color: '#ffe9a8', lineSpacing: 1,
     }).setDepth(5);
+    // 名次徽标（头游/二游/三游/末游），初始隐藏，render 时按 rank 显示。
+    const rankText = this.add.text(x + w / 2 - 8, y - h / 2 + 8, '', {
+      fontFamily: 'sans-serif', fontSize: '11px', color: '#2b1000',
+      backgroundColor: '#ffd45e', padding: { x: 4, y: 2 },
+    }).setOrigin(1, 0).setDepth(6).setVisible(false);
     // 分数/段位（底部小字）
     const tier = isTop ? '2900 · 青铜2' : isBottom ? '2900 · 白银3' : '2900 · 青铜2';
     this.add.text(x - w / 2 + 48, y + 14, tier, {
       fontFamily: 'sans-serif', fontSize: '9px', color: '#9fd0c8',
     }).setDepth(5);
     this.slotLabels[slot] = label;
+    this.slotRankTexts = this.slotRankTexts ?? {};
+    this.slotRankTexts[slot] = rankText;
   }
 
   makeButton(x, y, label, onClick, color = 0x1d6f57, w = 92, h = 40) {
@@ -251,80 +378,360 @@ export class TableScene extends Phaser.Scene {
       fontFamily: 'sans-serif', fontSize: '15px', color: '#ffffff',
     }).setOrigin(0.5).setDepth(34);
     box.labelText = txt;
-    box.on('pointerover', () => box.setFillStyle(0x2b8a6c, 1));
-    box.on('pointerout', () => box.setFillStyle(color, 1));
+    box.baseColor = color; // 可被 syncSuitTabs 改写为动态色，pointerout 回到它
+    box.on('pointerover', () => { if (box.input?.enabled) box.setFillStyle(0x2b8a6c, 1); });
+    box.on('pointerout', () => box.setFillStyle(box.baseColor ?? color, 1));
     box.on('pointerdown', onClick);
+    // 按钮整体显示/隐藏（含文字与命中区），供"要不起/可出牌"状态切换。
+    box.setBtnVisible = (v) => {
+      box.setVisible(v);
+      txt.setVisible(v);
+      if (v) box.setInteractive({ useHandCursor: true });
+      else box.disableInteractive();
+    };
     return box;
   }
 
-  // 操作栏：倒计时在左，状态居中，功能按钮在右，全部位于手牌上方。
+  // 操作栏：主按钮居中上移，位于手牌正上方；左侧不再放常驻提示文字。
   buildButtons() {
     const y = BAR_Y;
-    const bar = this.add.graphics();
-    bar.fillStyle(0x0f2d3a, 0.78).fillRoundedRect(20, y - 24, W - 40, 48, 12);
-    bar.lineStyle(1, 0xf0d9a0, 0.5).strokeRoundedRect(20, y - 24, W - 40, 48, 12);
-    bar.setDepth(30);
+    // 去掉原灰色长条背景；按钮直接浮在牌桌上，避免长牌叠列时横条被牌切断显得杂乱。
 
-    this.statusText = this.add.text(120, y, '', {
-      fontFamily: 'sans-serif', fontSize: '15px', color: '#ffe9a8',
-    }).setOrigin(0, 0.5).setDepth(34);
+    // 反馈文字移到屏幕底部居中，不再挤在按钮左侧（"轮到你出牌"已由中央闹钟提示）。
+    this.statusText = this.add.text(640, 714, '', {
+      fontFamily: 'sans-serif', fontSize: '12px', color: '#9fd0c8',
+    }).setOrigin(0.5, 0.5).setDepth(34);
 
-    // 右侧主操作（出牌/过牌/提示/新局/手牌切换/主题）
-    this.makeButton(620, y, '新局', () => this.onNewGame(), 0x8a5a16, 88);
-    this.playBtn = this.makeButton(720, y, '出牌', () => this.onPlay(), 0xb8860b, 88);
-    this.passBtn = this.makeButton(820, y, '过牌', () => this.onPass(), 0x2b6f8a, 88);
-    this.hintBtn = this.makeButton(920, y, '提示', () => this.gameModel.hint(), 0x2b8a6c, 88);
-    this.handBtn = this.makeButton(1040, y, '手牌 列', () => this.toggleHandStyle(), 0x1d6f57, 108);
-    this.themeBtn = this.makeButton(1170, y, '主题 肥仔', () => this.cycleTheme(), 0x6a4a8a, 96);
-    [this.handBtn, this.playBtn, this.passBtn, this.hintBtn].forEach((b) => b.setDepth(33));
+    // 主按钮水平居中：出牌 / 提示 / 过牌；"要不起"与其余三个互斥显示。
+    const bw = 96, gap = 16;
+    const x0 = 640 - (bw * 3 + gap * 2) / 2 + bw / 2;
+    this.playBtn = this.makeButton(x0, y, '出牌', () => this.onPlay(), 0xb8860b, bw);
+    this.hintBtn = this.makeButton(x0 + bw + gap, y, '提示', () => this.gameModel.hint(), 0x2b8a6c, bw);
+    this.passBtn = this.makeButton(x0 + (bw + gap) * 2, y, '过牌', () => this.onPass(), 0x2b6f8a, bw);
+    // 无可出牌时只显示"要不起"（点击等同过牌），与上面三个按钮互斥。
+    this.cannotBtn = this.makeButton(640, y, '要不起', () => this.onPass(), 0x7a4a3a, 132);
+    // 还贡专用按钮：仅 tribute 阶段我方受贡时显示，取代出牌/提示/过牌。
+    this.returnBtn = this.makeButton(640, y, '还贡', () => this.onTributeReturn(), 0x8a5ab8, 132);
+    // cols 叠列的最长列向上延伸会盖到按钮（手牌 depth 20+y/8 可达 76+），
+    // 按钮连同文字抬到 156/157，高于手牌/角标浮层，低于炸弹横幅 190、结算层 200。
+    [this.playBtn, this.hintBtn, this.passBtn, this.cannotBtn, this.returnBtn].forEach((b) => {
+      b.setDepth(156);
+      b.labelText.setDepth(157);
+    });
+    this.cannotBtn.setBtnVisible(false);
+    this.returnBtn.setBtnVisible(false);
+
+    // 底部工具条：组牌建议 / 四花色同花顺快速组牌 / 理成一列 / 恢复理牌。
+    this.buildHandTools();
   }
 
-  // ---- 出牌倒计时（UI + 交互；超时自动过牌） ----
+  // 我方出牌阶段是否有可出的牌（legal 过滤掉 pass）；非我方回合/非 play 阶段恒为 true。
+  hasPlayableCards(snap) {
+    if (!snap?.myTurn || snap.phase !== 'play') return true;
+    try {
+      const legal = this.gameModel.wasm.legal?.() ?? [];
+      return legal.some((a) => !a.pass && (a.cards?.length ?? 0) > 0);
+    } catch {
+      return true;
+    }
+  }
+
+  // 手牌下方工具条：组牌建议、♠♥♦♣ 同花顺快速组牌、理成一列、恢复理牌。
+  buildHandTools() {
+    const y = HAND_TOOLS_Y;
+    const bar = this.add.graphics().setDepth(30);
+    bar.fillStyle(0x0f2d3a, 0.78).fillRoundedRect(100, y - 22, W - 200, 44, 12);
+    bar.lineStyle(1, 0xf0d9a0, 0.5).strokeRoundedRect(100, y - 22, W - 200, 44, 12);
+
+    const mk = (x, label, color, onClick, w = 108) =>
+      this.makeButton(x, y, label, onClick, color, w, 34).setDepth(33);
+
+    mk(190, '组牌建议', 0x2b8a6c, () => this.onSuggestGroup(), 104);
+    // 四花色同花顺快速组牌（花色符号作按钮文字）
+    this.suitButtons = [];
+    [[0, '♠'], [1, '♥'], [2, '♦'], [3, '♣']].forEach(([suit, sym]) => {
+      const b = mk(360 + suit * 64, sym, 0x8a5a16, () => this.onSuitFlush(suit), 46);
+      this.suitButtons.push(b);
+    });
+    mk(700, '理成一列', 0x1d6f57, () => this.onAlignColumn(), 104);
+    mk(830, '恢复理牌', 0x6a4a8a, () => this.onRestoreLayout(), 104);
+  }
+
+  // ---- 底部工具条行为（对齐 apps/web 的理牌语义：只改布局，不动手牌/选中/合法判定） ----
+  patternName(pid) {
+    const NAMES = {
+      'bomb-4': '四炸', 'bomb-5': '五炸', 'bomb-6': '六炸', 'bomb-7': '七炸', 'bomb-8': '八炸',
+      'straight-flush-5': '同花顺', 'joker-bomb': '王炸',
+    };
+    return NAMES[pid] ?? pid;
+  }
+
+  // 同花顺的本色：跳过红桃级牌（百搭），取第一张自然牌的花色。
+  straightFlushSuit(cards) {
+    const lvIdx = this.levelRankIndex();
+    const natural = cards.find((id) => id < 104 &&
+      !(lvIdx >= 0 && suitIndexOf(id) === 1 && rankIndexOf(id) === lvIdx));
+    return natural === undefined ? null : suitIndexOf(natural);
+  }
+
+  levelRankIndex() {
+    const lv = this.gameModel.levelRankLabel();
+    if (!lv) return -1;
+    const RANKS = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
+    return RANKS.indexOf(lv);
+  }
+
+  // 该花色的同花顺窗口（含红桃级牌百搭补位），对齐 web flushWindows。
+  flushWindows(suit, ids) {
+    const lvIdx = this.levelRankIndex();
+    const wildIds = lvIdx < 0 ? [] : ids.filter((id) =>
+      id < 104 && suitIndexOf(id) === 1 && rankIndexOf(id) === lvIdx);
+    const wildSet = new Set(wildIds);
+    const byRank = new Map();
+    for (const id of ids) {
+      if (id >= 104 || wildSet.has(id) || suitIndexOf(id) !== suit) continue;
+      const r = rankIndexOf(id);
+      if (!byRank.has(r)) byRank.set(r, []);
+      byRank.get(r).push(id);
+    }
+    const out = [];
+    const addWindow = (start, ranks, wheel = false) => {
+      const cards = [];
+      let missing = 0;
+      for (const rank of ranks) {
+        const list = byRank.get(rank);
+        if (list && list.length) cards.push(list[0]);
+        else missing += 1;
+      }
+      if (missing > wildIds.length) return;
+      out.push({ start, wheel, cards: cards.concat(wildIds.slice(0, missing)), wild: Math.min(missing, wildIds.length) });
+    };
+    for (let start = 0; start + 4 < 13; start += 1) {
+      addWindow(start, Array.from({ length: 5 }, (_, d) => start + d));
+    }
+    addWindow(12, [12, 0, 1, 2, 3], true); // A-2-3-4-5 轮子
+    const unique = new Map();
+    for (const opt of out) {
+      const key = opt.cards.slice().sort((a, b) => a - b).join(',');
+      const prev = unique.get(key);
+      if (!prev || opt.start > prev.start) unique.set(key, opt);
+    }
+    return [...unique.values()];
+  }
+
+  // 花色可用牌池：排除其它花色已理组，保留本花色组。
+  poolForSuit(cards, suit) {
+    const others = new Set(this.arranged.filter((g) => g.suit !== suit).flatMap((g) => g.cards));
+    return cards.filter((id) => !others.has(id));
+  }
+
+  // 组牌建议：直接用 plan 的最优整手拆分铺开成理牌组（炸弹/同花顺左列、其余右列）。
+  onSuggestGroup() {
+    if (this.gameModel.waitingSeat !== this.gameModel.humanSeat) {
+      this.statusText.setText('轮到你时才能看组牌建议'); return;
+    }
+    const plan = this.gameModel.wasm.plan?.();
+    if (!plan || !Array.isArray(plan.groups) || plan.groups.length === 0) {
+      this.statusText.setText('暂时拿不到组牌建议（本次拆分没有可出的组）'); return;
+    }
+    this.arranged = plan.groups
+      .filter((g) => g.cards?.length)
+      .map((g) => ({
+        cards: g.cards.slice(),
+        patternId: g.patternId ?? '',
+        layout: SPECIAL_PATTERN(g.patternId) ? 'left' : 'right',
+        suit: g.patternId?.startsWith('straight-flush') ? this.straightFlushSuit(g.cards) : null,
+      }));
+    this.flushCursor = {};
+    this.gameModel.selected.clear();
+    this.gameModel.emitChange();
+    const left = this.arranged.filter((g) => g.layout === 'left').length;
+    this.statusText.setText(`组牌建议（最优拆分）：${this.arranged.length} 组 · 左 ${left} / 右 ${this.arranged.length - left}`);
+  }
+
+  // 四花色：在该花色的同花顺窗口里循环切换，理成一组（支持反复点击换方案）。
+  onSuitFlush(suit) {
+    if (this.gameModel.waitingSeat !== this.gameModel.humanSeat) {
+      this.statusText.setText('轮到你时才能理同花顺'); return;
+    }
+    const cards = this.gameModel.myHand();
+    const opts = this.flushWindows(suit, this.poolForSuit(cards, suit));
+    if (!opts.length) {
+      this.statusText.setText(`${['♠','♥','♦','♣'][suit]} 凑不出同花顺`); return;
+    }
+    const cur = this.flushCursor[suit] ?? -1;
+    const idx = (cur + 1) % opts.length;
+    this.flushCursor[suit] = idx;
+    const pick = opts[idx];
+    this.arranged = this.arranged.filter((g) => g.suit !== suit);
+    this.arranged.push({ cards: pick.cards.slice(), patternId: 'straight-flush-5', layout: 'left', suit });
+    this.gameModel.selected.clear();
+    this.gameModel.emitChange();
+    this.statusText.setText(`${['♠','♥','♦','♣'][suit]} 同花顺方案 ${idx + 1}/${opts.length}${pick.wild ? `（红配代 ${pick.wild} 张）` : ''}`);
+  }
+
+  // 理成一列：把当前选中的牌按 canPlay 认牌型，理成一组（炸弹/同花顺左、其余右）。
+  onAlignColumn() {
+    if (this.gameModel.waitingSeat !== this.gameModel.humanSeat) {
+      this.statusText.setText('轮到你时才能理牌'); return;
+    }
+    if (this.gameModel.selected.size === 0) {
+      this.statusText.setText('先选中要理的牌型'); return;
+    }
+    const cards = [...this.gameModel.selected].sort((a, b) => a - b);
+    const pre = this.gameModel.wasm.canPlay?.(cards);
+    const pid = pre?.patternId ?? '';
+    if (!pid) {
+      this.statusText.setText('选中的牌凑不成牌型，理不了'); return;
+    }
+    const suit = pid.startsWith('straight-flush') ? this.straightFlushSuit(cards) : null;
+    const key = cards.join(',');
+    this.arranged = this.arranged.filter((g) => g.cards.slice().sort((a, b) => a - b).join(',') !== key);
+    this.arranged.push({ cards, patternId: pid, layout: SPECIAL_PATTERN(pid) ? 'left' : 'right', suit });
+    this.gameModel.selected.clear();
+    this.gameModel.emitChange();
+    this.statusText.setText(`${this.patternName(pid)} 已理到${SPECIAL_PATTERN(pid) ? '最左' : '最右'}一列${pre.ok ? '' : '（当前压不过上家）'}`);
+  }
+
+  // 恢复理牌：选中的牌正好是一组时只恢复那组，否则恢复全部。
+  onRestoreLayout() {
+    if (!this.arranged.length) {
+      this.statusText.setText('没有可恢复的理牌'); return;
+    }
+    const sel = [...this.gameModel.selected].sort((a, b) => a - b).join(',');
+    const hit = sel ? this.arranged.findIndex((g) => g.cards.slice().sort((a, b) => a - b).join(',') === sel) : -1;
+    if (hit >= 0) {
+      const [g] = this.arranged.splice(hit, 1);
+      this.gameModel.selected.clear();
+      this.statusText.setText(`已恢复 ${this.patternName(g.patternId)}`);
+    } else {
+      this.arranged = [];
+      this.flushCursor = {};
+      this.statusText.setText('已恢复全部理牌');
+    }
+    this.gameModel.emitChange();
+  }
+
+  // ---- 闹钟倒计时（UI + 交互；超时自动过牌） ----
+  // 我方回合：闹钟居中屏幕 + 下方「轮到你出牌」；他人回合：闹钟放到该座位出牌区前。
   buildCountdown() {
-    this.countdownG = this.add.graphics().setDepth(34);
-    this.countdownText = this.add.text(66, BAR_Y, '', {
-      fontFamily: 'sans-serif', fontSize: '18px', color: '#ffffff', fontStyle: 'bold',
-    }).setOrigin(0.5).setDepth(35);
+    this.countdownG = this.add.graphics().setDepth(150);
+    this.countdownText = this.add.text(0, 0, '', {
+      fontFamily: 'sans-serif', fontSize: '18px', color: '#2b1000', fontStyle: 'bold',
+    }).setOrigin(0.5).setDepth(152);
+    this.countdownHint = this.add.text(640, 300, '', {
+      fontFamily: 'sans-serif', fontSize: '20px', color: '#ffe9a8', fontStyle: 'bold',
+      backgroundColor: '#0f2d3a', padding: { x: 10, y: 5 },
+    }).setOrigin(0.5).setDepth(152).setVisible(false);
     this.drawCountdown();
+  }
+
+  // 画一个闹钟：表盘 + 顶部双铃 + 剩余时间弧 + 刻度 + 两脚；表盘内只放数字，无指针。
+  drawAlarmClock(g, cx, cy, scale, ratio, color) {
+    const R = 30 * scale;
+    // 顶部双铃铛
+    g.fillStyle(color, 1);
+    g.fillCircle(cx - R * 0.78, cy - R * 0.78, R * 0.3);
+    g.fillCircle(cx + R * 0.78, cy - R * 0.78, R * 0.3);
+    // 铃铛连接柄
+    g.lineStyle(2 * scale, color, 1);
+    g.beginPath();
+    g.moveTo(cx - R * 0.6, cy - R * 0.62); g.lineTo(cx - R * 0.3, cy - R * 0.92);
+    g.moveTo(cx + R * 0.6, cy - R * 0.62); g.lineTo(cx + R * 0.3, cy - R * 0.92);
+    g.strokePath();
+    // 表盘底
+    g.fillStyle(0xfdf8e8, 1).fillCircle(cx, cy, R);
+    g.lineStyle(3 * scale, color, 1).strokeCircle(cx, cy, R);
+    // 剩余时间弧（从顶部顺时针）
+    g.lineStyle(4 * scale, color, 1);
+    g.beginPath();
+    g.arc(cx, cy, R * 0.82, Phaser.Math.DegToRad(-90), Phaser.Math.DegToRad(-90 + 360 * ratio), false);
+    g.strokePath();
+    // 刻度
+    g.lineStyle(1.5 * scale, 0x8a7a5a, 0.8);
+    for (let i = 0; i < 12; i += 1) {
+      const a = Phaser.Math.DegToRad(i * 30 - 90);
+      g.beginPath();
+      g.moveTo(cx + Math.cos(a) * R * 0.66, cy + Math.sin(a) * R * 0.66);
+      g.lineTo(cx + Math.cos(a) * R * 0.74, cy + Math.sin(a) * R * 0.74);
+      g.strokePath();
+    }
+    // 不画指针：表盘中央只显示剩余秒数（countdownText），剩余比例用上面的弧表达。
+    // 两脚
+    g.lineStyle(2.5 * scale, color, 1);
+    g.beginPath();
+    g.moveTo(cx - R * 0.42, cy + R * 0.88); g.lineTo(cx - R * 0.6, cy + R * 1.18);
+    g.moveTo(cx + R * 0.42, cy + R * 0.88); g.lineTo(cx + R * 0.6, cy + R * 1.18);
+    g.strokePath();
   }
 
   drawCountdown() {
     const g = this.countdownG;
     g.clear();
-    const cx = 66;
-    const cy = BAR_Y;
-    const r = 22;
-    if (!this.countdown.active) {
-      this.countdownText.setText('');
-      return;
-    }
+    this.countdownHint.setVisible(false);
+    this.countdownText.setText('');
+    if (!this.countdown.active) return;
+
     const ratio = Math.max(0, Math.min(1, this.countdown.left / this.countdown.total));
     const color = ratio <= 0.3 ? ASSETS.countdownLow.color : ASSETS.countdownOk.color;
-    g.lineStyle(5, 0xffffff, 0.22).strokeCircle(cx, cy, r);
-    g.lineStyle(5, color, 1);
-    g.beginPath();
-    g.arc(cx, cy, r, Phaser.Math.DegToRad(-90), Phaser.Math.DegToRad(-90 + 360 * ratio), false);
-    g.strokePath();
-    this.countdownText.setText(String(Math.ceil(this.countdown.left)));
+    const seat = this.countdown.seat;
+    const isMine = seat === this.gameModel.humanSeat;
+    let cx, cy, scale;
+    if (isMine) {
+      // 自己回合：屏幕中上方闹钟（小一号）+ 下方提示（还贡阶段提示不同）
+      cx = 640; cy = 250; scale = 1.1;
+      const hint = this.countdown.phase === 'tribute' ? '轮到你还贡' : '轮到你出牌';
+      this.countdownHint.setText(hint).setPosition(cx, cy + 68).setVisible(true);
+    } else {
+      // 他人回合：闹钟放到其出牌区前（缩小），不居中、无中间文字。
+      const slot = SLOT_ORDER[this.gameModel.relSlot(seat)];
+      const p = SLOTS[slot];
+      // 放到出牌区上方，避免压住刚打出的牌。
+      cx = p.cx; cy = p.cy - 76; scale = 0.55;
+    }
+    this.drawAlarmClock(g, cx, cy, scale, ratio, color);
+    this.countdownText.setText(String(Math.ceil(this.countdown.left)))
+      .setPosition(cx, cy).setFontSize(Math.round(17 * scale)).setVisible(true);
   }
 
-  startCountdown() {
+  startCountdown(seat) {
     this.stopCountdown();
     this.countdown.active = true;
+    this.countdown.seat = seat;
+    // 还贡用可调的 15s，出牌用 30s。
+    this.countdown.phase = this.gameModel.phase;
+    this.countdown.total = this.countdown.phase === 'tribute' ? this.tributeSeconds : COUNTDOWN_SECONDS;
     this.countdown.left = this.countdown.total;
     this.drawCountdown();
+    // 只有人类回合才真正计时；bot 由引擎自行驱动。
+    if (seat !== this.gameModel.humanSeat) return;
     this.countdown.timer = this.time.addEvent({
       delay: 1000, loop: true,
       callback: () => {
         this.countdown.left -= 1;
         this.drawCountdown();
         if (this.countdown.left <= 0) {
+          const wasTribute = this.countdown.phase === 'tribute';
           this.stopCountdown();
-          this.statusText.setText('超时 · 自动过牌');
-          this.onPass();
+          if (wasTribute) {
+            // 还贡超时：自动选引擎默认合规牌（≤10 最小）并提交。
+            this.statusText.setText('还贡超时 · 自动还贡');
+            this.onTributeReturnAuto();
+          } else {
+            this.statusText.setText('超时 · 自动过牌');
+            this.onPass();
+          }
         }
       },
     });
+  }
+
+  // 还贡超时：取第一张合规牌自动提交。
+  onTributeReturnAuto() {
+    const eligible = this.gameModel.tributeEligible();
+    if (!eligible.length) return;
+    const r = this.gameModel.tributeReturn(eligible[0]);
+    if (!r.ok) this.statusText.setText(r.reason);
   }
 
   stopCountdown() {
@@ -334,18 +741,55 @@ export class TableScene extends Phaser.Scene {
       this.countdown.timer = null;
     }
     this.countdown.left = 0;
+    this.countdown.seat = null;
+    this.countdown.phase = null;
     this.drawCountdown();
   }
 
-  updateCountdown(snap) {
-    const shouldRun = snap.myTurn && snap.phase === 'play' && !this.dealing && !this.settleLayer;
-    if (shouldRun && !this.countdown.active) this.startCountdown();
-    else if (!shouldRun && this.countdown.active) this.stopCountdown();
+  updateCountdown(snap, iAmFinished = false) {
+    // 出牌阶段与还贡阶段都显示倒计时；我已出完、发牌中、结算层存在时不显示。
+    const inWindow = (snap.phase === 'play' || snap.phase === 'tribute')
+      && !this.dealing && !this.settleLayer && !iAmFinished;
+    const active = inWindow;
+    const seat = active ? snap.waitingSeat : null;
+    if (seat == null) {
+      if (this.countdown.active) this.stopCountdown();
+      return;
+    }
+    // 座位变化或从未激活 → 重启（他人回合只显示闹钟不计时）。
+    if (!this.countdown.active || this.countdown.seat !== seat) {
+      this.startCountdown(seat);
+    }
   }
 
   // ---- 手牌选择（点击 / 按住拖动连选） ----
   onCardDown(id) {
     if (this.gameModel.waitingSeat !== this.gameModel.humanSeat) return;
+    // 还贡：只能选一张引擎合规牌（≤10），选新的替换旧的，点已选的取消。
+    if (this.gameModel.phase === 'tribute') {
+      const eligible = this.gameModel.tributeEligible();
+      if (!eligible.includes(id)) {
+        this.statusText.setText('还贡只能选 ≤10 的合规牌');
+        return;
+      }
+      const sel = this.gameModel.selected;
+      if (sel.has(id)) sel.clear();
+      else { sel.clear(); sel.add(id); }
+      this.dragSelect = null; // 还贡不支持拖动连选
+      this.gameModel.emitChange();
+      return;
+    }
+    // 理牌分组列：整组一起选中/取消。
+    const group = this.arranged.find((g) => g.cards.includes(id));
+    if (group) {
+      const all = group.cards.every((c) => this.gameModel.selected.has(c))
+        && this.gameModel.selected.size === group.cards.length;
+      this.gameModel.selected.clear();
+      if (!all) group.cards.forEach((c) => this.gameModel.selected.add(c));
+      this.gameModel.emitChange();
+      this.dragSelect = null; // 整组点选不进入拖动连选
+      return;
+    }
     const isSel = this.gameModel.selected.has(id);
     this.dragSelect = { mode: isSel ? 'remove' : 'add', touched: new Set([id]) };
     this.gameModel.toggleCard(id);
@@ -355,6 +799,7 @@ export class TableScene extends Phaser.Scene {
     const drag = this.dragSelect;
     if (!drag || drag.touched.has(id)) return;
     if (this.gameModel.waitingSeat !== this.gameModel.humanSeat) return;
+    if (this.gameModel.phase === 'tribute') return; // 还贡只选单张，不拖动连选
     drag.touched.add(id);
     const isSel = this.gameModel.selected.has(id);
     // 加选模式跳过已选、取消模式跳过未选，避免重复 toggle 抖动
@@ -388,20 +833,52 @@ export class TableScene extends Phaser.Scene {
     else this.stopCountdown();
   }
 
+  onTributeReturn() {
+    const r = this.gameModel.tributeReturn();
+    if (!r.ok) this.statusText.setText(r.reason);
+    else this.stopCountdown();
+  }
+
   // ---- 事件分发 ----
   onEvent(ev) {
     if (ev.type === 'deal') {
       this.hideSettle();
       this.stopCountdown();
+      this.arranged = [];
+      this.flushCursor = {};
       this.handleDeal(ev);
+    } else if (ev.type === 'resume') {
+      // 读档恢复：跳过发牌动画，直接渲染恢复后的牌桌状态。
+      this.hideSettle();
+      this.stopCountdown();
+      this.arranged = [];
+      this.flushCursor = {};
+      this.clearTrick();
+      this.clearFly();
+      this.clearBombFx();
+      for (const view of this.cardViews.values()) view.destroy();
+      this.cardViews.clear();
+      for (const corner of this.cornerViews.values()) corner.destroy();
+      this.cornerViews.clear();
+      this.clearLocks();
+      this.dealing = false;
+      this.statusText.setText(`已恢复上一局（${ev.actions ?? 0} 步）`);
+      this.render(ev.snapshot ?? this.gameModel.snapshot());
+      // 恢复的各家最后出牌由 lastBySeat 还原表现层
+      this.restoreTricks();
     } else if (ev.type === 'play') {
       this.animatePlay(ev.seat, ev.action);
     } else if (ev.type === 'tribute') {
       this.animateTribute(ev.event);
     } else if (ev.type === 'settle') {
       this.stopCountdown();
-      this.centerSub.setText(`第 ${ev.summary?.roundNo ?? '?'} 局结束`);
-      this.showSettle(ev.summary, ev.ended);
+      this.statusText.setText(`第 ${ev.summary?.roundNo ?? '?'} 局结束`);
+      // 结算时级牌可能已升级，剩余手牌要用新 level 的主题纹理；先异步预热再弹结算层。
+      const lv = this.gameModel.levelRankLabel();
+      const ready = this.skin?.loaded
+        ? this.skin.warmup(rankCode(lv)).catch(() => {})
+        : Promise.resolve();
+      ready.then(() => this.showSettle(ev.summary, ev.ended));
     } else if (ev.type === 'error') {
       this.statusText.setText(`房间错误：${ev.message}`);
     }
@@ -420,7 +897,14 @@ export class TableScene extends Phaser.Scene {
     this.cardViews.clear();
     for (const corner of this.cornerViews.values()) corner.destroy();
     this.cornerViews.clear();
+    this.clearLocks();
     this.statusText.setText('发牌中…');
+
+    // 等主题加载完成（若仍在进行）。保证从第一张飞牌起就是主题牌面，发完不再突变。
+    if (this.themeReady) {
+      try { await this.themeReady; }
+      catch (e) { console.warn('[theme] 等待主题失败：', e.message); }
+    }
 
     // 主题纹理预热（发牌前完成，动画里才有主题牌面）
     const rankCode = (label) => {
@@ -431,10 +915,8 @@ export class TableScene extends Phaser.Scene {
       if (label === 'K') return 13;
       return Number(label);
     };
-    if (this.skin?.loaded) {
-      try { await this.skin.warmup(rankCode(this.gameModel.levelRankLabel())); }
-      catch (e) { console.warn('[skin] 预热失败，回退字卡：', e.message); }
-    }
+    // 主题是硬依赖：预热失败会让 makeCardView 抛错中止，这里不再有字卡兜底。
+    await this.skin.warmup(rankCode(this.gameModel.levelRankLabel()));
 
     // 真实的 27 张手牌 + 真实落点（与正式手牌布局完全一致，落位后无缝切换）。
     const snap = this.gameModel.snapshot();
@@ -448,13 +930,16 @@ export class TableScene extends Phaser.Scene {
     // 只给自己发牌：27 张真牌全部亮牌面，逐张飞到最终落点。
     const flights = hand.map((id, i) => {
       const t = layout.get(id) ?? { x: DECK_X, y: SLOTS.bottom.handY };
-      return this.flyDealCard(id, t.x, t.y, i, i * CARD_DELAY, CARD_DURATION);
+      return this.flyDealCard(id, t.x, t.y, i, i * CARD_DELAY, CARD_DURATION, level);
     });
     // 其余三家不飞牌，只把手牌数从 0 递增到真实值（与发牌节奏同步）。
     const others = (ev.hands ?? []).filter((h) => h.seat !== this.gameModel.humanSeat);
     const counters = this.animateCountUp(others, totalMs, hand.length);
 
     await Promise.all(flights.concat([counters]));
+
+    // 飞牌落位后统一放大到手牌尺寸，再无缝切成正式手牌视图（避免落位瞬间变大的突兀）。
+    await this.expandFlyToHand();
     this.clearFly();
 
     // 真牌已落位：销毁飞牌，换成正式手牌视图（可点选/拖动/切布局）。
@@ -464,10 +949,31 @@ export class TableScene extends Phaser.Scene {
     this.gameModel.beginPlay();
   }
 
-  // 单张发牌：从中央牌堆飞向"我"的手牌区最终位置，亮真牌面。
-  flyDealCard(id, targetX, targetY, index, delayMs, duration) {
+  // 飞牌全程用小尺寸（不遮挡牌桌），落位后一起放大到手牌尺寸 1。
+  // 落点与正式手牌完全一致，放大后 clearFly + render 即可无缝衔接。
+  expandFlyToHand() {
     return new Promise((resolve) => {
-      const card = this.makeCardView(id, DECK_X, DECK_Y, { scale: 0.5, faceUp: true });
+      const cards = this.flyViews.slice();
+      if (!cards.length) { resolve(); return; }
+      let left = cards.length;
+      cards.forEach((c) => {
+        this.tweens.add({
+          targets: c, scaleX: 1, scaleY: 1,
+          duration: 180, ease: 'Quad.easeOut',
+          onComplete: () => { left -= 1; if (left === 0) resolve(); },
+        });
+      });
+    });
+  }
+
+  // 单张发牌：从中央牌堆飞向"我"的手牌区最终位置，亮真牌面。
+  // 飞行中用 FLY_SCALE（0.62）小尺寸，避免 27 张满尺寸牌在屏幕中间堆叠遮挡。
+  flyDealCard(id, targetX, targetY, index, delayMs, duration, level) {
+    return new Promise((resolve) => {
+      const FLY_SCALE = 0.62;
+      const card = this.makeCardView(id, DECK_X, DECK_Y, {
+        scale: FLY_SCALE * 0.5, faceUp: true, level,
+      });
       this.flyViews.push(card);
       card.setDepth(20 + index);
       card.rotation = index % 2 ? 0.06 : -0.06; // 起手略带倾角，飞行中平滑归零
@@ -475,8 +981,8 @@ export class TableScene extends Phaser.Scene {
         targets: card,
         x: targetX,
         y: targetY,
-        scaleX: 1,
-        scaleY: 1,
+        scaleX: FLY_SCALE,
+        scaleY: FLY_SCALE,
         rotation: 0,
         duration: duration ?? 300,
         delay: delayMs,
@@ -535,7 +1041,9 @@ export class TableScene extends Phaser.Scene {
     const midX = (from.cx + to.cx) / 2 - (dy / dist) * 60;
     const midY = (from.cy + to.cy) / 2 + (dx / dist) * 60;
 
-    const card = this.makeCardView(event.card, from.cx, from.cy, { scale: 0.9, faceUp: true });
+    const card = this.makeCardView(event.card, from.cx, from.cy, {
+      scale: 0.9, faceUp: true, level: this.gameModel.levelRankLabel(),
+    });
     card.setDepth(60);
     this.flyViews.push(card);
 
@@ -588,7 +1096,7 @@ export class TableScene extends Phaser.Scene {
     this.trickViews.set(seat, []);
   }
 
-  animatePlay(seat, action) {
+  animatePlay(seat, action, silent = false) {
     if (!action || action.tributeReturn) return;
     const slot = SLOT_ORDER[this.gameModel.relSlot(seat)];
     const p = SLOTS[slot];
@@ -603,23 +1111,28 @@ export class TableScene extends Phaser.Scene {
       return;
     }
     const cards = action.cards ?? [];
+    // 出牌区牌比手牌小一号（手牌 86×120，出牌 53×74），避免盖住徽标/操作栏。
+    const PLAY_SCALE = 0.62;
     // 一手牌按紧凑间距铺开，避免长顺子/钢板挤成一坨；牌多时缩小间距。
-    const gap = cards.length > 8 ? 30 : 40;
+    const gap = cards.length > 8 ? 20 : 30;
     cards.forEach((id, i) => {
       const fromX = slot === 'bottom' ? SLOTS.bottom.cx : p.cx;
       const fromY = slot === 'bottom' ? SLOTS.bottom.handY : p.cy + 40;
-      const c = this.makeCardView(id, fromX, fromY, { scale: 0.92, faceUp: true });
+      const c = this.makeCardView(id, fromX, fromY, {
+        scale: PLAY_SCALE * 0.92, faceUp: true, level: this.gameModel.levelRankLabel(),
+      });
       views.push(c);
       const ox = (i - (cards.length - 1) / 2) * gap;
       c.setDepth(10 + i);
       this.tweens.add({
-        targets: c, x: p.cx + ox, y: p.cy, scale: 1, duration: 260,
+        targets: c, x: p.cx + ox, y: p.cy, scale: PLAY_SCALE, duration: 260,
         ease: 'Back.easeOut', delay: i * 30,
       });
     });
-    // applied 事件不带 patternId，炸弹按牌结构识别；四家出炸弹都播特效。
-    const bomb = detectBomb(cards);
-    if (bomb) this.playBombFx(seat, bomb, views);
+    // 炸弹优先用引擎 patternId 判定（含红配补位的炸弹）；step 的 applied 不带时回退牌结构识别。
+    // silent=true 用于读档还原，不重播特效。
+    const bomb = detectBomb(cards, action.patternId);
+    if (bomb && !silent) this.playBombFx(seat, bomb, views);
   }
 
   // ================= 炸弹特效 =================
@@ -726,8 +1239,10 @@ export class TableScene extends Phaser.Scene {
     // 6) 出牌炸开：该座位刚打出的牌轻微弹跳，强化"炸"的读感。
     cardViews.forEach((v, i) => {
       if (!v || !v.active) return;
+      // 相对当前 scale 小幅放大，不写死 1.1（出牌区牌已缩到 0.62）。
+      const s0 = v.scaleX || 1;
       this.tweens.add({
-        targets: v, y: v.y - 8 - i * 2, scaleX: 1.1, scaleY: 1.1,
+        targets: v, y: v.y - 8 - i * 2, scaleX: s0 * 1.1, scaleY: s0 * 1.1,
         duration: 100, yoyo: true, repeat: 2, ease: 'Sine.easeInOut',
       });
     });
@@ -749,6 +1264,17 @@ export class TableScene extends Phaser.Scene {
     this.bombFx = [];
   }
 
+  // 读档后按 lastBySeat 还原四家最后出的牌（静态展示，不再重播动画）。
+  restoreTricks() {
+    this.clearTrick();
+    const last = this.gameModel.lastBySeat ?? {};
+    for (const seat of Object.keys(last)) {
+      const rec = last[seat];
+      if (!rec || rec.pass || (rec.cards?.length ?? 0) === 0) continue;
+      this.animatePlay(Number(seat), { pass: false, cards: rec.cards }, true);
+    }
+  }
+
   clearTrick() {
     this.trickViews.forEach((views) => views.forEach((v) => v.destroy()));
     this.trickViews.clear();
@@ -767,9 +1293,65 @@ export class TableScene extends Phaser.Scene {
     }
   }
 
+  // 牌局结束：其他三家未出完的手牌用小号 cols 亮在其牌区。
+  // 用引擎真实 view(seat).hand.cards；depth 210 在全屏遮罩(200)之上，位置避开中央结算弹窗。
+  showSettleRemainingHands(L) {
+    const g = this.gameModel;
+    const level = g.levelRankLabel();
+    for (const seat of [1, 2, 3]) {
+      if (seat === g.humanSeat) continue;
+      let cards = [];
+      try { cards = g.wasm.view(seat)?.hand?.cards ?? []; } catch { /* 视图不可用则跳过 */ }
+      if (!cards.length) continue; // 已出完（头游/二游）不展示
+      const slot = SLOT_ORDER[g.relSlot(seat)];
+      const p = SLOTS[slot];
+      const isTop = slot === 'top';
+      const anchorX = p.cx;
+      // 顶部牌区 x=640 正对中央弹窗，锚点下移、牌往上叠，避免越出屏幕顶；标签放牌下方。
+      const anchorY = isTop ? 118 : p.handY;
+      // 小号 cols：同点数一列、列内小幅纵向错开，整体居中在牌区锚点。
+      const SCALE = 0.42;
+      const cw = CARD_W * SCALE;
+      const rowStep = isTop ? 12 : 15;
+      const cols = new Map();
+      for (const id of cards) {
+        const key = columnKey(id, level);
+        if (!cols.has(key)) cols.set(key, []);
+        cols.get(key).push(id);
+      }
+      const keys = [...cols.keys()].sort((a, b) => b - a);
+      const colGap = cw * 0.62; // 小牌列稍重叠，紧凑
+      const totalW = (keys.length - 1) * colGap;
+      let maxRows = 1;
+      keys.forEach((key, ci) => {
+        const ids = cols.get(key).slice().sort((a, b) => a - b);
+        const x = anchorX - totalW / 2 + ci * colGap;
+        ids.forEach((id, ri) => {
+          const y = anchorY - ri * rowStep;
+          const view = this.makeCardView(id, x, y, { scale: SCALE, faceUp: true, level });
+          view.setDepth(210);
+          L.push(view);
+        });
+        maxRows = Math.max(maxRows, ids.length);
+      });
+      // 剩余张数标签：顶部放牌下方，其余放牌上方（避开牌区）。
+      const labelY = isTop
+        ? anchorY + 26
+        : anchorY - (maxRows - 1) * rowStep - 38;
+      const label = this.add.text(anchorX, labelY,
+        `座位 ${seat} 剩 ${cards.length} 张`, {
+          fontFamily: 'sans-serif', fontSize: '13px', color: '#ffe9a8', fontStyle: 'bold',
+          backgroundColor: '#0f2d3a', padding: { x: 6, y: 3 },
+        }).setOrigin(0.5).setDepth(211);
+      L.push(label);
+    }
+  }
+
   showSettle(summary, ended) {
     this.hideSettle();
     const L = [];
+    // 牌局结束：把其他三家未出完的真实手牌用小号 cols 亮在其牌区（遮罩之上，不挡结算弹窗）。
+    this.showSettleRemainingHands(L);
     const shade = this.add.rectangle(640, H / 2, W, H, 0x0a1a20, 0.62).setDepth(200);
     L.push(shade);
     const card = this.add.graphics().setDepth(201);
@@ -818,67 +1400,139 @@ export class TableScene extends Phaser.Scene {
     if (this.dealing) return; // 发牌阶段由动画自己驱动显示
     this.lastSnapshot = snap;
     const info = snap.info ?? {};
-    const m = snap.meta ?? {};
-    this.hudText.setText(`第 ${m.roundNo ?? '-'} 局 · 序号 ${m.roomSeq ?? '-'}   |   相位 ${info.phase ?? '-'} · 行动 ${info.turnSeat ?? '-'}`);
-    const lv = this.gameModel.levelRankLabel();
-    if (this.levelBadgeText) this.levelBadgeText.setText(lv ?? '2');
-    this.centerSub.setText(`级牌 ${lv ?? '—'} · 打 ${info.attackingTeam === 0 ? '我方' : info.attackingTeam === 1 ? '对方' : '—'}`);
+    // 记分板：双方各自级牌 + 打级方黄框高亮；不再显示箭头/当前行动方。
+    this.refreshScoreBoard(info.attackingTeam, info.levels);
 
     const seats = info.seats ?? [];
     seats.forEach((s) => {
       const slot = SLOT_ORDER[this.gameModel.relSlot(s.seat)];
       const label = this.slotLabels[slot];
       const mine = s.seat === snap.humanSeat;
-      const rank = s.rank ? ` ${s.rank}名` : '';
-      label.setText(`${mine ? '你' : '座位 ' + s.seat}${rank}\n手牌 ${s.hand ?? 0}`);
+      label.setText(`${mine ? '你' : '座位 ' + s.seat}\n手牌 ${s.hand ?? 0}`);
       label.setColor(mine ? '#ffe9a8' : '#e9fff3');
+      // 名次徽标：头游/二游/三游/末游
+      const rankText = this.slotRankTexts?.[slot];
+      if (rankText) {
+        const r = Number(s.rank) || 0;
+        if (r >= 1 && r <= 4) {
+          rankText.setText(RANK_LABELS[r]).setVisible(true);
+        } else {
+          rankText.setVisible(false);
+        }
+      }
     });
 
     const myTurn = snap.myTurn;
-    if (!this.countdown.active) {
-      this.statusText.setText(myTurn
-        ? (snap.phase === 'tribute' ? '轮到你还贡（选一张 ≤10）' : '轮到你出牌 · 点牌选中')
-        : (snap.waitingSeat === null ? '' : `等待座位 ${snap.waitingSeat} 行动…`));
-    }
-    this.playBtn.setAlpha(myTurn ? 1 : 0.5);
-    this.passBtn.setAlpha(myTurn && snap.phase !== 'tribute' ? 1 : 0.5);
+    // 我已出完（拿到名次）：牌局可能仍在等其他三家打完，此时轮次不该再算到我头上，
+    // 否则会出现"手牌已空却提示轮到你出牌/要不起"的矛盾。已出完就不参与出牌交互。
+    const myRank = snap.info?.seats?.find((s) => s.seat === snap.humanSeat)?.rank ?? 0;
+    const iAmFinished = myRank > 0;
+    const canAct = myTurn && !iAmFinished; // 真正需要我操作的回合
 
-    this.updateCountdown(snap);
+    // 底部反馈：已出完→等待结算；还贡提示；等待他人；"轮到你出牌"由中央闹钟承担。
+    this.statusText.setText(iAmFinished
+      ? `你已出完（第 ${myRank} 名）· 等待其他人`
+      : (snap.phase === 'tribute' && canAct
+        ? '轮到你还贡（选一张 ≤10）'
+        : (!canAct && snap.waitingSeat !== null ? `等待座位 ${snap.waitingSeat} 行动…` : '')));
+    // 还贡阶段：只显示"还贡"按钮（选中合规牌后启用）；其余四按钮隐藏。
+    // 出牌阶段：显示 出牌/提示/过牌 或"要不起"；已出完/非我回合隐藏全部。
+    const isTributeTurn = canAct && snap.phase === 'tribute';
+    const hasReturnPick = isTributeTurn && (snap.selected?.size ?? 0) === 1;
+    this.returnBtn.setBtnVisible(isTributeTurn);
+    this.returnBtn.setAlpha(hasReturnPick ? 1 : 0.5);
+    const mustPass = canAct && snap.phase === 'play' && !this.hasPlayableCards(snap);
+    [this.playBtn, this.hintBtn, this.passBtn].forEach((b) => b.setBtnVisible(canAct && !isTributeTurn && !mustPass));
+    this.cannotBtn.setBtnVisible(canAct && !isTributeTurn && mustPass);
+    const dim = canAct ? 1 : 0.5;
+    [this.playBtn, this.hintBtn, this.passBtn].forEach((b) => b.setAlpha(dim));
+    this.cannotBtn.setAlpha(1);
+
+    this.updateCountdown(snap, iAmFinished);
     this.renderHand(snap);
+    this.syncSuitTabs(snap);
   }
 
-  // 计算整手牌的落点：fan = 横排铺满全屏；cols = 同点数一列纵向罗列（参照 apps/web）。
+  // 四花色按钮：能凑出同花顺→用主题花色墨色高亮、可点；否则灰显、不可点。
+  // 颜色取 skin.suitInk（palette.suits 优先，回落 red/black），与牌面花色一致。
+  syncSuitTabs(snap) {
+    if (!this.suitButtons) return;
+    const cards = snap.hand ?? [];
+    const myTurn = snap.myTurn;
+    this.suitButtons.forEach((btn, suit) => {
+      const opts = this.flushWindows(suit, this.poolForSuit(cards, suit));
+      const enabled = myTurn && opts.length > 0;
+      // 让 pointerout 回到主题墨色而非构造时的固定色。
+      const ink = this.skin?.suitInk?.(suit);
+      const lit = ink ?? 0xdd0808;
+      btn.baseColor = enabled ? lit : 0x3a4a44;
+      btn.setFillStyle(btn.baseColor, 1);
+      btn.labelText.setColor(enabled ? '#ffffff' : '#7f8c88');
+      btn.setAlpha(1);
+      if (enabled) btn.setInteractive({ useHandCursor: true });
+      else btn.disableInteractive();
+    });
+  }
+
+  // 稳定排序一列内的牌：columnKey 降序 → 花色 → copy（对齐 web sortedCards）。
+  sortedColumn(ids, level) {
+    return [...ids].sort((a, b) =>
+      columnKey(b, level) - columnKey(a, level) || suitIndexOf(a) - suitIndexOf(b) || (a % 2) - (b % 2));
+  }
+
+  // 计算整手牌落点：cols = 同点数一列（含理牌分组左/右），fan = 横排铺满。
+  // 理牌分组只改布局：left 组排最左、right 组排最右、未理的牌居中按列。
   // 返回 Map<id, {x, y}>，y 为未选中的基准位置。
   layoutHand(hand, level) {
     const pos = new Map();
     const n = Math.max(1, hand.length);
+    const colGap = Math.min(92, CARD_W + 4);
+    const rowStep = 30;
+
+    // 剪掉已不在手牌里的分组牌（出牌后被消耗）
+    const handSet = new Set(hand);
+    this.arranged = this.arranged
+      .map((g) => ({ ...g, cards: g.cards.filter((id) => handSet.has(id)) }))
+      .filter((g) => g.cards.length > 0);
+    const groupedIds = new Set(this.arranged.flatMap((g) => g.cards));
+
     if (this.handStyle === 'cols') {
-      // 按 columnKey 分组：大王>小王>级牌>A>K…2；同点数一列，列内按 id 稳定排序。
+      const left = this.arranged.filter((g) => g.layout === 'left');
+      const right = this.arranged.filter((g) => g.layout === 'right');
+      // 未理的牌按同点数分组
       const cols = new Map();
       for (const id of hand) {
+        if (groupedIds.has(id)) continue;
         const key = columnKey(id, level);
         if (!cols.has(key)) cols.set(key, []);
         cols.get(key).push(id);
       }
-      const keys = [...cols.keys()].sort((a, b) => b - a);
-      // 设计图：列间距接近牌宽（铺满全屏、列间几乎不重叠），同列纵向错开露角标。
-      const colGap = Math.min(92, CARD_W + 4);
-      const rowStep = 34;          // 同列每张上移：牌高 120，露顶部角标可辨
-      const totalW = (keys.length - 1) * colGap;
-      keys.forEach((key, ci) => {
-        const ids = cols.get(key).slice().sort((a, b) => a - b);
+      const midCols = [...cols.keys()].sort((a, b) => b - a).map((k) => this.sortedColumn(cols.get(k), level));
+      // 列序列：左组 + 中间散列 + 右组
+      const columns = [
+        ...left.map((g) => this.sortedColumn(g.cards, level)),
+        ...midCols,
+        ...right.map((g) => this.sortedColumn(g.cards, level)),
+      ];
+      const totalW = (columns.length - 1) * colGap;
+      columns.forEach((ids, ci) => {
         const x = 640 - totalW / 2 + ci * colGap;
-        ids.forEach((id, ri) => {
-          pos.set(id, { x, y: 648 - ri * rowStep });
-        });
+        ids.forEach((id, ri) => pos.set(id, { x, y: HAND_BASE_Y - ri * rowStep }));
       });
     } else {
-      // fan：横排铺满全屏。间距按可用宽度反推，牌宽 66、适度重叠露角标。
-      const usable = W - 72;                       // 左右各留 36px
-      const maxGap = Math.max(20, Math.floor((usable - CARD_W) / (n - 1)));
-      const spacing = Math.min(58, maxGap);        // 上限 58：牌多时仍保留叠放感
-      const startX = 640 - ((n - 1) * spacing) / 2;
-      hand.forEach((id, i) => pos.set(id, { x: startX + i * spacing, y: 658 }));
+      // fan：横排铺满全屏。理牌组仍在两端：左组 → 散牌 → 右组。
+      const left = this.arranged.filter((g) => g.layout === 'left');
+      const right = this.arranged.filter((g) => g.layout === 'right');
+      const ordered = [
+        ...left.flatMap((g) => this.sortedColumn(g.cards, level)),
+        ...this.sortedColumn(hand.filter((id) => !groupedIds.has(id)), level),
+        ...right.flatMap((g) => this.sortedColumn(g.cards, level)),
+      ];
+      const usable = W - 72;
+      const maxGap = Math.max(16, Math.floor((usable - CARD_W) / (Math.max(1, ordered.length) - 1)));
+      const spacing = Math.min(58, maxGap);
+      const startX = 640 - ((ordered.length - 1) * spacing) / 2;
+      ordered.forEach((id, i) => pos.set(id, { x: startX + i * spacing, y: HAND_BASE_Y + 6 }));
     }
     return pos;
   }
@@ -903,28 +1557,39 @@ export class TableScene extends Phaser.Scene {
         this.cornerViews.delete(id);
       }
     }
+    // 理牌分组的牌集合
+    const grouped = new Set(this.arranged.flatMap((g) => g.cards));
+    // 清理不再在手牌、或已不在任何分组的锁图标
+    for (const [id, lock] of this.lockViews) {
+      if (!present.has(id) || !grouped.has(id)) {
+        lock.destroy();
+        this.lockViews.delete(id);
+      }
+    }
     hand.forEach((id, index) => {
       const target = layout.get(id);
       let view = this.cardViews.get(id);
       if (!view) {
-        view = this.makeCardView(id, target.x, target.y, { scale: 1, faceUp: true, level, interactive: true });
+        view = this.makeCardView(id, target.x, target.y, {
+          scale: this.cardScale, faceUp: true, level, interactive: true,
+        });
         view.on('pointerdown', () => this.onCardDown(id));
         view.on('pointerover', () => this.onCardOver(id));
         this.cardViews.set(id, view);
       }
       view.setData?.('order', index);
       const isSel = selected.has(id);
-      // 选中上移：cols 列内已向上叠放，上移幅度收小避免顶到操作栏；fan 上移更多以露整张牌。
-      const lift = this.handStyle === 'cols' ? 12 : 34;
+      // fan 横叠：选中上移 34 且抬 depth 到 100+index，露出整张牌、不被右邻牌盖住。
+      // cols 叠列：选中「不上移、不抬 depth」——每张牌只露出顶部 30px 角标条带，
+      //   若选中牌抬高/上移，会盖住紧邻下方牌的角标，导致从上往下拖选时下面牌点不中。
+      //   cols 选中态靠金色 tint + 粗金边标识，叠列几何与命中区保持原样。
+      const lift = this.handStyle === 'cols' ? 0 : 34;
       const ty = isSel ? target.y - lift : target.y;
       if (Math.abs(view.x - target.x) > 1 || Math.abs(view.y - ty) > 1) {
         this.tweens.add({ targets: view, x: target.x, y: ty, duration: 110, ease: 'Quad.easeOut' });
       }
-      // 关键：选中的牌 depth 必须高于相邻牌，否则 fan 横叠时会被右边的牌盖住，看不清。
-      // 普通牌 12（fan）/ 20+y/8（cols，下盖上的牌）；选中牌统一抬到 100+order，
-      // 仍低于结算层 200，且选中牌之间按原始次序排列（不抖动）。
       const baseDepth = this.handStyle === 'cols' ? 20 + Math.round(target.y / 8) : 12;
-      view.setDepth(isSel ? 100 + index : baseDepth);
+      view.setDepth(isSel && this.handStyle !== 'cols' ? 100 + index : baseDepth);
       const border = view.list?.find((c) => c.getData?.('selborder'));
       if (border) {
         border.setStrokeStyle(isSel ? 3 : 1, isSel ? 0xffd45e : 0x9fd8bd, 1);
@@ -951,6 +1616,24 @@ export class TableScene extends Phaser.Scene {
         corner.setDepth(isSel ? 90 + index : 60 + index);
         corner.setAlpha(isSel ? 0.95 : 1);
       }
+
+      // 理牌分组的牌右上角加一枚很小的锁，标识"这是理好的一组"。
+      if (grouped.has(id)) {
+        let lock = this.lockViews.get(id);
+        if (!lock) {
+          lock = this.makeLockIcon();
+          this.lockViews.set(id, lock);
+        }
+        // 右上角：随牌面尺寸缩放，选中上移时跟随。
+        const halfW = (CARD_W * this.cardScale) / 2;
+        const halfH = (CARD_H * this.cardScale) / 2;
+        const lx = target.x + halfW - 9 * this.cardScale;
+        const ly = ty - halfH + 9 * this.cardScale;
+        if (Math.abs(lock.x - lx) > 1 || Math.abs(lock.y - ly) > 1) {
+          this.tweens.add({ targets: lock, x: lx, y: ly, duration: 110, ease: 'Quad.easeOut' });
+        }
+        lock.setDepth(isSel ? 130 + index : 70 + index);
+      }
     });
     // cols 模式不需要浮层（牌纵向叠放、角标本就露出），销毁避免残留
     if (this.handStyle !== 'fan') {
@@ -959,6 +1642,29 @@ export class TableScene extends Phaser.Scene {
         this.cornerViews.delete(id);
       }
     }
+  }
+
+  clearLocks() {
+    for (const lock of this.lockViews.values()) lock.destroy();
+    this.lockViews.clear();
+  }
+
+  // 理牌分组小锁图标：一枚很小的金色挂锁（锁体 + 锁梁），画在牌右上角。
+  // 主题牌面是 Image 不能挂子对象，故用独立 Graphics 浮层，随牌移动。
+  makeLockIcon() {
+    const scale = this.cardScale;
+    const g = this.add.graphics().setScale(scale);
+    // 锁体
+    g.fillStyle(0xd4a017, 1).fillRoundedRect(-5, -1, 10, 8, 2);
+    g.lineStyle(1, 0x5a3a06, 1).strokeRoundedRect(-5, -1, 10, 8, 2);
+    // 锁梁（半圆）
+    g.lineStyle(2, 0xd4a017, 1);
+    g.beginPath();
+    g.arc(0, -1, 3.2, Phaser.Math.DegToRad(180), Phaser.Math.DegToRad(360), false);
+    g.strokePath();
+    // 锁孔
+    g.fillStyle(0x5a3a06, 1).fillCircle(0, 3, 1);
+    return g;
   }
 
   // fan 模式角标浮层：rank + suit 两行，配色跟随主题牌（红桃/方块红，其余黑）。
@@ -978,62 +1684,46 @@ export class TableScene extends Phaser.Scene {
     return c;
   }
 
-  // 统一的牌视图：主题模式用 SVG 纹理 Image，否则字卡 Container。
+  // 统一的牌视图：一律用 gfdeck 主题纹理 Image（boot 已强制主题加载成功）。
+  // 纹理缺失属异常情况，直接抛错中止，绝不再回退自画字卡（用户要求必须 gfdeck 主题）。
   // 返回的对象都支持 x/y/scale/rotation/alpha/destroy/setDepth/on/tweens。
   makeCardView(id, x, y, { scale = 1, faceUp = true, level = null, interactive = false } = {}) {
     const texKey = faceUp && this.skin ? this.skin.textureKey(id, level) : null;
-    if (texKey && this.textures.exists(texKey)) {
-      // SVG 纹理基准缩放让它落到 CARD_W 宽，再乘外部 scale。
-      const tex = this.textures.get(texKey).getSourceImage();
-      const base = tex && tex.width ? CARD_W / tex.width : CARD_W / 500;
-      const img = this.add.image(x, y, texKey).setScale(base * scale);
-      if (interactive) img.setInteractive({ useHandCursor: true });
-      return img;
+    if (!texKey || !this.textures.exists(texKey)) {
+      throw new Error(`主题纹理缺失：card=${id} level=${level} faceUp=${faceUp}（必须使用 gfdeck 主题，不回退自画）`);
     }
-    return this.makeTextCard(id, x, y, { scale, faceUp, interactive });
+    // SVG 纹理基准缩放让它落到 CARD_W 宽，再乘外部 scale。
+    const tex = this.textures.get(texKey).getSourceImage();
+    const base = tex && tex.width ? CARD_W / tex.width : CARD_W / 500;
+    const img = this.add.image(x, y, texKey).setScale(base * scale);
+    if (interactive) img.setInteractive({ useHandCursor: true });
+    return img;
   }
 
-  // 牌背：蓝色斜纹 + 掼字（占位素材，后期可替换为贴图）。
+  // 中央牌堆：主题就绪后由 main.js 调用，用 gfdeck 牌背纹理替换占位。
+  // 主题是硬依赖，牌背纹理缺失直接抛错，不保留自画占位。
+  refreshDeckStack() {
+    if (this.deckStack) this.deckStack.destroy();
+    if (this.deckStackLabel) this.deckStackLabel.destroy();
+    const key = this.skin?.backKey;
+    if (!key || !this.textures.exists(key)) {
+      throw new Error('主题牌背纹理缺失，牌堆无法渲染（必须使用 gfdeck 主题）');
+    }
+    // 牌堆比手牌略小：CARD_W 宽对应 scale 1，这里用 0.8 约 69×96。
+    this.deckStack = this.makeBack(DECK_X, DECK_Y, 0.8).setDepth(2);
+  }
+
+  // 牌背：一律用 gfdeck 主题牌背纹理（主题硬依赖，缺失抛错，不回退自画）。
   makeBack(x, y, scale = 1) {
-    const c = this.add.container(x, y).setScale(scale);
-    const back = ASSETS.cardBack;
-    const box = this.add.rectangle(0, 0, CARD_W, CARD_H, back.color, 1)
-      .setStrokeStyle(1, 0x8fc4ee, 1);
-    const inner = this.add.rectangle(0, 0, CARD_W - 10, CARD_H - 10, back.inner, 1)
-      .setStrokeStyle(1, 0x4a86bd, 0.9);
-    const txt = this.add.text(0, 0, back.glyph, {
-      fontFamily: 'serif', fontSize: '30px', color: '#9fc8ea',
-    }).setOrigin(0.5);
-    c.add([box, inner, txt]);
-    return c;
+    const key = this.skin?.backKey;
+    if (!key || !this.textures.exists(key)) {
+      throw new Error('主题牌背纹理缺失（必须使用 gfdeck 主题，不回退自画牌背）');
+    }
+    const tex = this.textures.get(key).getSourceImage();
+    const base = tex && tex.width ? CARD_W / tex.width : CARD_W / 500;
+    return this.add.image(x, y, key).setScale(base * scale);
   }
 
-  // 字卡（无主题或牌背时的回退）：圆角矩形 + 点数花色。
-  makeTextCard(id, x, y, { scale = 1, faceUp = true, interactive = false } = {}) {
-    const f = cardFace(id);
-    const c = this.add.container(x, y).setScale(scale);
-    const box = faceUp
-      ? this.add.rectangle(0, 0, CARD_W, CARD_H, 0xfdfdf7, 1).setStrokeStyle(1, 0x9fd8bd, 1)
-      : this.add.rectangle(0, 0, CARD_W, CARD_H, 0x174a7a, 1).setStrokeStyle(1, 0x8fc4ee, 1);
-    box.setData('selborder', true);
-    if (interactive) box.setInteractive({ useHandCursor: true });
-    if (faceUp) {
-      const color = f.red ? '#c0392b' : '#1c2733';
-      c.add([
-        this.add.text(-25, -34, f.rank, { fontFamily: 'sans-serif', fontSize: '28px', color, fontStyle: 'bold' }),
-        this.add.text(-25, -6, f.suit, { fontFamily: 'sans-serif', fontSize: '22px', color }),
-        this.add.text(8, 12, f.joker ? '★' : f.suit, {
-          fontFamily: 'sans-serif', fontSize: '36px', color,
-        }).setOrigin(0.5).setAlpha(0.35),
-      ]);
-    } else {
-      c.add([this.add.text(0, 0, '掼', {
-        fontFamily: 'serif', fontSize: '30px', color: '#9fc8ea',
-      }).setOrigin(0.5)]);
-    }
-    c.addAt(box, 0);
-    return c;
-  }
 }
 
 export { H, W };
