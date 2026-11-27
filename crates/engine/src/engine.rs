@@ -732,7 +732,9 @@ impl M0Engine {
                 let base = self.base_total();
                 let slot = (card as usize - base) / self.copies();
                 let tail = self.ruleset.natural_order.len();
-                (tail - 2 + slot) as u32
+                // 加载期已校验 naturalOrder 至少两位；这里再防御一次，避免畸形规则集
+                // 在 debug 下整数下溢（release 则会得到巨大权重）。
+                (tail.saturating_sub(2) + slot) as u32
             }
         }
     }

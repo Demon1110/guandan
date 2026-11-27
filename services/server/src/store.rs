@@ -3,8 +3,8 @@
 //! 设计口径见 §5.8（表结构）与 §6.5（Redis 三类键）。本切片的取舍：
 //! - PG/Redis 连接串从环境变量给（`GF_DATABASE_URL` / `GF_REDIS_URL`），缺省即关闭；
 //!   关闭时全部方法退化为 no-op，联机对局不受影响（不因存储不可用而拒客）。
-//! - 写失败只打日志、不冒泡：结算的三次重试与死信表属 §6.6，排在 M3 的
-//!   `settlement_dead_letter` 巡检里；本切片保证「表在、字段对、事务边界明确」。
+//! - 写失败不冒泡（不阻塞对局），但结算/场次/快照均带短退避重试；结算三次仍失败
+//!   转 `settlement_dead_letter`，不再只打日志丢数据。
 //! - 匹配队列以内存为准，Redis 里是镜像（`match:queue:{gameId}` zset），
 //!   多实例共享队列要等网关粘性路由落地后再把内存态整个换掉。
 
@@ -211,15 +211,26 @@ impl Store {
         let sql = "UPDATE match_record \
              SET winner_team = $2, end_reason = $3, ended_at = $4 \
              WHERE match_id = $1";
-        if let Err(err) = sqlx::query(sql)
-            .bind(match_id)
-            .bind(winner_team.map(i16::from))
-            .bind(end_reason)
-            .bind(ended_at_ms as i64)
-            .execute(pg)
-            .await
-        {
-            eprintln!("[store] 更新 match_record 失败：{err}");
+        for attempt in 1..=3u32 {
+            match sqlx::query(sql)
+                .bind(match_id)
+                .bind(winner_team.map(i16::from))
+                .bind(end_reason)
+                .bind(ended_at_ms as i64)
+                .execute(pg)
+                .await
+            {
+                Ok(_) => return,
+                Err(err) if attempt < 3 => {
+                    eprintln!("[store] 更新 match_record 失败（第 {attempt}/3 次，将重试）：{err}");
+                    tokio::time::sleep(std::time::Duration::from_millis(50 * u64::from(attempt)))
+                        .await;
+                }
+                Err(err) => {
+                    eprintln!("[store] 更新 match_record 失败（已用尽重试）：{err}");
+                    return;
+                }
+            }
         }
     }
 
@@ -227,16 +238,35 @@ impl Store {
     /// 两条在同一事务里，避免「有事件无战绩」的单边状态。
     pub async fn insert_round(&self, row: &RoundRow) {
         let Some(pg) = &self.pg else { return };
+        let mut last_err = None;
+        for attempt in 1..=3u32 {
+            match Self::write_round(pg, row).await {
+                Ok(()) => return,
+                Err(err) => {
+                    eprintln!("[store] 写结算记录失败（第 {attempt}/3 次）：{err}");
+                    last_err = Some(err);
+                    if attempt < 3 {
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            50 * u64::from(attempt),
+                        ))
+                        .await;
+                    }
+                }
+            }
+        }
+        if let Err(err) = Self::dead_letter_round(pg, row).await {
+            eprintln!(
+                "[store] 死信写入失败（战绩将丢失，需要人工补偿）：{err}；原始错误：{}",
+                last_err.map(|e| e.to_string()).unwrap_or_default()
+            );
+        }
+    }
+
+    async fn write_round(pg: &PgPool, row: &RoundRow) -> Result<(), sqlx::Error> {
         let settlement_id = settlement_id(&row.match_id, row.round_no);
         let players = players_json(&row.players);
         let levels = levels_json(&row.levels_after);
-        let mut tx = match pg.begin().await {
-            Ok(tx) => tx,
-            Err(err) => {
-                eprintln!("[store] 开事务失败：{err}");
-                return;
-            }
-        };
+        let mut tx = pg.begin().await?;
         let event_sql = "INSERT INTO settlement_event \
              (settlement_id, match_id, round_no, created_at) VALUES ($1, $2, $3, $4) \
              ON CONFLICT (settlement_id) DO NOTHING";
@@ -245,38 +275,58 @@ impl Store {
               engine_version, interpreter_version, started_at, ended_at) \
              VALUES ($1, $2, $3::text::jsonb, $4::text::jsonb, $5::text::jsonb, $6, $7, $8, $9, $10) \
              ON CONFLICT (match_id, round_no) DO NOTHING";
-        let result = async {
-            sqlx::query(event_sql)
-                .bind(&settlement_id)
-                .bind(&row.match_id)
-                .bind(i32::from(row.round_no))
-                .bind(row.ended_at_ms as i64)
-                .execute(&mut *tx)
-                .await?;
-            sqlx::query(round_sql)
-                .bind(&row.match_id)
-                .bind(i32::from(row.round_no))
-                .bind(players)
-                .bind(&row.result_json)
-                .bind(levels)
-                .bind(&row.ruleset_version)
-                .bind("")
-                .bind("")
-                .bind(row.started_at_ms as i64)
-                .bind(row.ended_at_ms as i64)
-                .execute(&mut *tx)
-                .await?;
-            Ok::<_, sqlx::Error>(())
-        }
-        .await;
-        match result {
-            Ok(()) => {
-                if let Err(err) = tx.commit().await {
-                    eprintln!("[store] 结算事务提交失败：{err}");
-                }
-            }
-            Err(err) => eprintln!("[store] 写结算记录失败（已回滚）：{err}"),
-        }
+        sqlx::query(event_sql)
+            .bind(&settlement_id)
+            .bind(&row.match_id)
+            .bind(i32::from(row.round_no))
+            .bind(row.ended_at_ms as i64)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(round_sql)
+            .bind(&row.match_id)
+            .bind(i32::from(row.round_no))
+            .bind(players)
+            .bind(&row.result_json)
+            .bind(levels)
+            .bind(&row.ruleset_version)
+            .bind("")
+            .bind("")
+            .bind(row.started_at_ms as i64)
+            .bind(row.ended_at_ms as i64)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await
+    }
+
+    async fn dead_letter_round(pg: &PgPool, row: &RoundRow) -> Result<(), sqlx::Error> {
+        let settlement_id = settlement_id(&row.match_id, row.round_no);
+        let payload = serde_json::json!({
+            "matchId": row.match_id,
+            "roundNo": row.round_no,
+            "players": row.players,
+            "ranks": row.ranks,
+            "result": row.result_json,
+            "levelsAfter": row.levels_after,
+            "rulesetVersion": row.ruleset_version,
+            "startedAt": row.started_at_ms,
+            "endedAt": row.ended_at_ms,
+        });
+        let sql = "INSERT INTO settlement_dead_letter \
+             (settlement_id, match_id, round_no, payload, failed_at, retries) \
+             VALUES ($1, $2, $3, $4::text::jsonb, $5, 1) \
+             ON CONFLICT (settlement_id) DO UPDATE SET \
+              payload = EXCLUDED.payload, failed_at = EXCLUDED.failed_at, \
+              retries = settlement_dead_letter.retries + 1, resolved_at = NULL";
+        sqlx::query(sql)
+            .bind(&settlement_id)
+            .bind(&row.match_id)
+            .bind(i32::from(row.round_no))
+            .bind(payload.to_string())
+            .bind(row.ended_at_ms as i64)
+            .execute(pg)
+            .await?;
+        eprintln!("[store] 结算已转死信：{settlement_id}（等待补偿巡检）");
+        Ok(())
     }
 
     /// 动作流落 Redis（`room:{matchId}:actions` Stream，§6.5）。
@@ -311,15 +361,26 @@ impl Store {
         };
         let key = snapshot_key(match_id);
 
-        let result = redis::cmd("SET")
-            .arg(&key)
-            .arg(snapshot_json)
-            .arg("PX")
-            .arg(self.snapshot_ttl_ms as i64)
-            .query_async::<()>(&mut conn)
-            .await;
-        if let Err(err) = result {
-            eprintln!("[store] 写房间快照失败：{err}");
+        for attempt in 1..=3u32 {
+            let result = redis::cmd("SET")
+                .arg(&key)
+                .arg(snapshot_json)
+                .arg("PX")
+                .arg(self.snapshot_ttl_ms as i64)
+                .query_async::<()>(&mut conn)
+                .await;
+            match result {
+                Ok(()) => return,
+                Err(err) if attempt < 3 => {
+                    eprintln!("[store] 写房间快照失败（第 {attempt}/3 次，将重试）：{err}");
+                    tokio::time::sleep(std::time::Duration::from_millis(50 * u64::from(attempt)))
+                        .await;
+                }
+                Err(err) => {
+                    eprintln!("[store] 写房间快照失败（已用尽重试）：{err}");
+                    return;
+                }
+            }
         }
     }
 

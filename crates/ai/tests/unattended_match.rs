@@ -115,9 +115,10 @@ fn l1_finishes_hand_when_one_candidate_empties_it() {
 }
 
 #[test]
-fn l1_passes_when_partner_holds_the_lead() {
+fn l1_cheaply_counters_when_partner_lead_is_not_controlling() {
     let bot = L1Bot;
-    // 上一手是搭档（座位 2）出的对子；我手里 8 张、能压但不抢。
+    // 上一手是搭档（座位 2）出的普通对子、并非控制牌；我 8 张已进收尾区，
+    // 用最小同型对子反压，别把牌权白送给对手。
     let view = br#"{"hand":{"cards":[0,2,4,6,8,10,12,14]},"seat.levels":[0,0],"lastPlay":{"seat":2,"patternId":"pair","cards":[30,31]},"round.level":0}"#;
     let ctx = BotContext {
         partner: Some(2),
@@ -127,8 +128,26 @@ fn l1_passes_when_partner_holds_the_lead() {
     let legal = vec![Action::Pass, play(vec![40, 41])];
     assert_eq!(
         bot.decide_with_ctx(view, 0, &legal, &ctx),
+        play(vec![40, 41]),
+        "搭档这手压不住场时，短手牌应廉价反压"
+    );
+}
+
+#[test]
+fn l1_passes_when_own_hand_still_long() {
+    let bot = L1Bot;
+    // 手牌仍多（>8 张）：牌权继续留给搭档，不抢自己人。
+    let view = br#"{"hand":{"cards":[0,2,4,6,8,10,12,14,16]},"seat.levels":[0,0],"lastPlay":{"seat":2,"patternId":"pair","cards":[30,31]},"round.level":0}"#;
+    let ctx = BotContext {
+        partner: Some(2),
+        partner_hand: Some(9),
+        own_hand: 9,
+    };
+    let legal = vec![Action::Pass, play(vec![40, 41])];
+    assert_eq!(
+        bot.decide_with_ctx(view, 0, &legal, &ctx),
         Action::Pass,
-        "搭档拿牌权时应让牌，不抢自己人"
+        "手牌还长时应把牌权留给搭档"
     );
 }
 

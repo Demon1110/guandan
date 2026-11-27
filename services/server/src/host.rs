@@ -120,6 +120,9 @@ pub struct RoomHost {
     /// 存档出口：结算 / 场次终止时投递（不阻塞房间锁）。
     recorder: std::sync::Mutex<Option<mpsc::UnboundedSender<StorageEvent>>>,
     ack_cache: Mutex<HashMap<(u8, String), AckEntry>>,
+    /// 串行化 submit：幂等检查、房间推进、回执入缓存必须是一个临界段，
+    /// 否则同一个 requestId 并发进来会双双错过缓存，产生不一致回执。
+    submit_lock: tokio::sync::Mutex<()>,
     started_at: Instant,
     opts: RoomOptions,
     started: AtomicBool,
@@ -157,6 +160,7 @@ impl RoomHost {
             seat_tokens: RwLock::new(HashMap::new()),
             recorder: std::sync::Mutex::new(None),
             ack_cache: Mutex::new(HashMap::new()),
+            submit_lock: tokio::sync::Mutex::new(()),
             started_at: Instant::now(),
             opts,
             started: AtomicBool::new(false),
@@ -481,6 +485,8 @@ impl RoomHost {
     ///
     /// 返回要回给提交者的 `ActionAck` 帧。
     pub async fn submit(&self, seat: u8, msg: pb::SubmitAction, now: u64) -> Vec<u8> {
+        // 幂等检查 → 推进房间 → 回执入缓存全程串行，杜绝同 requestId 并发双执行。
+        let _submit = self.submit_lock.lock().await;
         let request_id = msg.request_id.clone();
         if request_id.is_empty() || request_id.len() > MAX_REQUEST_ID_LEN {
             // 超长 requestId 不进缓存，也不进业务：直接按非法动作回执。

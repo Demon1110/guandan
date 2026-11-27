@@ -740,8 +740,8 @@ impl Room {
         };
         self.status[idx] = PlayerStatus::Connected;
         self.offline_since[idx] = None;
-        // 重连后按当前行动座位重开窗口（人类在线等提交，bot 由 step 驱动）。
-        self.open_window(self.turn_deadline_ms.unwrap_or(0));
+        // 重连只恢复连接视图，不重开行动窗口：窗口沿既有 deadline 走，
+        // 否则反复断连/重连就能无限顺延行动时间。客户端整体重载走 `resume_window`。
         Ok(ReconnectPlan {
             decision,
             snapshot,

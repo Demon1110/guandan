@@ -506,6 +506,64 @@ fn run_l1(ruleset: &RuleSetBody, levels: &[Level]) -> Validation {
         }
     }
 
+    // —— naturalOrder 完整性（牌力序必须覆盖全部点数，且大小王固定居尾） ——
+    //
+    // 下游 `card_weight` / `joker_key` 都按「尾两位 = 小王、大王」做 `len - 2 + slot`，
+    // 序短于 2 会整数下溢。这里在加载期一次挡住：不重复、不漏点数、王只在最后两位。
+    let order = &ruleset.natural_order;
+    let mut seen: HashSet<&str> = HashSet::new();
+    for (idx, key) in order.iter().enumerate() {
+        if !seen.insert(key.as_str()) {
+            push(
+                ErrorCode::RsSchemaInvalid,
+                "naturalOrder",
+                format!("点数 `{}` 在 naturalOrder 里重复", key.as_str()),
+            );
+        }
+        if key.is_joker() && idx + 2 < order.len() {
+            push(
+                ErrorCode::RsSchemaInvalid,
+                "naturalOrder",
+                format!(
+                    "王 `{}` 只能出现在 naturalOrder 最后两位（实际下标 {idx}）",
+                    key.as_str()
+                ),
+            );
+        }
+        if !key.is_joker() && !ruleset.deck.ranks.contains(key) {
+            push(
+                ErrorCode::RsSchemaInvalid,
+                "naturalOrder",
+                format!(
+                    "点数 `{}` 不在 deck.ranks 内，naturalOrder 不得引入额外点数",
+                    key.as_str()
+                ),
+            );
+        }
+    }
+    for rank in &ruleset.deck.ranks {
+        if !seen.contains(rank.as_str()) {
+            push(
+                ErrorCode::RsSchemaInvalid,
+                "naturalOrder",
+                format!(
+                    "deck.ranks 的点数 `{}` 缺少 naturalOrder 位置",
+                    rank.as_str()
+                ),
+            );
+        }
+    }
+    if order.len() < 2
+        || order[order.len() - 2].as_str() != "little-joker"
+        || order[order.len() - 1].as_str() != "big-joker"
+    {
+        push(
+            ErrorCode::RsSchemaInvalid,
+            "naturalOrder",
+            "naturalOrder 必须以 little-joker、big-joker 两位收尾".to_owned(),
+        );
+    }
+
     // —— flow.deal 可判定性（§5.1 第 404–405 行） ——
     let private_zones = ruleset
         .zones

@@ -431,7 +431,7 @@ fn solve(params: &SearchParams, memo: &mut Memo, counts: &KeyCounts) -> Opt {
             Family::Single => continue,
             Family::Pair | Family::Triple | Family::Bomb(_) => {
                 let Some(a) = anchor else { continue };
-                if counts.real(a) + counts.wild() < closure.count {
+                if counts.real(a) + counts.wild() < u16::from(closure.count) {
                     continue;
                 }
                 let mut rest = counts.clone();

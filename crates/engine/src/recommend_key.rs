@@ -21,10 +21,10 @@ use crate::ruleset::RuleSetBody;
 /// 红桃级牌（百搭）数；`little`/`big` 为大小王数。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct KeyCounts {
-    rank: [u8; 13],
-    wild: u8,
-    little: u8,
-    big: u8,
+    rank: [u16; 13],
+    wild: u16,
+    little: u16,
+    big: u16,
     /// 级牌点数下标（百搭自身点数）；无百搭规则集时为 0。
     level: usize,
     n: usize,
@@ -41,29 +41,29 @@ impl KeyCounts {
         let wild_ids = crate::patterns::wildcard_ids(r, ctx);
         let level = ctx.own_rank().unwrap_or(0);
 
-        let mut rank = [0u8; 13];
-        let mut wild = 0u8;
-        let mut little = 0u8;
-        let mut big = 0u8;
+        let mut rank = [0u16; 13];
+        let mut wild = 0u16;
+        let mut little = 0u16;
+        let mut big = 0u16;
 
         for &card in hand {
             let c = card as usize;
             if wild_ids.contains(&card) {
-                wild += 1;
+                wild = wild.saturating_add(1);
                 continue;
             }
             if c >= base_total {
                 let slot = (c - base_total) / copies;
                 if slot == 0 {
-                    little += 1;
+                    little = little.saturating_add(1);
                 } else {
-                    big += 1;
+                    big = big.saturating_add(1);
                 }
                 continue;
             }
             let b = c / copies;
             let rank_idx = b % rank_count;
-            rank[rank_idx] += 1;
+            rank[rank_idx] = rank[rank_idx].saturating_add(1);
         }
 
         Self {
@@ -81,15 +81,16 @@ impl KeyCounts {
         let mut key = 0u64;
         for r in 0..self.n {
             // 双记：级牌点数档 = 真牌 + 百搭（百搭同时留在 `wild` 计数里）。
-            let mut bin = self.rank[r];
+            // 每档只有 4 bit：畸形手牌也只能按 15 封顶，不能把相邻档位压串。
+            let mut bin = self.rank[r].min(15);
             if r == self.level {
-                bin = bin.saturating_add(self.wild);
+                bin = bin.saturating_add(self.wild.min(3)).min(15);
             }
             key |= (bin as u64) << (4 * r);
         }
-        key |= (self.little as u64) << 52;
-        key |= (self.big as u64) << 55;
-        key |= (self.wild as u64) << 58;
+        key |= (self.little.min(7) as u64) << 52;
+        key |= (self.big.min(7) as u64) << 55;
+        key |= (self.wild.min(3) as u64) << 58;
         key
     }
 
@@ -97,19 +98,19 @@ impl KeyCounts {
         self.n
     }
 
-    pub(crate) fn real(&self, r: usize) -> u8 {
+    pub(crate) fn real(&self, r: usize) -> u16 {
         self.rank.get(r).copied().unwrap_or(0)
     }
 
-    pub(crate) fn wild(&self) -> u8 {
+    pub(crate) fn wild(&self) -> u16 {
         self.wild
     }
 
-    pub(crate) fn little(&self) -> u8 {
+    pub(crate) fn little(&self) -> u16 {
         self.little
     }
 
-    pub(crate) fn big(&self) -> u8 {
+    pub(crate) fn big(&self) -> u16 {
         self.big
     }
 
@@ -142,29 +143,29 @@ impl KeyCounts {
     /// 从某点数取 `want` 张真牌，返回实际取到的张数。
     fn take_real(&mut self, r: usize, want: u8) -> u8 {
         let have = self.rank.get_mut(r).copied().unwrap_or(0);
-        let take = want.min(have);
+        let take = u16::from(want).min(have);
         if let Some(slot) = self.rank.get_mut(r) {
             *slot -= take;
         }
-        take
+        take as u8
     }
 
     fn take_wild(&mut self, want: u8) -> u8 {
-        let take = want.min(self.wild);
+        let take = u16::from(want).min(self.wild);
         self.wild -= take;
-        take
+        take as u8
     }
 
     pub(crate) fn take_little(&mut self, want: u8) -> u8 {
-        let take = want.min(self.little);
+        let take = u16::from(want).min(self.little);
         self.little -= take;
-        take
+        take as u8
     }
 
     pub(crate) fn take_big(&mut self, want: u8) -> u8 {
-        let take = want.min(self.big);
+        let take = u16::from(want).min(self.big);
         self.big -= take;
-        take
+        take as u8
     }
 
     /// 同点组消费：先取该点数真牌，不足由百搭补。返回是否凑齐 `size` 张。
@@ -183,11 +184,11 @@ impl KeyCounts {
             taken.push((r, real));
             need_wild += per - real;
         }
-        if need_wild > self.wild {
+        if u16::from(need_wild) > self.wild {
             // 回滚：取不到足量百搭，还原已取真牌。
             for (r, real) in taken {
                 if let Some(slot) = self.rank.get_mut(r) {
-                    *slot += real;
+                    *slot += u16::from(real);
                 }
             }
             return false;
@@ -220,7 +221,7 @@ impl KeyCounts {
     }
 
     #[cfg(test)]
-    fn manual(level: usize, rank: [u8; 13], wild: u8, little: u8, big: u8) -> Self {
+    fn manual(level: usize, rank: [u16; 13], wild: u16, little: u16, big: u16) -> Self {
         Self {
             rank,
             wild,
@@ -239,7 +240,7 @@ mod tests {
     #[test]
     fn key_differs_by_wildcount_alpha_beta() {
         // α / β：同级牌档（L 档=2），但百搭 α=2、β=0 → 键必须不相等。
-        let mut rank = [0u8; 13];
+        let mut rank = [0u16; 13];
         rank[3] = 2;
         let alpha = KeyCounts::manual(3, rank, 2, 0, 0);
         let beta = KeyCounts::manual(3, rank, 0, 0, 0);
@@ -249,7 +250,7 @@ mod tests {
     #[test]
     fn key_equal_when_only_suit_differs() {
         // α 与 α' 只差花色、百搭数相同 → 计数向量不含花色，键必须相等。
-        let mut rank = [0u8; 13];
+        let mut rank = [0u16; 13];
         rank[3] = 2;
         rank[7] = 1;
         let alpha = KeyCounts::manual(3, rank, 1, 0, 1);
@@ -258,9 +259,22 @@ mod tests {
     }
 
     #[test]
+    fn oversized_counts_clamp_to_fixed_bit_width() {
+        // 恶意构造 >255 同点牌：内部 u16 计数不溢出，打包时按各自位宽封顶。
+        let mut rank = [0u16; 13];
+        rank[0] = 300;
+        let counts = KeyCounts::manual(0, rank, 300, 300, 300);
+        let packed = counts.pack();
+        assert_eq!(packed & 0xF, 15, "4bit 点数档封顶 15");
+        assert_eq!((packed >> 52) & 0x7, 7, "3bit 小王档封顶 7");
+        assert_eq!((packed >> 55) & 0x7, 7, "3bit 大王档封顶 7");
+        assert_eq!((packed >> 58) & 0x3, 3, "2bit 百搭档封顶 3");
+    }
+
+    #[test]
     fn key_double_counts_level_bin_with_wild() {
         // 双记口径：级牌档里计入百搭（α 真牌 0、百搭 2 → 档内打包为 2），百搭计数另存 2。
-        let rank = [0u8; 13];
+        let rank = [0u16; 13];
         let alpha = KeyCounts::manual(3, rank, 2, 0, 0);
         let packed = alpha.pack();
         let level_bin = (packed >> (4 * 3)) & 0xF;

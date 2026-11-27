@@ -296,16 +296,19 @@ pub fn open_bytes(
         return Err(DeckError::PackSignature);
     }
     let plain = decrypt_entries(&c.header, c.payload, c.flags, key)?;
-    let assets: HashMap<String, String> = plain
-        .iter()
-        .filter(|(n, _)| n != "theme.json")
-        .map(|(n, b)| (n.clone(), String::from_utf8(b.clone()).unwrap_or_default()))
-        .collect();
-    let theme_json = plain
+    let mut assets: HashMap<String, String> = HashMap::new();
+    for (name, bytes) in plain.iter().filter(|(n, _)| n != "theme.json") {
+        let text = String::from_utf8(bytes.clone())
+            .map_err(|_| DeckError::PackCorrupt(format!("素材 `{name}` 不是合法 UTF-8 文本")))?;
+        assets.insert(name.clone(), text);
+    }
+    let theme_bytes = plain
         .iter()
         .find(|(n, _)| n == "theme.json")
-        .map(|(_, b)| String::from_utf8_lossy(b).to_string())
+        .map(|(_, b)| b)
         .ok_or_else(|| DeckError::PackCorrupt("缺少 theme.json".into()))?;
+    let theme_json = String::from_utf8(theme_bytes.clone())
+        .map_err(|_| DeckError::PackCorrupt("theme.json 不是合法 UTF-8".into()))?;
     let meta = ThemeMeta::parse(&theme_json)?;
     let origin = format!(
         "gfdeck:{}@{}（{}）",

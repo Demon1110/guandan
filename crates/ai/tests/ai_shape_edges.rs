@@ -5,7 +5,8 @@
 //! `view_scan` 各锚点缺失与数字溢出分支、`L0Bot::decide` 的领出路径。
 
 use gf_ai::shape::{
-    bomb_count_in_hand, cards_of, is_bomb_shape, is_controller, rank_of, total_of_rank,
+    bomb_count_in_hand, cards_of, is_bomb_shape, is_controller, rank_of, remaining_bigger,
+    total_of_rank,
 };
 use gf_ai::view_scan::{
     discard_cards, hand_cards, last_play_cards, last_play_pattern_id, last_play_seat,
@@ -151,6 +152,13 @@ fn l0_lead_plays_smallest_single() {
     let follow =
         br#"{"hand":{"cards":[9,3]},"lastPlay":{"seat":2,"patternId":"single","cards":[5]}}"#;
     assert_eq!(bot.decide(follow, 0), Action::Pass);
+}
+
+#[test]
+fn remaining_bigger_max_rank_does_not_overflow() {
+    // 畸形 rank=u16::MAX 在 debug 下 `rank + 1` 会 panic；按无更大牌处理。
+    assert_eq!(remaining_bigger(&[], &[], u16::MAX), 0);
+    assert_eq!(remaining_bigger(&[], &[], 14), 0);
 }
 
 #[test]

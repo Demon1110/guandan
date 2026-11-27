@@ -286,7 +286,8 @@ fn load_verify_key(args: &[String]) -> Result<Option<VerifyingKey>, DeckError> {
 
 fn decode_hex_any(s: &str) -> Result<Vec<u8>, DeckError> {
     let t = s.trim();
-    if t.len() % 2 != 0 {
+    // 先拒非 ASCII：否则按字节下标切片会切在 UTF-8 字符中间而 panic。
+    if !t.is_ascii() || t.len() % 2 != 0 {
         return Err(DeckError::PackSignature);
     }
     let mut out = Vec::with_capacity(t.len() / 2);
@@ -446,4 +447,16 @@ fn hex(bytes: &[u8]) -> String {
         s.push_str(&format!("{b:02x}"));
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_ascii_hex_is_error_not_panic() {
+        // 两个 UTF-8 字符长度为 4（偶数），旧实现会在字符中间切片而 panic。
+        assert!(decode_hex_any("éé").is_err());
+        assert!(decode_hex_any("0a").is_ok());
+    }
 }

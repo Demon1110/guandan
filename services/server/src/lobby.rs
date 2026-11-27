@@ -96,6 +96,8 @@ struct Ticket {
     state: TicketState,
     enqueued_ms: u64,
     changed_ms: u64,
+    /// 建票时的登录玩家；匿名票为 `None`，此时票号本身就是凭据。
+    owner: Option<String>,
 }
 
 /// 房码与匹配队列的内存态。
@@ -161,8 +163,19 @@ impl Lobby {
             .map(|slot| slot.match_id.clone())
     }
 
-    /// 入队，返回票号。
+    /// 入队，返回票号（匿名票；票号即凭据）。
     pub fn enqueue(&mut self, game_id: &str, mode: Mode, now_ms: u64) -> String {
+        self.enqueue_for(game_id, mode, now_ms, None)
+    }
+
+    /// 入队并绑定登录玩家：查询/退队必须同一玩家，防止票号泄露后被别人退队。
+    pub fn enqueue_for(
+        &mut self,
+        game_id: &str,
+        mode: Mode,
+        now_ms: u64,
+        owner: Option<String>,
+    ) -> String {
         self.sweep_tickets(now_ms);
         let id = format!("t-{:08x}{:04x}", random_u64() as u32, self.seqz() as u16);
         self.tickets.insert(
@@ -173,6 +186,7 @@ impl Lobby {
                 state: TicketState::Waiting,
                 enqueued_ms: now_ms,
                 changed_ms: now_ms,
+                owner,
             },
         );
         self.queue
@@ -182,6 +196,15 @@ impl Lobby {
         id
     }
 
+    /// 票号归属校验：匿名票允许任何持有者操作；实名票只认原玩家。
+    fn owned_by(ticket: &Ticket, owner: Option<&str>) -> bool {
+        match (&ticket.owner, owner) {
+            (None, _) => true,
+            (Some(expected), Some(actual)) => expected == actual,
+            (Some(_), None) => false,
+        }
+    }
+
     /// 退队：只允许 `waiting` 的票退，已配对的票退不掉（已经成房）。
     pub fn cancel(&mut self, ticket_id: &str, now_ms: u64) -> bool {
         self.cancel_with_mode(ticket_id, now_ms).0
@@ -189,8 +212,20 @@ impl Lobby {
 
     /// 退队并带回该票的模式（清 Redis 镜像时要用）。
     pub fn cancel_with_mode(&mut self, ticket_id: &str, now_ms: u64) -> (bool, Option<Mode>) {
+        self.cancel_with_mode_for(ticket_id, None, now_ms)
+    }
+
+    /// 带归属校验的退队；票号不属于 `owner` 时按「不存在」处理。
+    pub fn cancel_with_mode_for(
+        &mut self,
+        ticket_id: &str,
+        owner: Option<&str>,
+        now_ms: u64,
+    ) -> (bool, Option<Mode>) {
         let (game_id, mode) = match self.tickets.get(ticket_id) {
-            Some(ticket) if ticket.state == TicketState::Waiting => {
+            Some(ticket)
+                if ticket.state == TicketState::Waiting && Self::owned_by(ticket, owner) =>
+            {
                 (ticket.game_id.clone(), ticket.mode)
             }
             _ => return (false, None),
@@ -212,8 +247,22 @@ impl Lobby {
         now_ms: u64,
         timeout_ms: u64,
     ) -> Option<(TicketState, Option<String>)> {
+        self.poll_for(ticket_id, None, now_ms, timeout_ms)
+    }
+
+    /// 带归属校验的轮询；票号不属于 `owner` 时返回 `None`。
+    pub fn poll_for(
+        &mut self,
+        ticket_id: &str,
+        owner: Option<&str>,
+        now_ms: u64,
+        timeout_ms: u64,
+    ) -> Option<(TicketState, Option<String>)> {
         self.expire_waiting(now_ms, timeout_ms);
         let ticket = self.tickets.get(ticket_id)?;
+        if !Self::owned_by(ticket, owner) {
+            return None;
+        }
         Some(match &ticket.state {
             TicketState::Matched { match_id } => (
                 TicketState::Matched {
@@ -492,6 +541,23 @@ mod tests {
             .form_group("guandan", Mode::Casual, 4, 0, DEFAULT_QUEUE_TIMEOUT_MS, &[])
             .is_some());
         assert!(!lobby.cancel(&ids[0], 2), "已配对的票不得退队");
+    }
+
+    #[test]
+    fn owned_ticket_only_polled_and_cancelled_by_owner() {
+        let mut lobby = Lobby::new();
+        let id = lobby.enqueue_for("guandan", Mode::Casual, 0, Some("player-a".to_owned()));
+        assert!(lobby
+            .poll_for(&id, Some("player-a"), 1, DEFAULT_QUEUE_TIMEOUT_MS)
+            .is_some());
+        assert!(lobby
+            .poll_for(&id, Some("player-b"), 1, DEFAULT_QUEUE_TIMEOUT_MS)
+            .is_none());
+        assert!(lobby
+            .poll_for(&id, None, 1, DEFAULT_QUEUE_TIMEOUT_MS)
+            .is_none());
+        assert!(!lobby.cancel_with_mode_for(&id, Some("player-b"), 1).0);
+        assert!(lobby.cancel_with_mode_for(&id, Some("player-a"), 2).0);
     }
 
     #[test]

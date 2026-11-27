@@ -373,7 +373,8 @@ fn reconnect_falls_back_to_snapshot_reset_when_evicted() {
     assert!(plan.wire.verify());
     // wire 帧可编解码且 roundNo 走头字段（此时已在第 2 局）。
     let decoded =
-        gf_table_runtime::RoomSnapshotWire::decode(&plan.wire.encode()).expect("wire 解码失败");
+        gf_table_runtime::RoomSnapshotWire::decode(&plan.wire.encode().expect("wire 编码失败"))
+            .expect("wire 解码失败");
     assert_eq!(decoded.round_no, 2);
     assert!(decoded.snapshot_reset);
 

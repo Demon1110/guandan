@@ -101,21 +101,21 @@ impl RoomSnapshotWire {
         view_hash(self.seat, self.room_seq, &self.view) == self.view_hash
     }
 
-    /// 编码为 wire 字节（字段序固定）。
-    pub fn encode(&self) -> Vec<u8> {
+    /// 编码为 wire 字节（字段序固定）。长度前缀装不下时返回错误，绝不截断字段。
+    pub fn encode(&self) -> Result<Vec<u8>, CodecError> {
         let mut out = Vec::new();
-        push_string(&mut out, &self.match_id);
+        push_string(&mut out, &self.match_id)?;
         out.push(self.seat);
         out.extend_from_slice(&self.round_no.to_le_bytes());
-        push_string(&mut out, &self.ruleset_id);
-        push_string(&mut out, &self.ruleset_version);
+        push_string(&mut out, &self.ruleset_id)?;
+        push_string(&mut out, &self.ruleset_version)?;
         out.extend_from_slice(&self.room_seq.to_le_bytes());
         out.extend_from_slice(&self.last_seat_seq.to_le_bytes());
         out.extend_from_slice(&self.view_hash);
         out.extend_from_slice(&self.view_schema_version.to_le_bytes());
-        push_bytes(&mut out, &self.view);
+        push_bytes(&mut out, &self.view)?;
         out.push(u8::from(self.snapshot_reset));
-        out
+        Ok(out)
     }
 
     /// 解码 wire 字节；只透传 `viewHash`，**不重算**。
@@ -152,18 +152,20 @@ impl RoomSnapshotWire {
     }
 }
 
-fn push_string(out: &mut Vec<u8>, value: &str) {
+fn push_string(out: &mut Vec<u8>, value: &str) -> Result<(), CodecError> {
     let bytes = value.as_bytes();
-    // 字符串长度上限 u16（身份键 / matchId 均为短串）。
-    let len = u16::try_from(bytes.len()).unwrap_or(u16::MAX);
+    // 字符串长度上限 u16（身份键 / matchId 均为短串）；装不下就报错，不能只截前缀。
+    let len = u16::try_from(bytes.len()).map_err(|_| CodecError::LengthOverflow)?;
     out.extend_from_slice(&len.to_le_bytes());
     out.extend_from_slice(bytes);
+    Ok(())
 }
 
-fn push_bytes(out: &mut Vec<u8>, value: &[u8]) {
-    let len = u32::try_from(value.len()).unwrap_or(u32::MAX);
+fn push_bytes(out: &mut Vec<u8>, value: &[u8]) -> Result<(), CodecError> {
+    let len = u32::try_from(value.len()).map_err(|_| CodecError::LengthOverflow)?;
     out.extend_from_slice(&len.to_le_bytes());
     out.extend_from_slice(value);
+    Ok(())
 }
 
 fn take<'a>(bytes: &'a [u8], pos: &mut usize, n: usize) -> Result<&'a [u8], CodecError> {
@@ -236,7 +238,8 @@ mod tests {
     #[test]
     fn snapshot_reset_true_roundtrips_all_head_fields() {
         let frame = sample(true, 3);
-        let decoded = RoomSnapshotWire::decode(&frame.encode()).expect("解码成功");
+        let decoded =
+            RoomSnapshotWire::decode(&frame.encode().expect("编码成功")).expect("解码成功");
         assert_eq!(decoded, frame);
         assert!(decoded.snapshot_reset);
         // roundNo 在头字段，不在 view 字节里；viewSchemaVersion 仍为 2（classic 白名单）。
@@ -249,7 +252,8 @@ mod tests {
     #[test]
     fn snapshot_reset_false_roundtrips_and_hash_self_consistent() {
         let frame = sample(false, 1);
-        let decoded = RoomSnapshotWire::decode(&frame.encode()).expect("解码成功");
+        let decoded =
+            RoomSnapshotWire::decode(&frame.encode().expect("编码成功")).expect("解码成功");
         assert_eq!(decoded, frame);
         assert!(!decoded.snapshot_reset);
         assert_eq!(decoded.round_no, 1);
@@ -259,7 +263,8 @@ mod tests {
     #[test]
     fn decode_does_not_recompute_view_hash() {
         let frame = sample(false, 2);
-        let mut decoded = RoomSnapshotWire::decode(&frame.encode()).expect("解码成功");
+        let mut decoded =
+            RoomSnapshotWire::decode(&frame.encode().expect("编码成功")).expect("解码成功");
         // 客户端透传哈希：改写帧内哈希后，decode 仍原样带出（不做比对、不重算）。
         decoded.view_hash[0] ^= 0xFF;
         assert!(decoded.view_hash[0] != frame.view_hash[0]);
@@ -269,11 +274,18 @@ mod tests {
     #[test]
     fn truncated_payload_rejected() {
         let frame = sample(true, 1);
-        let bytes = frame.encode();
+        let bytes = frame.encode().expect("编码成功");
         let short = &bytes[..bytes.len() - 1];
         assert!(matches!(
             RoomSnapshotWire::decode(short),
             Err(CodecError::Truncated)
         ));
+    }
+
+    #[test]
+    fn oversized_string_is_error_not_truncated_prefix() {
+        let mut frame = sample(false, 1);
+        frame.match_id = "m".repeat(usize::from(u16::MAX) + 1);
+        assert!(matches!(frame.encode(), Err(CodecError::LengthOverflow)));
     }
 }

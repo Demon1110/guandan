@@ -169,7 +169,7 @@ impl RankContext {
     /// 大小王 `rankKey`：序尾两位，同样 +1 偏移（小王 < 大王）。
     pub(crate) fn joker_key(&self, r: &RuleSetBody, big: bool) -> u32 {
         let tail = r.natural_order.len();
-        (tail - 2 + if big { 1 } else { 0 }) as u32 + 1
+        (tail.saturating_sub(2) + if big { 1 } else { 0 }) as u32 + 1
     }
 }
 

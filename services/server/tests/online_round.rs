@@ -198,6 +198,53 @@ async fn duplicate_request_id_is_idempotent() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_same_request_id_returns_same_ack() {
+    let room =
+        RoomHost::spawn("match-idem-c", 0x51ED_0008, RoomOptions::default()).expect("建桌失败");
+    let mut rxs = Vec::new();
+    for _ in 0..4u8 {
+        let (tx, rx) = mpsc::channel(1024);
+        room.join(None, tx).await.expect("入座失败");
+        rxs.push(rx);
+    }
+    room.start_if_full().await;
+    for rx in &mut rxs {
+        let _ = frames(rx).await;
+    }
+
+    let state = room.state_snapshot().await.expect("有状态");
+    let seat = state.turn_seat;
+    let action = room
+        .legal_actions()
+        .await
+        .first()
+        .cloned()
+        .expect("有合法动作");
+    let seq = room.seat_seq(seat).await + 1;
+    let msg = play_msg(seat, seq, "race-request", &action);
+
+    let (first, second) = tokio::join!(
+        room.submit(seat, msg.clone(), room.now_ms()),
+        room.submit(seat, msg, room.now_ms())
+    );
+    assert_eq!(first, second, "并发同 requestId 必须回同一份回执");
+    let seq_after = room.room_seq().await;
+    let replay = room
+        .submit(
+            seat,
+            play_msg(seat, seq, "race-request", &action),
+            room.now_ms(),
+        )
+        .await;
+    assert_eq!(first, replay);
+    assert_eq!(
+        seq_after,
+        room.room_seq().await,
+        "并发和重放都只能推进一次房间序号"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stale_seat_seq_is_rejected_without_advancing() {
     let room =
         RoomHost::spawn("match-stale", 0x51ED_0009, RoomOptions::default()).expect("建桌失败");

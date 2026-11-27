@@ -247,6 +247,21 @@ fn offline_seat_waits_for_grace_then_auto_plays() {
 }
 
 #[test]
+fn reconnect_does_not_extend_turn_deadline() {
+    let mut room = human_room(0x51ED_0019);
+    room.start(0).expect("发牌失败");
+    let turn = room.state().expect("有状态").turn_seat;
+    room.disconnect(turn, 0).expect("断线失败");
+    let deadline = room.turn_deadline_ms().expect("窗口应已打开");
+    room.reconnect(turn, 0).expect("重连失败");
+    assert_eq!(
+        room.turn_deadline_ms(),
+        Some(deadline),
+        "重连不得重开行动窗口"
+    );
+}
+
+#[test]
 fn all_offline_aborts_match_and_freezes_room() {
     let mut room = human_room(0x51ED_0016);
     room.start(0).expect("发牌失败");

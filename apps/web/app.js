@@ -487,8 +487,10 @@ function seedFromQuery() {
   return true;
 }
 
-function matchIdOf(hi, lo) {
-  return `web-${hi.toString(16)}${lo.toString(16).padStart(8, '0')}`;
+function matchIdOf(hi, lo, seat) {
+  // 座位是续局指纹的一部分：同一种子换座位就是另一盘牌，不能命中别人/旧座位的存档。
+  const s = Number.isInteger(Number(seat)) ? Number(seat) & 0x3 : 0;
+  return `web-${hi.toString(16)}${lo.toString(16).padStart(8, '0')}-s${s}`;
 }
 
 // ---------- 大厅 ----------
@@ -515,7 +517,7 @@ async function refreshLobbyNote() {
     return;
   }
   const seat = Number(el('lobby-seat').value);
-  const id = matchIdOf(parsed.hi, parsed.lo);
+  const id = matchIdOf(parsed.hi, parsed.lo, seat);
   const saved = await loadMatch(state.db, id);
   const acts = saved ? await loadActions(state.db, id) : [];
   if (saved && acts.length > 0) {
@@ -1196,15 +1198,23 @@ function log(line) {
 // ---------- 存档 ----------
 
 async function record(rec) {
-  state.recorded += 1;
   // 动作与「最新权威哈希」同一事务落盘：杀进程时两者必然一致，恢复后才有比对基线。
-  const t = state.db.transaction([STORE_ACTION, STORE_MATCH], 'readwrite');
-  t.objectStore(STORE_ACTION).put({ matchId: state.matchId, ...rec });
-  t.objectStore(STORE_MATCH).put(matchMeta(rec.seq, rec.roundNo));
-  await new Promise((resolve, reject) => {
-    t.oncomplete = () => resolve();
-    t.onerror = () => reject(t.error);
-  });
+  try {
+    const t = state.db.transaction([STORE_ACTION, STORE_MATCH], 'readwrite');
+    t.objectStore(STORE_ACTION).put({ matchId: state.matchId, ...rec });
+    t.objectStore(STORE_MATCH).put(matchMeta(rec.seq, rec.roundNo));
+    await new Promise((resolve, reject) => {
+      t.oncomplete = () => resolve();
+      t.onerror = () => reject(t.error);
+    });
+    // 事务提交成功后才计数；否则 UI 显示的「已存档 N 条」会领先于真实落盘。
+    state.recorded += 1;
+    return true;
+  } catch (err) {
+    console.error('IndexedDB 存档失败', err);
+    log(`存档写入失败：${err?.message ?? err}（本局仍可继续，但刷新后可能无法续局）`);
+    return false;
+  }
 }
 
 /** 跨局但没有动作落盘（刚点「再来一局」）时也要留一个检查点，否则刷新会退回上一局结算。 */
@@ -1484,7 +1494,7 @@ async function loadWasm() {
 async function startGame() {
   await loadWasm();
   if (!state.db) state.db = await openDb();
-  state.matchId = matchIdOf(state.seedHi, state.seedLo);
+  state.matchId = matchIdOf(state.seedHi, state.seedLo, state.humanSeat);
   state.recorded = 0;
   state.selected.clear();
   state.lastBySeat = {};
@@ -1539,7 +1549,15 @@ async function startGame() {
     }
     const h = room.hash();
     const same = h === saved.lastHash;
-    log(`从 IndexedDB 恢复 ${acts.length} 条动作：${same ? '哈希一致 ✓' : `哈希不一致 ✗ 存档=${saved.lastHash} 恢复=${h}`}`);
+    // 老存档没有 lastHash 字段，按旧格式续；有基线就必须自证，不一致直接拒绝续局，
+    // 否则“哈希自证”只是日志装饰，坏存档会带着错误状态继续打。
+    if (saved.lastHash && !same) {
+      throw new Error(
+        `存档哈希不一致，拒绝续局：存档=${saved.lastHash} 恢复=${h}`
+        + `（${acts.length} 条动作）；请在大厅点“清除存档”后重开。`,
+      );
+    }
+    log(`从 IndexedDB 恢复 ${acts.length} 条动作：${same ? '哈希一致 ✓' : '旧存档无哈希基线，按动作重演'}`);
     state.recorded = acts.length;
   } else {
     await saveMatch(state.db, {
@@ -1869,8 +1887,9 @@ init().catch((e) => {
   if (box) box.textContent = `启动失败：${e.message}`;
 });
 
-// 调试钩子：URL 带 debug=1 时可从控制台看内部状态（不影响正常路径）。
-if (location.search.includes('debug')) {
+// 调试钩子：仅本机（localhost/file）且显式 debug=1 时暴露内部状态；
+// 线上带 ?debug 也不能把 state/room/wasm 句柄挂到 window 上。
+if (LOCAL_DEV && new URLSearchParams(location.search).get('debug') === '1') {
   window.__gd = { state, room, currentLegal, previewSelection, renderAll, syncTribute, drainTribute, theme, flushWindows, straightFlushSuit, syncHandMetrics, get ex() { return ex; } };
 }
 

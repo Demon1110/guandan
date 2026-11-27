@@ -9,7 +9,8 @@
 //!   是大牌（J 以上）」「对手本身就出的是炸弹」「自己手牌已很少（≤8 张）」三种情形才动炸弹，
 //!   其余一律 `Pass` 把这手牌留给后面；
 //! - **配合队友**：上一手是搭档出的（`BotContext::partner`，§5.11 的 `partner.state`）→
-//!   `Pass` 把牌权留给搭档，除非自己剩 ≤4 张能接管收尾；
+//!   默认 `Pass` 把牌权留给搭档；搭档这手不是控制牌且自己已进入 ≤8 张收尾区时，用最小
+//!   同型非炸弹牌廉价反压；剩 ≤4 张能一把走完时直接接管。
 //! - 炸弹与四王炸永远排在普通牌型之后被使用。
 
 use std::cmp::Reverse;
@@ -95,9 +96,31 @@ pub(crate) fn choose(
         return lead(&plays, view, &hand, memory);
     }
 
-    // ② 配合队友：上一手是搭档出的，牌权让给搭档，除非自己只剩几张能接管收尾。
+    // ② 配合队友：上一手是搭档出的，默认让牌；但搭档这手压不住场（不是控制牌）
+    //    且自己已进入收尾区（≤8 张）时，用最小同型牌廉价反压，别把牌权白送对手。
     if let Some(partner) = ctx.partner {
         if view_scan::last_play_seat(view) == Some(partner) && hand_len > 4 {
+            let last_cards = view_scan::last_play_cards(view);
+            let partner_controls = memory
+                && !last_cards.is_empty()
+                && is_controller(
+                    &view_scan::discard_cards(view),
+                    &hand,
+                    &Action::Play {
+                        cards: last_cards.clone(),
+                    },
+                );
+            if partner_controls || hand_len > 8 {
+                return Action::Pass;
+            }
+            let cheap = same_shape(&plays, last_cards.len(), plan)
+                .into_iter()
+                .filter(|a| !is_bomb_shape(a))
+                .min_by_key(|a| (top_rank_of(a), cards_key_of(a)))
+                .cloned();
+            if let Some(action) = cheap {
+                return action;
+            }
             return Action::Pass;
         }
     }

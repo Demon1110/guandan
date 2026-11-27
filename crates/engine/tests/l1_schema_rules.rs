@@ -43,6 +43,26 @@ fn l1_locs(src: &str) -> Vec<String> {
     v.findings.iter().map(|f| f.location.clone()).collect()
 }
 
+#[test]
+fn natural_order_must_be_complete_and_end_with_jokers() {
+    let short = one(
+        M0,
+        "naturalOrder: [\"2\",\"3\",\"4\",\"5\",\"6\",\"7\",\"8\",\"9\",\"10\",\"J\",\"Q\",\"K\",\"A\",little-joker,big-joker]",
+        "naturalOrder: [\"2\",\"3\"]",
+    );
+    expect_l1("naturalOrder 过短", &short, "naturalOrder");
+
+    let duplicate = one(
+        M0,
+        "naturalOrder: [\"2\",\"3\",\"4\"",
+        "naturalOrder: [\"2\",\"2\",\"4\"",
+    );
+    expect_l1("naturalOrder 重复点数", &duplicate, "naturalOrder");
+
+    let wrong_tail = one(M0, "little-joker,big-joker]", "big-joker,little-joker]");
+    expect_l1("naturalOrder 王序颠倒", &wrong_tail, "naturalOrder");
+}
+
 fn expect_l1(name: &str, src: &str, loc: &str) {
     let locs = l1_locs(src);
     assert!(

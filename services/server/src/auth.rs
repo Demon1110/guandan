@@ -26,6 +26,10 @@ use sha2::{Digest, Sha256};
 pub const ACCESS_TTL_MS: u64 = 15 * 60 * 1_000;
 /// refresh token 有效期（§8.5：30 天，可吊销）。
 pub const REFRESH_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1_000;
+/// access token 的签发方 / 受众：只认本服务签给本服务客户端的令牌，
+/// 防止同一密钥被别的系统复用时跨服务生效。
+const JWT_ISSUER: &str = "gf-server";
+const JWT_AUDIENCE: &str = "gf-client";
 /// 同号发码冷却（§5.15：60 秒一次）。
 pub const SMS_COOLDOWN_MS: u64 = 60 * 1_000;
 /// 同号每日发码上限（§5.15：10 次）。
@@ -89,7 +93,7 @@ pub enum LoginError {
     },
 }
 
-/// 短信通道。默认实现只把验证码打到服务端日志（本地联调用）。
+/// 短信通道。默认实现只记录「发过码」，不输出验证码明文（本地联调用）。
 pub trait SmsSender: Send + Sync {
     /// `phone` 是规范化后的 11 位号码；真实通道需要它，日志实现只取尾号 4 位。
     fn send(&self, phone: &str, code: &str);
@@ -100,8 +104,11 @@ pub struct LogSmsSender;
 
 impl SmsSender for LogSmsSender {
     fn send(&self, phone: &str, code: &str) {
+        // 验证码是登录凭据：挡板只证明「已生成、未真实发送」，明文绝不进日志。
+        // 本机联调走 `sms.test_whitelist` 的固定测试码，不依赖这行日志。
+        let _ = code;
         println!(
-            "[sms][挡板] -> 尾号 {}：验证码 {code}（未真实发送）",
+            "[sms][挡板] -> 尾号 {}：验证码已生成（明文不落日志，未真实发送）",
             tail4(phone)
         );
     }
@@ -144,6 +151,8 @@ pub struct Auth {
     login_guards: Mutex<HashMap<String, LoginGuard>>,
     /// key = `sha256(refresh_token)` 十六进制：库里不存 refresh 原文。
     refresh: Mutex<HashMap<String, RefreshEntry>>,
+    /// 已撤销 access token：key = `sha256(token)`，value = 过期秒；重启即清空。
+    revoked_access: Mutex<HashMap<String, u64>>,
     profiles: Mutex<HashMap<String, Profile>>,
     by_phone: Mutex<HashMap<String, String>>,
     seq: AtomicU64,
@@ -176,6 +185,7 @@ impl Auth {
             sms_throttle: Mutex::new(HashMap::new()),
             login_guards: Mutex::new(HashMap::new()),
             refresh: Mutex::new(HashMap::new()),
+            revoked_access: Mutex::new(HashMap::new()),
             profiles: Mutex::new(HashMap::new()),
             by_phone: Mutex::new(HashMap::new()),
             seq: AtomicU64::new(1),
@@ -381,6 +391,18 @@ impl Auth {
 
     /// 校验 access token；返回玩家 ID。
     pub fn verify_access(&self, token: &str, now_ms: u64) -> Option<String> {
+        if token.len() > 4096 {
+            return None;
+        }
+        // 已撤销令牌立刻失效（登出后不必等 15 分钟 TTL）。
+        let token_key = hex(&Sha256::digest(token.as_bytes()));
+        {
+            let mut revoked = self.revoked_access.await_or_poison();
+            revoked.retain(|_, exp_sec| *exp_sec > now_ms / 1_000);
+            if revoked.contains_key(&token_key) {
+                return None;
+            }
+        }
         let parts: Vec<&str> = token.trim().split('.').collect();
         if parts.len() != 3 {
             return None;
@@ -400,6 +422,11 @@ impl Auth {
         if claims.get("typ").and_then(|v| v.as_str()) != Some("access") {
             return None;
         }
+        if claims.get("iss").and_then(|v| v.as_str()) != Some(JWT_ISSUER)
+            || claims.get("aud").and_then(|v| v.as_str()) != Some(JWT_AUDIENCE)
+        {
+            return None;
+        }
         let exp = claims.get("exp").and_then(|v| v.as_u64())?;
         if exp <= now_ms / 1_000 {
             return None;
@@ -410,7 +437,19 @@ impl Auth {
             .map(|s| s.to_owned())
     }
 
-    /// 取档案（`GET /api/profile` 用）。
+    /// 主动撤销一枚仍然有效的 access token（登出）；已过期/签名不对返回 false。
+    pub fn revoke_access(&self, token: &str, now_ms: u64) -> bool {
+        if self.verify_access(token, now_ms).is_none() {
+            return false;
+        }
+        let key = hex(&Sha256::digest(token.as_bytes()));
+        let exp_sec = now_ms / 1_000 + ACCESS_TTL_MS / 1_000;
+        let mut revoked = self.revoked_access.await_or_poison();
+        revoked.retain(|_, exp| *exp > now_ms / 1_000);
+        revoked.insert(key, exp_sec);
+        true
+    }
+
     pub fn profile(&self, player_id: &str) -> Option<Profile> {
         self.profiles.await_or_poison().get(player_id).cloned()
     }
@@ -472,6 +511,8 @@ impl Auth {
         let payload = serde_json::json!({
             "sub": player_id,
             "typ": "access",
+            "iss": JWT_ISSUER,
+            "aud": JWT_AUDIENCE,
             "iat": now_ms / 1_000,
             "exp": now_ms / 1_000 + ACCESS_TTL_MS / 1_000,
         });
@@ -725,6 +766,23 @@ mod tests {
             auth.verify_access(&tampered, now).is_none(),
             "签名被截断/篡改必须拒绝"
         );
+    }
+
+    #[test]
+    fn revoked_access_token_is_rejected_immediately() {
+        let auth = auth(&[]);
+        let now = 86_400_000;
+        auth.request_sms("13900139001", now).unwrap();
+        let hash = auth.phone_hash("13900139001").unwrap();
+        let code = auth.codes.lock().unwrap().get(&hash).unwrap().code.clone();
+        let session = auth.login("13900139001", &code, now).unwrap();
+        assert!(auth.verify_access(&session.token, now).is_some());
+        assert!(auth.revoke_access(&session.token, now));
+        assert!(
+            auth.verify_access(&session.token, now).is_none(),
+            "登出后 access token 必须立刻失效，不能等 15 分钟 TTL"
+        );
+        assert!(!auth.revoke_access("not-a-jwt", now));
     }
 
     #[test]

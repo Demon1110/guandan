@@ -100,9 +100,13 @@ pub fn dealt_rank_counts(discarded: &[u16]) -> [u16; 15] {
 /// `discarded` 为公共弃牌堆，`hand` 为自己的手牌。返回 0 即：这手牌出去以后没人能压
 /// （自己手里更大的牌不算对手的）。级牌/逢人配不参与张数统计，只按自然点数近似。
 pub fn remaining_bigger(discarded: &[u16], hand: &[u16], rank: u16) -> usize {
+    // rank 理论上 0..=14；对畸形输入也不能让 `rank + 1` 在 debug 下溢出。
+    if rank >= 14 {
+        return 0;
+    }
     let dealt = dealt_rank_counts(discarded);
     let mut remain = 0usize;
-    for r in (rank + 1)..=14u16 {
+    for r in rank.saturating_add(1)..=14u16 {
         remain += total_of_rank(r).saturating_sub(dealt[r as usize] as usize);
     }
     let own_bigger = hand.iter().filter(|c| rank_of(**c) > rank).count();

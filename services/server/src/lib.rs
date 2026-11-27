@@ -355,12 +355,13 @@ impl App {
         true
     }
 
-    pub async fn enqueue(&self, mode: Mode) -> String {
-        let ticket = self
-            .lobby
-            .lock()
-            .await
-            .enqueue(GAME_ID, mode, self.now_ms());
+    pub async fn enqueue(&self, mode: Mode, owner: Option<&str>) -> String {
+        let ticket = self.lobby.lock().await.enqueue_for(
+            GAME_ID,
+            mode,
+            self.now_ms(),
+            owner.map(|s| s.to_owned()),
+        );
         if let Some(store) = self.store() {
             store
                 .queue_upsert(GAME_ID, mode.as_str(), &ticket, now_unix_ms())
@@ -369,19 +370,27 @@ impl App {
         ticket
     }
 
-    /// 轮询票状态。
-    pub async fn ticket_state(&self, ticket_id: &str) -> Option<(TicketState, Option<String>)> {
+    /// 轮询票状态（票号归属不符按不存在处理）。
+    pub async fn ticket_state(
+        &self,
+        ticket_id: &str,
+        owner: Option<&str>,
+    ) -> Option<(TicketState, Option<String>)> {
         let now = self.now_ms();
         self.lobby
             .lock()
             .await
-            .poll(ticket_id, now, self.cfg.match_timeout_ms)
+            .poll_for(ticket_id, owner, now, self.cfg.match_timeout_ms)
     }
 
-    /// 退队；返回是否真的退掉（已配对/不存在都返回 false）。
-    pub async fn cancel_ticket(&self, ticket_id: &str) -> bool {
+    /// 退队；返回是否真的退掉（已配对/不存在/归属不符都返回 false）。
+    pub async fn cancel_ticket(&self, ticket_id: &str, owner: Option<&str>) -> bool {
         let now = self.now_ms();
-        let (removed, mode) = self.lobby.lock().await.cancel_with_mode(ticket_id, now);
+        let (removed, mode) = self
+            .lobby
+            .lock()
+            .await
+            .cancel_with_mode_for(ticket_id, owner, now);
         if removed {
             if let (Some(store), Some(mode)) = (self.store(), mode) {
                 store.queue_remove(GAME_ID, mode.as_str(), ticket_id).await;
@@ -443,6 +452,7 @@ impl App {
             )
             .route("/api/auth/sms", post(auth_sms))
             .route("/api/auth/login", post(auth_login))
+            .route("/api/auth/logout", post(auth_logout))
             .route("/api/auth/refresh", post(auth_refresh))
             .route("/api/profile", get(profile))
             .route("/api/replays/{match_id}", get(replay_package))
@@ -479,6 +489,11 @@ impl App {
             None if self.cfg.require_auth => Err(Box::new(unauthorized())),
             None => Ok(None),
         }
+    }
+
+    /// 登出：撤销当前 access token（签名/过期校验通过才收）。
+    pub fn revoke_access_token(&self, token: &str) -> bool {
+        self.auth.revoke_access(token, now_unix_ms())
     }
 }
 
@@ -521,12 +536,43 @@ pub async fn serve_on(app: Arc<App>, addr: SocketAddr) -> std::io::Result<()> {
             reaper.reap_rooms().await;
         }
     });
-    axum::serve(
+    let server = axum::serve(
         listener,
         app.router()
             .into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .await
+    .with_graceful_shutdown(shutdown_signal());
+    // 只接受停止信号，不再接新连接；给在途帧/落库 15s 收尾，超时再强制退出。
+    match tokio::time::timeout(std::time::Duration::from_secs(15), server).await {
+        Ok(result) => result?,
+        Err(_) => eprintln!("[shutdown] 15s 内仍有长连接未收尾，强制退出"),
+    }
+    app.flush_snapshots().await;
+    Ok(())
+}
+
+/// Ctrl-C / SIGTERM 优雅退出信号。
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if tokio::signal::ctrl_c().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
 }
 
 #[derive(Deserialize)]
@@ -706,6 +752,7 @@ async fn match_queue(
     };
     // 入队频控：优先按玩家 ID，其次按来源 IP；anonymous 且无 peer（单测）不额外限。
     if let Some(key) = owner
+        .as_ref()
         .map(|id| format!("player:{id}"))
         .or_else(|| peer.0.map(|addr| format!("ip:{addr}")))
     {
@@ -717,7 +764,7 @@ async fn match_queue(
                 .into_response();
         }
     }
-    let ticket = app.enqueue(mode).await;
+    let ticket = app.enqueue(mode, owner.as_deref()).await;
     // 每次入队顺手撮一次：票数够就直接成房，客户端下一次轮询即见 matched。
     app.pump_match(mode).await;
     Json(serde_json::json!({"ticketId": ticket})).into_response()
@@ -725,10 +772,15 @@ async fn match_queue(
 
 async fn match_status(
     State(app): State<Arc<App>>,
+    headers: HeaderMap,
     Path(ticket_id): Path<String>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse as _;
-    match app.ticket_state(&ticket_id).await {
+    let owner = match app.authenticate(&headers) {
+        Ok(owner) => owner,
+        Err(resp) => return *resp,
+    };
+    match app.ticket_state(&ticket_id, owner.as_deref()).await {
         Some((state, match_id)) => {
             let mut body = serde_json::json!({"state": state.as_str()});
             if let Some(match_id) = match_id {
@@ -742,10 +794,16 @@ async fn match_status(
 
 async fn match_cancel(
     State(app): State<Arc<App>>,
+    headers: HeaderMap,
     Path(ticket_id): Path<String>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse as _;
-    Json(serde_json::json!({"ok": app.cancel_ticket(&ticket_id).await})).into_response()
+    let owner = match app.authenticate(&headers) {
+        Ok(owner) => owner,
+        Err(resp) => return *resp,
+    };
+    Json(serde_json::json!({"ok": app.cancel_ticket(&ticket_id, owner.as_deref()).await}))
+        .into_response()
 }
 
 /// `POST /api/auth/sms`（§5.15）：发验证码。
@@ -809,6 +867,22 @@ where
                 .map(|info| info.0),
         ))
     }
+}
+
+/// `POST /api/auth/logout`：把当前 access token 放进撤销表，立即失效。
+async fn auth_logout(State(app): State<Arc<App>>, headers: HeaderMap) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    let token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| {
+            v.strip_prefix("Bearer ")
+                .or_else(|| v.strip_prefix("bearer "))
+                .map(str::trim)
+        })
+        .filter(|t| !t.is_empty());
+    let revoked = token.map(|t| app.revoke_access_token(t)).unwrap_or(false);
+    Json(serde_json::json!({"ok": revoked})).into_response()
 }
 
 async fn auth_login(
