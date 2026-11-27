@@ -396,6 +396,265 @@ fn make_action(is_pass: u8, cards: Vec<u16>) -> Action {
     }
 }
 
+// ---------------- 出牌展示排序（纯函数，不碰房间状态 / hash / 存档） ----------------
+//
+// 客户端把一手已判定牌型的牌交给 wasm，按统一规范重排成"出到桌面"的顺序，
+// 解决"顺子 2-3-4-5-6 出到牌面变成 4-5-2-3-6"这类选牌插入顺序导致的乱序。
+// 只重排入参顺序；patternId 由引擎权威判定后从前端传入，本函数不重新判牌型。
+
+/// 牌 id 解码：普通牌 `(suit×13+rank)×2+copy`（suit 0♠1♥2♦3♣，rank 0..12=2..A）；
+/// 王 104/105 小王、106/107 大王。
+#[derive(Clone, Copy)]
+struct DispCard {
+    id: u16,
+    rank: Option<usize>, // 普通牌 0..12；王为 None
+    suit: usize,         // 0..3 普通牌；4 小王、5 大王
+    copy: u16,
+    wild: bool, // 红配：红桃级牌（rank==level_rank 且 suit==1）
+}
+
+fn disp_decode(id: u16) -> DispCard {
+    if id >= 104 {
+        let big = id >= 106;
+        DispCard {
+            id,
+            rank: None,
+            suit: if big { 5 } else { 4 },
+            copy: id - if big { 106 } else { 104 },
+            wild: false,
+        }
+    } else {
+        let base = id as usize / 2;
+        DispCard {
+            id,
+            rank: Some(base % 13),
+            suit: base / 13,
+            copy: id % 2,
+            wild: false,
+        }
+    }
+}
+
+/// 展示花色序：♠♥♣♦ = suitIdx 0→0、1→1、3→2、2→3；小王 4、大王 5。
+fn disp_suit_order(suit: usize) -> i32 {
+    match suit {
+        0 => 0,
+        1 => 1,
+        3 => 2,
+        2 => 3,
+        4 => 4,
+        5 => 5,
+        _ => 9,
+    }
+}
+
+/// 连续牌型窗口选择：`present` 真牌点数须全部落在长度 `len` 的窗口内，
+/// 每点数缺 `per - cnt` 张由红配补，总缺口 ≤ `wild_n`。取"顶牌最大"的窗口
+/// （对齐引擎 naturalRankKey 口径）；轮子顺 A-2-3-4-5 顶牌视作最小。`allow_wheel`
+/// 仅非同花顺启用（引擎同花顺不适用轮子特例）。返回 `(升序窗口, 是否轮子顺)`。
+fn disp_pick_window(
+    present: &[usize],
+    cnt: &[usize; 13],
+    wild_n: usize,
+    len: usize,
+    per: usize,
+    allow_wheel: bool,
+) -> (Vec<usize>, bool) {
+    // (窗口, top, 是否轮子)：top 越大越优先；轮子顺 top 记 -1（最小档）。
+    let mut best: Option<(Vec<usize>, i32, bool)> = None;
+    for s in 0..=(13usize.saturating_sub(len)) {
+        let win: Vec<usize> = (s..s + len).collect();
+        let need: usize = win.iter().map(|&r| per.saturating_sub(cnt[r])).sum();
+        if present.iter().all(|r| win.contains(r)) && need <= wild_n {
+            let top = (s + len - 1) as i32;
+            if best.as_ref().map_or(true, |(_, t, _)| top > *t) {
+                best = Some((win, top, false));
+            }
+        }
+    }
+    if allow_wheel && len == 5 {
+        let win: Vec<usize> = vec![0, 1, 2, 3, 12];
+        let need: usize = win.iter().map(|&r| per.saturating_sub(cnt[r])).sum();
+        if present.iter().all(|r| win.contains(r)) && need <= wild_n {
+            best = Some((win, -1, true));
+        }
+    }
+    best.map_or_else(|| ((0..len).collect(), false), |(w, _, wheel)| (w, wheel))
+}
+
+/// 展示排序主体。返回按规范排好的牌 id 数组。
+fn display_order_impl(cards: &[u16], pattern: &str, level_rank: i8) -> Vec<u16> {
+    if cards.len() < 2 {
+        return cards.to_vec();
+    }
+    let mut ds: Vec<DispCard> = cards.iter().copied().map(disp_decode).collect();
+    for d in ds.iter_mut() {
+        d.wild = level_rank >= 0
+            && d.rank.map_or(false, |r| r as i8 == level_rank)
+            && d.suit == 1;
+    }
+
+    // 排序键：(主序, 花色序, 副本, id) —— 主序越小越靠前，同主序按 ♠♥♣♦。
+    let mut keys: Vec<(i32, i32, u16, u16)> = Vec::with_capacity(ds.len());
+
+    if pattern == "joker-bomb" {
+        // 天王炸：两大王在前、小王在后；组内按 id 升序。
+        for d in &ds {
+            keys.push((
+                if d.suit == 5 { 0 } else { 1 },
+                disp_suit_order(d.suit),
+                d.copy,
+                d.id,
+            ));
+        }
+    } else if pattern.starts_with("straight-")
+        || pattern.starts_with("plate-")
+        || pattern.starts_with("steel-")
+    {
+        // 连续牌型：顺子(5/1)、同花顺(5/1 禁轮子)、三连对 plate(3/2)、钢板 steel(2/3)。
+        let (len, per, allow_wheel) = if pattern.starts_with("straight-flush") {
+            (5usize, 1usize, false)
+        } else if pattern.starts_with("straight-") {
+            (5, 1, true)
+        } else if pattern.starts_with("plate-") {
+            (3, 2, false)
+        } else {
+            (2, 3, false)
+        };
+        let mut cnt = [0usize; 13];
+        let mut present: Vec<usize> = Vec::new();
+        let mut wild_n = 0usize;
+        for d in &ds {
+            if d.wild {
+                wild_n += 1;
+            } else if let Some(r) = d.rank {
+                if cnt[r] == 0 {
+                    present.push(r);
+                }
+                cnt[r] += 1;
+            }
+        }
+        let (win, wheel) = disp_pick_window(&present, &cnt, wild_n, len, per, allow_wheel);
+        // 展示顺序：轮子顺 A 排最前（A,2,3,4,5）；其余按窗口升序。
+        let display: Vec<usize> = if wheel {
+            vec![12, 0, 1, 2, 3]
+        } else {
+            win.clone()
+        };
+        let pos_of = |r: usize| -> i32 {
+            display.iter().position(|&x| x == r).unwrap_or(len) as i32
+        };
+        for d in &ds {
+            if d.wild {
+                continue;
+            }
+            let p = d.rank.map_or(len as i32, pos_of);
+            keys.push((p, disp_suit_order(d.suit), d.copy, d.id));
+        }
+        // 红配按展示顺序补缺孔。
+        let wilds: Vec<&DispCard> = ds.iter().filter(|d| d.wild).collect();
+        let mut wi = 0usize;
+        for &r in &display {
+            let lack = per.saturating_sub(cnt[r]);
+            for _ in 0..lack {
+                if let Some(d) = wilds.get(wi) {
+                    keys.push((pos_of(r), disp_suit_order(d.suit), d.copy, d.id));
+                    wi += 1;
+                }
+            }
+        }
+        while let Some(d) = wilds.get(wi) {
+            keys.push((len as i32, disp_suit_order(d.suit), d.copy, d.id));
+            wi += 1;
+        }
+    } else if pattern == "triple-pair" {
+        // 三代二：三个的在前、对子在后；组内按点数、花色。
+        let mut cnt = [0usize; 13];
+        for d in &ds {
+            if !d.wild {
+                if let Some(r) = d.rank {
+                    cnt[r] += 1;
+                }
+            }
+        }
+        let main = (0..13).filter(|&r| cnt[r] >= 2).max_by_key(|&r| (cnt[r], r));
+        let pair = (0..13)
+            .filter(|&r| Some(r) != main && cnt[r] >= 1)
+            .max_by_key(|&r| (cnt[r], r));
+        let main_need = main.map_or(0, |m| 3usize.saturating_sub(cnt[m]));
+        let mut wild_used = 0usize;
+        for d in &ds {
+            let p = if d.wild {
+                if wild_used < main_need {
+                    wild_used += 1;
+                    0
+                } else {
+                    1
+                }
+            } else if d.suit >= 4 {
+                1 // 王作对子（引擎 joker_pairs 分支）
+            } else if Some(d.rank.unwrap_or(99)) == main {
+                0
+            } else if Some(d.rank.unwrap_or(99)) == pair {
+                1
+            } else {
+                2
+            };
+            keys.push((p, disp_suit_order(d.suit), d.copy, d.id));
+        }
+    } else {
+        // 炸弹 / 单 / 对 / 三 / 未知：点数从小到大，同点数按 ♠♥♣♦；王排最后。
+        let common = ds
+            .iter()
+            .find(|d| !d.wild && d.rank.is_some())
+            .and_then(|d| d.rank)
+            .or_else(|| if level_rank >= 0 { Some(level_rank as usize) } else { None })
+            .unwrap_or(0);
+        for d in &ds {
+            let p = if d.wild {
+                common as i32
+            } else if let Some(r) = d.rank {
+                r as i32
+            } else {
+                13 + (d.suit - 4) as i32 // 小王 13、大王 14
+            };
+            keys.push((p, disp_suit_order(d.suit), d.copy, d.id));
+        }
+    }
+
+    keys.sort_unstable();
+    keys.into_iter().map(|k| k.3).collect()
+}
+
+/// 出牌展示排序导出：入参 = 牌 id 数组 + patternId(UTF-8) + 级牌点数下标
+/// （`level_rank`：0..12 = 2..A，-1 = 无级牌/无红配）。出参 `{"cards":[...]}`。
+/// 纯函数：不读 ROOM、不改任何状态，供渲染前调用。
+///
+/// # Safety
+///
+/// `cards_ptr` 必须来自 [`gf_alloc`] 登记块、按 u16 对齐、长 `cards_len*2`；
+/// `pattern_ptr` 必须来自 [`gf_alloc`] 登记块、长 `pattern_len`，0 长度可空指针。
+#[no_mangle]
+pub unsafe extern "C" fn gf_display_order(
+    cards_ptr: *const u16,
+    cards_len: usize,
+    pattern_ptr: *const u8,
+    pattern_len: usize,
+    level_rank: i8,
+) -> *mut u8 {
+    let cards = read_cards(cards_ptr, cards_len);
+    let pattern = if pattern_len == 0 || pattern_ptr.is_null() {
+        String::new()
+    } else if !input_range_ok(pattern_ptr, pattern_len, 1, MAX_INPUT_BYTES) {
+        String::new()
+    } else {
+        String::from_utf8_lossy(std::slice::from_raw_parts(pattern_ptr, pattern_len)).into_owned()
+    };
+    let ordered = display_order_impl(&cards, &pattern, level_rank);
+    let body: Vec<String> = ordered.iter().map(|c| c.to_string()).collect();
+    out(format!("{{\"cards\":[{}]}}", body.join(",")))
+}
+
 // ---------------- 内存与字符串 ----------------
 
 /// 分配 `len` 字节供宿主写入（牌 id 数组等）。宿主用完调 [`gf_mem_free`]。

@@ -138,6 +138,18 @@ export class WasmBridge {
     };
   }
 
+  // 出牌展示排序：把一手牌按规范排成"出到桌面"的顺序（纯函数，不碰房间状态）。
+  // patternId 为引擎权威牌型；levelRank 为级牌点数下标 0..12，-1 表示无级牌。
+  displayOrder(cards, patternId = '', levelRank = -1) {
+    if (!this.ex.gf_display_order) return cards;
+    const pat = new TextEncoder().encode(String(patternId ?? ''));
+    return this.withCards(cards ?? [], (ptr, len) =>
+      this.withBytes(pat, (pp, pl) =>
+        this.json(this.ex.gf_display_order(ptr, len, pp, pl, levelRank)),
+      ),
+    ).cards ?? cards;
+  }
+
   // ---- 决策辅助 ----
   canPlay(cards) {
     if (!this.ex.gf_room_can_play) return null;

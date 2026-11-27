@@ -475,10 +475,14 @@ export class TableScene extends Phaser.Scene {
   }
 
   levelRankIndex() {
-    const lv = this.gameModel.levelRankLabel();
-    if (!lv) return -1;
+    return this.rankLabelToIndex(this.gameModel.levelRankLabel());
+  }
+
+  // 级牌标签 → 0..12 下标（2..A）；无级牌返回 -1。展示排序用它识别红配。
+  rankLabelToIndex(label) {
+    if (!label) return -1;
     const RANKS = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
-    return RANKS.indexOf(lv);
+    return RANKS.indexOf(label);
   }
 
   // 该花色的同花顺窗口（含红桃级牌百搭补位），对齐 web flushWindows。
@@ -1114,7 +1118,12 @@ export class TableScene extends Phaser.Scene {
       this.tweens.add({ targets: t, alpha: 1, y: p.cy - 16, duration: 180, yoyo: true, hold: 400 });
       return;
     }
-    const cards = action.cards ?? [];
+    // 展示排序：调用 wasm 纯函数把这一手按牌型规范重排（顺子从小到大、三代二三个在前等）。
+    // 只改桌面展示顺序，不碰判定/存档；炸弹识别仍用原始 cards 顺序。
+    const rawCards = action.cards ?? [];
+    const cards = this.gameModel.wasm.displayOrder
+      ? this.gameModel.wasm.displayOrder(rawCards, action.patternId ?? '', this.rankLabelToIndex(level))
+      : rawCards.slice();
     // 出牌区牌比手牌小一号（手牌 86×120，出牌 53×74），避免盖住徽标/操作栏。
     const PLAY_SCALE = 0.62;
     // 一手牌按紧凑间距铺开，避免长顺子/钢板挤成一坨；牌多时缩小间距。
@@ -1135,7 +1144,7 @@ export class TableScene extends Phaser.Scene {
     });
     // 炸弹优先用引擎 patternId 判定（含红配补位的炸弹）；step 的 applied 不带时回退牌结构识别。
     // silent=true 用于读档还原，不重播特效。
-    const bomb = detectBomb(cards, action.patternId);
+    const bomb = detectBomb(rawCards, action.patternId);
     if (bomb && !silent) this.playBombFx(seat, bomb, views);
   }
 
