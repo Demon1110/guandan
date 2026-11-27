@@ -1,0 +1,61 @@
+# gf-server 配置模板（不含真实密钥，可直接入库）。
+#
+# 用法：复制一份 config.local.toml 填真实值。启动时按顺序找：
+#   1. 环境变量 GF_CONFIG_FILE 指定的路径
+#   2. 工作目录 config.local.toml   ← 真实值放这里，已 gitignore
+#   3. 工作目录 config.toml        ← 本文件，缺省值
+# 环境变量优先级最高，部署侧改端口/连接串/密钥不必改文件。
+#
+# 所有字段都可省略；省略即用代码里的默认值。拼错键名会直接启动失败（防手滑）。
+
+[server]
+bind = "127.0.0.1:8080"
+min_client_version = ""          # 空串 = 不校验；如 "1.10.0"
+tick_ms = 50                     # 房间主循环节拍
+next_deal_ms = 5000              # 结算后自动续局间隔（M2-OPEN-01 待裁）
+heartbeat_timeout_ms = 30000
+room_code_ttl_ms = 86400000      # 房间码 24h
+match_timeout_ms = 30000         # 匹配等待上限
+require_auth = false             # true = 玩家侧接口与 WS 都必须带 token
+
+[security]
+# 生产必须换掉；开发默认串在代码里，启动会告警。
+auth_salt = "gf-dev-salt-change-me"
+jwt_secret = "gf-dev-jwt-secret-change-me"
+
+[database]
+# 留空 = 不落库（纯内存跑，战绩不持久化）。
+url = ""                         # postgres://user:pass@127.0.0.1:5432/guandan
+max_connections = 10
+connect_timeout_ms = 5000
+
+[redis]
+# 留空 = 不写快照/动作流/队列镜像。
+url = ""                         # redis://127.0.0.1:6379
+snapshot_ttl_ms = 60000          # 房间快照 TTL
+snapshot_interval_ms = 30000     # 快照刷新间隔
+actions_max_len = 4096           # 动作流 XADD MAXLEN ~
+
+[sms]
+# log = 只把验证码打进服务端日志；yunpian = 走云片真实发送。
+provider = "log"
+
+# 云片 apikey（32 位，管理控制台里看）。provider = "yunpian" 时必填，否则启动失败。
+api_key = ""
+# 短信签名，不带书名号；发送时拼成 【掼蛋】。
+sign = "掼蛋"
+# 智能匹配已报备模板时的正文，{code} 会替换成验证码。
+text_template = "您的验证码是{code}，5分钟内有效。"
+# 指定模板发送：填模板 ID（如 376861）；0 = 走上面的正文智能匹配。
+template_id = 0
+# 指定模板时验证码变量的名字，模板里长这样：#code#。
+template_param = "#code#"
+# 云片服务地址（只到域名）；海外节点换成 https://us.yunpian.com。
+endpoint = "https://sms.yunpian.com"
+timeout_ms = 5000
+
+# 模板报备未批前的测试白名单：这些号用固定码、不发真实短信。
+# 空表 = 口子关闭。填 11 位手机号，例：["13800138000"]
+test_whitelist = []
+test_code = "123456"
+

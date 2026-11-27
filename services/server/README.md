@@ -16,16 +16,43 @@ cargo clippy -p gf-server --all-targets -- -D warnings
 
 手工探针：先起服务，再 `cargo run --example ws_probe`，会发一条 `JoinRoom` 并打印收到的帧类型。
 
-关键环境变量（全部有开发默认值，生产必须覆盖前两项）：
+### 配置：`config.toml` + `config.local.toml`
+
+中间件与短信全部收在 TOML 里，代码里不再散落 `GF_*` 变量：
+
+1. 复制 `config.toml` 为 `config.local.toml`，填真实值；`config.local.toml` 已 gitignore。
+2. 启动时查找顺序：`GF_CONFIG_FILE` 指定路径 → 工作目录 `config.local.toml` → 工作目录 `config.toml`。
+3. 优先级：内置默认值 → 配置文件 → 环境变量（部署侧只改环境变量即可）。
+4. 键名拼错会直接启动失败（`deny_unknown_fields`），不会静默回落默认值。
+
+`config.toml` 各段含义：
+
+| 段 | 关键字段 | 说明 |
+| --- | --- | --- |
+| `[server]` | `bind`、`tick_ms`、`room_code_ttl_ms`、`match_timeout_ms`、`require_auth` | 监听与房间节拍 |
+| `[security]` | `auth_salt`、`jwt_secret` | 手机号哈希盐、token 签名密钥；默认值是开发串，启动告警 |
+| `[database]` | `url`、`max_connections`、`connect_timeout_ms` | 留空 = 不落库 |
+| `[redis]` | `url`、`snapshot_ttl_ms`、`snapshot_interval_ms`、`actions_max_len` | 留空 = 不写快照/动作流/队列镜像 |
+| `[sms]` | `provider`、`api_key`、`sign`、`text_template`、`template_id`、`test_whitelist` | 见下 |
+
+短信两种模式（`provider = "yunpian"`）：
+
+- `template_id = 0`：走云片「智能匹配已报备模板」，`text_template` 的 `{code}` 换成验证码，正文自动拼 `【sign】`；
+- `template_id = 376861`：走云片「指定模板」，`template_param`（默认 `#code#`）作为变量名传 `tpl_value`。
+
+`provider = "log"` 时只把验证码打进服务端日志（只打尾号 4 位）；选了 `yunpian` 却漏填 `api_key`/`sign` 会启动失败，避免静默退回日志。
+
+环境变量仍可覆盖部署相关项（其余走配置文件）：
 
 | 变量 | 作用 |
 | --- | --- |
-| `GF_AUTH_SALT` / `GF_JWT_SECRET` | 手机号哈希盐、token 签名密钥（默认值是写死的开发串，启动会告警） |
-| `GF_SMS_TEST_WHITELIST` | 逗号分隔的手机号；短信模板未批前用固定测试码走通登录 |
-| `GF_SMS_TEST_CODE` | 白名单固定验证码，默认 `123456` |
+| `GF_CONFIG_FILE` | 指定配置文件路径 |
+| `GF_AUTH_SALT` / `GF_JWT_SECRET` | 覆盖 `[security]` |
+| `GF_DATABASE_URL` / `GF_REDIS_URL` | 覆盖 `[database].url` / `[redis].url`；不填即纯内存运行 |
+| `GF_SMS_PROVIDER` / `GF_SMS_API_KEY` | 覆盖 `[sms].provider` / `[sms].api_key` |
+| `GF_SMS_TEST_WHITELIST` / `GF_SMS_TEST_CODE` | 覆盖 `[sms].test_whitelist` / `[sms].test_code` |
 | `GF_REQUIRE_AUTH` | `1`/`true` 时玩家侧接口与 WS 都必须带 access token |
-| `GF_ROOM_CODE_TTL_MS` / `GF_MATCH_TIMEOUT_MS` | 房间码有效期 / 匹配等待上限 |
-| `GF_DATABASE_URL` / `GF_REDIS_URL` | PostgreSQL / Redis 连接串；不填即纯内存运行（见「持久化」） |
+| `GF_BIND`、`GF_TICK_MS`、`GF_ROOM_CODE_TTL_MS`、`GF_MATCH_TIMEOUT_MS` 等 | 覆盖 `[server]` 同名项 |
 
 ## 分层
 
@@ -37,7 +64,8 @@ cargo clippy -p gf-server --all-targets -- -D warnings
 | `src/lobby.rs` | 房间码、票号、匹配队列（内存态） | 房间托管、规则 |
 | `src/auth.rs` | 手机号规范化/哈希、验证码、access/refresh token、玩家档案（内存态） | 短信通道报备、PG 落库 |
 | `src/store.rs` | PG 连接与建表、副局/场次/账号落库、Redis 快照/动作流/队列镜像（全部可缺席） | 规则判定、重试与死信（M3） |
-| `src/config.rs` | 环境变量、`minClientVersion` 比较 | 规则集加载（由 room 锁定） |
+| `src/config.rs` | 配置文件 + 环境变量、`minClientVersion` 比较 | 规则集加载（由 room 锁定） |
+| `src/sms.rs` | 短信发送器：日志通道 / 云片真实通道（独立线程消费队列） | 验证码生成与限流（在 `auth.rs`） |
 
 判定链路只有一条：`WS → RoomHost::submit → gf-table-runtime::Room::submit → gf-engine`。
 服务端不重算牌型、不缓存"合法动作"，免得与 `stateHash` 口径分叉。
@@ -84,7 +112,7 @@ cargo clippy -p gf-server --all-targets -- -D warnings
 
 - access 是 HS256 JWT（15 分钟），refresh 是 32 字节随机串（30 天），库里只存其 SHA-256。
 - 手机号规范化后取 `HMAC-SHA256(server_salt, phone)` 与尾号 4 位入库（`player_profile` 字段位），原文只在发码链路内存里出现。
-- 短信通道未报备前，`GF_SMS_TEST_WHITELIST` 里的号用固定测试码直通（不发短信）；白名单为空时该口子关闭。
+- 验证码由 `[sms]` 决定投递方式：`provider = "yunpian"` 走云片真实通道（后台线程发送，接口不阻塞）；`log` 只写日志。白名单号始终用 `test_code` 直通、不发真实短信，模板报备未批时靠这条口子跑内测。
 - 带 token 入座会把座位绑定到玩家；重连回座位时校验同一玩家，HTTP 预占也按玩家 ID 绑定（见下节）。
 
 ## 持久化（PostgreSQL / Redis）
@@ -94,8 +122,8 @@ cargo clippy -p gf-server --all-targets -- -D warnings
 
 | 变量 | 落点 |
 | --- | --- |
-| `GF_DATABASE_URL` | 启动时执行 `migrations/0001_init.sql`（幂等）；写 `player_profile`、`match_record`、`round_record`、`settlement_event` |
-| `GF_REDIS_URL` | `room:{matchId}:snapshot`（30s 刷新、TTL 60s）、`room:{matchId}:actions`（Stream，`MAXLEN ~ 4096`）、`match:queue:{gameId}`（zset 镜像） |
+| `[database].url` | 启动时执行 `migrations/0001_init.sql`（幂等）；写 `player_profile`、`match_record`、`round_record`、`settlement_event` |
+| `[redis].url` | `room:{matchId}:snapshot`（按 `snapshot_interval_ms` 刷新、`snapshot_ttl_ms` 过期）、`room:{matchId}:actions`（Stream，`MAXLEN ~ actions_max_len`）、`match:queue:{gameId}`（zset 镜像） |
 
 - 落库发生在房间之外的独立任务里：`RoomHost` 只把「结算 / 场次终止」两类事实投进
   `mpsc`，房间锁从不 `await` 数据库；`App` 侧补座位归属（`player_id`）后写 PG。
@@ -159,3 +187,4 @@ cargo clippy -p gf-server --all-targets -- -D warnings
 - 服务端行为（幂等、水位、入座分配、广播帧形状）→ `tests/online_round.rs`。
 - 传输层（握手、帧编解码、版本闸门）→ `tests/ws_smoke.rs`。
 - 帧头编号 → `crates/protocol/src/wire.rs` 的单元测试（只增不减）。
+

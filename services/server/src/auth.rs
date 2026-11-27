@@ -79,15 +79,19 @@ pub enum LoginError {
 
 /// 短信通道。默认实现只把验证码打到服务端日志（本地联调用）。
 pub trait SmsSender: Send + Sync {
-    fn send(&self, phone_tail4: &str, code: &str);
+    /// `phone` 是规范化后的 11 位号码；真实通道需要它，日志实现只取尾号 4 位。
+    fn send(&self, phone: &str, code: &str);
 }
 
 /// 开发用发送器：不落明文手机号，只打尾号 4 位（§8.4 日志脱敏口径）。
 pub struct LogSmsSender;
 
 impl SmsSender for LogSmsSender {
-    fn send(&self, phone_tail4: &str, code: &str) {
-        println!("[sms] -> 尾号 {phone_tail4}：验证码 {code}（未接真实通道）");
+    fn send(&self, phone: &str, code: &str) {
+        println!(
+            "[sms] -> 尾号 {}：验证码 {code}（未接真实通道）",
+            tail4(phone)
+        );
     }
 }
 
@@ -213,7 +217,7 @@ impl Auth {
 
         // 白名单不发真实短信：模板报备未批时靠这条口子跑通内测链路。
         if !whitelisted {
-            self.sms.send(&tail4(&phone), &entry_code);
+            self.sms.send(&phone, &entry_code);
         }
 
         Ok(SmsChallenge {
@@ -443,11 +447,8 @@ mod tests {
     struct CaptureSms(std::sync::Mutex<Vec<(String, String)>>);
 
     impl SmsSender for CaptureSms {
-        fn send(&self, phone_tail4: &str, code: &str) {
-            self.0
-                .lock()
-                .unwrap()
-                .push((phone_tail4.to_owned(), code.to_owned()));
+        fn send(&self, phone: &str, code: &str) {
+            self.0.lock().unwrap().push((tail4(phone), code.to_owned()));
         }
     }
 

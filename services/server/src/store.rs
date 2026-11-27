@@ -8,14 +8,16 @@
 //! - 匹配队列以内存为准，Redis 里是镜像（`match:queue:{gameId}` zset），
 //!   多实例共享队列要等网关粘性路由落地后再把内存态整个换掉。
 
+use crate::config::{DatabaseConfig, RedisConfig};
 use gf_engine::contract::Action;
 use gf_table_runtime::ActionRecord;
 use redis::aio::MultiplexedConnection;
+use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
 use crate::auth::Profile;
 
-/// 房间快照在 Redis 的存活时间（设计：每 30 秒刷一次）。
+/// 房间快照的兜底 TTL（配置缺省时用；设计口径 §6.5 是 60 秒）。
 pub const SNAPSHOT_TTL_MS: u64 = 60_000;
 
 /// 初始化表结构（幂等）。文件随二进制编译进来，部署不额外拷 SQL。
@@ -59,6 +61,8 @@ pub enum StorageEvent {
 pub struct Store {
     pg: Option<PgPool>,
     redis: Option<MultiplexedConnection>,
+    snapshot_ttl_ms: u64,
+    actions_max_len: u64,
 }
 
 impl Store {
@@ -67,30 +71,44 @@ impl Store {
         Self {
             pg: None,
             redis: None,
+            snapshot_ttl_ms: SNAPSHOT_TTL_MS,
+            actions_max_len: 4_096,
         }
     }
 
-    /// 按连接串建连；任一失败都只降级该半边，不阻塞启动。
-    pub async fn connect(pg_url: Option<&str>, redis_url: Option<&str>) -> Self {
-        let pg = match pg_url.map(str::trim).filter(|s| !s.is_empty()) {
-            Some(url) => match PgPool::connect(url).await {
-                Ok(pool) => {
-                    if let Err(err) = apply_schema(&pool).await {
-                        eprintln!("[store] 建表失败（已降级为不落库）：{err}");
+    /// 按配置文件里的 `[database]` / `[redis]` 建连；任一失败只降级该半边。
+    pub async fn connect_with(db: &DatabaseConfig, cache: &RedisConfig) -> Self {
+        let pg = match db.url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(url) => {
+                let options = PgPoolOptions::new()
+                    .max_connections(db.max_connections.max(1))
+                    .acquire_timeout(std::time::Duration::from_millis(
+                        db.connect_timeout_ms.max(100),
+                    ));
+                match options.connect(url).await {
+                    Ok(pool) => {
+                        if let Err(err) = apply_schema(&pool).await {
+                            eprintln!("[store] 建表失败（已降级为不落库）：{err}");
+                            None
+                        } else {
+                            println!("[store] PostgreSQL 已连接");
+                            Some(pool)
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("[store] PostgreSQL 连接失败（已降级为不落库）：{err}");
                         None
-                    } else {
-                        println!("[store] PostgreSQL 已连接");
-                        Some(pool)
                     }
                 }
-                Err(err) => {
-                    eprintln!("[store] PostgreSQL 连接失败（已降级为不落库）：{err}");
-                    None
-                }
-            },
+            }
             None => None,
         };
-        let redis = match redis_url.map(str::trim).filter(|s| !s.is_empty()) {
+        let redis = match cache
+            .url
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             Some(url) => match redis::Client::open(url) {
                 Ok(client) => match client.get_multiplexed_tokio_connection().await {
                     Ok(conn) => {
@@ -109,7 +127,25 @@ impl Store {
             },
             None => None,
         };
-        Self { pg, redis }
+        Self {
+            pg,
+            redis,
+            snapshot_ttl_ms: cache.snapshot_ttl_ms,
+            actions_max_len: cache.actions_max_len,
+        }
+    }
+
+    /// 只用连接串建连（测试/旧调用点），其余参数取默认值。
+    pub async fn connect(pg_url: Option<&str>, redis_url: Option<&str>) -> Self {
+        let db = DatabaseConfig {
+            url: pg_url.map(str::to_owned),
+            ..DatabaseConfig::default()
+        };
+        let cache = RedisConfig {
+            url: redis_url.map(str::to_owned),
+            ..RedisConfig::default()
+        };
+        Self::connect_with(&db, &cache).await
     }
 
     pub fn enabled(&self) -> bool {
@@ -255,7 +291,7 @@ impl Store {
                 .arg(&key)
                 .arg("MAXLEN")
                 .arg("~")
-                .arg(4096)
+                .arg(self.actions_max_len)
                 .arg("*")
                 .arg("line")
                 .arg(line)
@@ -279,7 +315,7 @@ impl Store {
             .arg(&key)
             .arg(snapshot_json)
             .arg("PX")
-            .arg(SNAPSHOT_TTL_MS as i64)
+            .arg(self.snapshot_ttl_ms as i64)
             .query_async::<()>(&mut conn)
             .await;
         if let Err(err) = result {
@@ -374,10 +410,7 @@ pub fn action_line(match_id: &str, record: &ActionRecord) -> String {
             ("play", format!("{{\"cards\":[{}]}}", cards.join(",")))
         }
         Action::Pass => ("pass", "{}".to_owned()),
-        Action::TributeReturn { card } => (
-            "tribute-return",
-            format!("{{\"card\":{card}}}"),
-        ),
+        Action::TributeReturn { card } => ("tribute-return", format!("{{\"card\":{card}}}")),
     };
     format!(
         "{{\"matchId\":{},\"seatSeq\":{},\"roomSeq\":{},\"roundNo\":{},\"seat\":{},\

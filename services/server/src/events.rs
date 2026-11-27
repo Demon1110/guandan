@@ -137,13 +137,7 @@ pub fn replay_frames(match_id: &str, steps: &[ReplayedStep], deadline_ms: u64) -
                 })));
             }
             Action::TributeReturn { .. } => {
-                if let Some(rec) = step
-                    .after
-                    .tribute_events
-                    .iter()
-                    .rev()
-                    .find(|r| r.is_return)
-                {
+                if let Some(rec) = step.after.tribute_events.iter().rev().find(|r| r.is_return) {
                     events.push(delta(pb::delta_event::Event::Tribute(pb::TributeEvent {
                         from: u32::from(rec.from),
                         to: u32::from(rec.to),

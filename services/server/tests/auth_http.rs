@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use gf_server::{App, ServerConfig};
+use gf_server::{App, ServerConfig, SmsConfig};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -15,8 +15,11 @@ const TEST_CODE: &str = "123456";
 
 fn make_app() -> Arc<App> {
     App::new(ServerConfig {
-        sms_test_whitelist: vec![PHONE_A.to_owned(), PHONE_B.to_owned()],
-        sms_test_code: TEST_CODE.to_owned(),
+        sms: SmsConfig {
+            test_whitelist: vec![PHONE_A.to_owned(), PHONE_B.to_owned()],
+            test_code: TEST_CODE.to_owned(),
+            ..SmsConfig::default()
+        },
         ..ServerConfig::default()
     })
 }
@@ -148,7 +151,10 @@ async fn wrong_code_and_version_gate_are_rejected() {
 
     let app = App::new(ServerConfig {
         min_client_version: "1.0.0".to_owned(),
-        sms_test_whitelist: vec![PHONE_A.to_owned()],
+        sms: SmsConfig {
+            test_whitelist: vec![PHONE_A.to_owned()],
+            ..SmsConfig::default()
+        },
         ..ServerConfig::default()
     });
     let (status, body) = call(
@@ -200,7 +206,10 @@ async fn refresh_rotates_and_invalidates_old_token() {
 async fn require_auth_gates_lobby_and_binds_seats() {
     let app = App::new(ServerConfig {
         require_auth: true,
-        sms_test_whitelist: vec![PHONE_A.to_owned(), PHONE_B.to_owned()],
+        sms: SmsConfig {
+            test_whitelist: vec![PHONE_A.to_owned(), PHONE_B.to_owned()],
+            ..SmsConfig::default()
+        },
         ..ServerConfig::default()
     });
     let (status, _) = call(

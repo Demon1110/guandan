@@ -13,6 +13,7 @@ pub mod config;
 pub mod events;
 pub mod host;
 pub mod lobby;
+pub mod sms;
 pub mod store;
 
 use std::collections::HashMap;
@@ -35,7 +36,7 @@ use serde::Deserialize;
 use tokio::sync::{mpsc, Mutex, RwLock};
 
 pub use auth::{Auth, Profile, Session};
-pub use config::ServerConfig;
+pub use config::{DatabaseConfig, RedisConfig, ServerConfig, SmsConfig};
 pub use host::{JoinError, RoomHost, RoomOptions};
 pub use lobby::{Lobby, Mode, TicketState};
 pub use store::{RoundRow, StorageEvent, Store};
@@ -66,9 +67,9 @@ impl App {
         let auth = Auth::new(
             cfg.auth_salt.clone(),
             cfg.jwt_secret.clone(),
-            cfg.sms_test_whitelist.clone(),
-            cfg.sms_test_code.clone(),
-            Box::new(auth::LogSmsSender),
+            cfg.sms.test_whitelist.clone(),
+            cfg.sms.test_code.clone(),
+            sms::build_sender(&cfg.sms),
         );
         let (storage_tx, storage_rx) = mpsc::unbounded_channel();
         Arc::new(Self {
@@ -112,10 +113,11 @@ impl App {
             }
         });
 
-        // 房间快照每 30 秒刷一次（§6.5），TTL 60 秒；只对 Redis 有意义。
+        // 房间快照按配置刷新（默认 30s），TTL 取 `redis.snapshot_ttl_ms`；只对 Redis 有意义。
+        let interval_ms = self.cfg.redis.snapshot_interval_ms.max(1_000);
         let weak = Arc::downgrade(self);
         tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+            let mut ticker = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
             loop {
                 ticker.tick().await;
                 let Some(app) = weak.upgrade() else { break };
