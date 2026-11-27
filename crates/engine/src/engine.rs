@@ -306,6 +306,7 @@ impl M0Engine {
             tribute_leader: None,
             match_end: None,
             round_no: 1,
+            cap_start_round: 1,
         };
 
         // §6.3 转移表：`tribute.enabled=false`（或抗贡成立）时 `deal → play` 整段跳过
@@ -391,6 +392,7 @@ impl M0Engine {
             tribute_leader: None,
             match_end: None,
             round_no: prev.round_no.saturating_add(1),
+            cap_start_round: prev.cap_start_round,
         };
         Ok(state)
     }
@@ -1507,6 +1509,10 @@ impl M0Engine {
                 if self.reset_on_fail() && next >= limit {
                     state.levels[winner_team as usize] = initial_index;
                     state.a_fail_streak[winner_team as usize] = 0;
+                    // 回到起点 2 等于重开一轮冲 A：安全局数窗口也从下一局重新起算，
+                    // 否则刚好在第 12 局回退时会被旧窗口立刻判成 safety-cap，场上
+                    // 还有 12 局可打却直接结束。
+                    state.cap_start_round = state.round_no.saturating_add(1);
                 } else {
                     state.a_fail_streak[winner_team as usize] = next.min(3);
                 }
@@ -1517,19 +1523,25 @@ impl M0Engine {
             }
         }
 
-        // 场次终止判定（§5.13 行 1008）：① 过 A → `passed-a`；② 未过 A 且本局号触达
-        // `matchCap.rounds` → `safety-cap`（胜方只比 `levels`，同档平局 `None`）。
-        // `aborted` 在 v1 房间层无触发源，仅保留枚举与载波，不在此自动置位。
+        // 场次终止判定（§5.13 行 1008）：① 过 A → `passed-a`；② 未过 A 且
+        // 当前安全窗口已打满 `matchCap.rounds` → `safety-cap`（胜方只比 `levels`，
+        // 同档平局 `None`）。A 三局未过退回 2 时窗口已在 ③ 重置到下一局。
         if passed_a {
             state.match_end = Some(MatchEnd {
                 winner_team: Some(winner_team),
                 reason: MatchEndReason::PassedA,
             });
-        } else if state.round_no >= self.match_cap_rounds() {
-            state.match_end = Some(MatchEnd {
-                winner_team: safety_cap_winner(&state.levels),
-                reason: MatchEndReason::SafetyCap,
-            });
+        } else {
+            let cap_used = state
+                .round_no
+                .saturating_sub(state.cap_start_round)
+                .saturating_add(1);
+            if cap_used >= self.match_cap_rounds() {
+                state.match_end = Some(MatchEnd {
+                    winner_team: safety_cap_winner(&state.levels),
+                    reason: MatchEndReason::SafetyCap,
+                });
+            }
         }
 
         // §5.13「决定首出」：settle 结束把 `attackingTeam` 置为头游所在队（下一局打谁的级牌）。
@@ -2314,6 +2326,39 @@ mod tests {
         engine.settle(&mut s3).expect("第 3 局 settle 失败");
         assert_eq!(s3.levels, vec![0, 0], "满 3 局未过，退回起点 2（下标 0）");
         assert_eq!(s3.a_fail_streak, vec![0, 0]);
+    }
+
+    #[test]
+    fn fail_a_reset_restarts_safety_cap_window_at_next_round() {
+        // 第 12 局在 A 上第三次未过（1+4）：levels 退回 2 的同时，安全窗口从第 13 局
+        // 重新起算，不能一边回退一边又用旧窗口把场次判成 safety-cap。
+        let (engine, mut state) =
+            classic_settle_state(vec![12, 0], vec![2, 0], vec![0, 1, 3, 2]);
+        state.round_no = 12;
+        state.cap_start_round = 1;
+        engine.settle(&mut state).expect("settle 失败");
+        assert_eq!(state.levels, vec![0, 0], "满 3 局未过，退回起点 2");
+        assert_eq!(state.a_fail_streak, vec![0, 0]);
+        assert_eq!(state.cap_start_round, 13, "安全窗口应从下一局重算");
+        assert!(state.match_end.is_none(), "回到 2 后不应判场次结束");
+
+        let next = engine
+            .deal_next_round(&state, M0_SEED)
+            .expect("回退 2 后应还能续局");
+        assert_eq!(next.round_no, 13);
+        assert_eq!(next.cap_start_round, 13, "续局要携带新窗口起点");
+    }
+
+    #[test]
+    fn safety_cap_counts_from_last_a_reset_not_absolute_round() {
+        // 截图场景：此前 A 三局未过已回退到 2（窗口从第 5 局重算），一路打到第 12 局，
+        // 当前级牌 10 / 7（下标 8 / 5），没人过 A。此时累计局号虽已到 12，
+        // 但当前窗口只打了 8 局，不能直接判 safety-cap。
+        let (engine, mut state) = classic_settle_state(vec![8, 5], vec![0, 0], vec![0, 1, 3, 2]);
+        state.round_no = 12;
+        state.cap_start_round = 5;
+        engine.settle(&mut state).expect("settle 失败");
+        assert!(state.match_end.is_none(), "窗口只用了 8 局，第 12 局不应结束场次");
     }
 
     // ---------- matchCap 安全局数上限（§5.13 行 1008） ----------

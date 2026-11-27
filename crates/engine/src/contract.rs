@@ -228,6 +228,10 @@ pub struct State {
     /// 「第 N 局已结算、第 N+1 局未开始」的空窗期本字段仍是 N，判断相位只看 `phase`。
     /// **不进 `stateHash`**（§5.12 十段字段集不含局序号）。
     pub round_no: u16,
+    /// 当前安全局数窗口的起始局号（首局为 1）。A 上连续三局未过、`levels` 退回
+    /// 起点 2 时，窗口从下一局重新起算，避免刚回到 2 就被旧局数触发的 `matchCap`
+    /// 直接结束场次；诊断字段，**不进 `stateHash`**。
+    pub cap_start_round: u16,
     /// §5.12 第 800 行：快照同时保存 `seed` 原值，`seedDigest` 由它派生；
     /// seed 本身不进哈希拼接。
     pub seed: u64,
