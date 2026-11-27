@@ -18,6 +18,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 use std::cell::UnsafeCell;
+use std::collections::HashMap;
 use std::ffi::c_void;
 
 use gf_engine::contract::{Action, Engine};
@@ -33,6 +34,33 @@ unsafe impl<T> Sync for Global<T> {}
 
 static ROOM: Global<Option<Room>> = Global(UnsafeCell::new(None));
 static STRINGS: Global<Vec<Vec<u8>>> = Global(UnsafeCell::new(Vec::new()));
+/// `gf_alloc` 出去的块：起始地址 → 字节数。入参裸指针必须落在这张表内，防止 JS
+/// 传任意地址/长度造成 UB 或巨量分配。
+static ALLOCS: Global<Option<HashMap<usize, usize>>> = Global(UnsafeCell::new(None));
+/// 单次入参上限：主题包最大 16MB；牌数组另有更小的上限。
+const MAX_INPUT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_CARDS_INPUT: usize = 256;
+
+fn allocs() -> &'static mut HashMap<usize, usize> {
+    unsafe { (&mut *ALLOCS.0.get()).get_or_insert_with(HashMap::new) }
+}
+
+/// 校验 `[ptr, ptr+len)` 是一整块由 `gf_alloc` 登记、且满足对齐与上限的内存。
+fn input_range_ok(ptr: *const u8, len: usize, align: usize, max: usize) -> bool {
+    if len == 0 {
+        return true;
+    }
+    if ptr.is_null() || len > max || !(ptr as usize).is_multiple_of(align) {
+        return false;
+    }
+    let addr = ptr as usize;
+    if addr.checked_add(len).is_none() {
+        return false;
+    }
+    allocs()
+        .get(&addr)
+        .is_some_and(|allocated| len <= *allocated)
+}
 
 fn room() -> &'static mut Option<Room> {
     unsafe { &mut *ROOM.0.get() }
@@ -222,10 +250,18 @@ fn outcome_json(r: &Room, diff: StepOutcome) -> String {
 }
 
 fn read_cards(ptr: *const u16, len: usize) -> Vec<u16> {
-    if ptr.is_null() || len == 0 {
+    if len == 0 {
         return Vec::new();
     }
-    // SAFETY: 宿主写入的内存块由 `gf_alloc` 分配，长度由调用方传入。
+    let bytes = match len.checked_mul(2) {
+        Some(bytes) => bytes,
+        None => return Vec::new(),
+    };
+    if !input_range_ok(ptr.cast::<u8>(), bytes, 2, MAX_CARDS_INPUT * 2) {
+        // 非法指针/长度按空动作处理，宁可判非法也不跨 FFI 读越界。
+        return Vec::new();
+    }
+    // SAFETY: 上方已确认整段落在 `gf_alloc` 登记且对齐的块内。
     unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec()
 }
 
@@ -245,16 +281,31 @@ fn make_action(is_pass: u8, cards: Vec<u16>) -> Action {
 /// 分配 `len` 字节供宿主写入（牌 id 数组等）。宿主用完调 [`gf_mem_free`]。
 #[no_mangle]
 pub extern "C" fn gf_alloc(len: usize) -> *mut c_void {
+    if len == 0 || len > MAX_INPUT_BYTES {
+        return std::ptr::null_mut();
+    }
     let mut buf = vec![0u8; len];
     let ptr = buf.as_mut_ptr().cast::<c_void>();
     std::mem::forget(buf);
+    allocs().insert(ptr as usize, len);
     ptr
 }
 
 /// 释放 [`gf_alloc`] 分配的内存（容量按 `len` 还原）。
+///
+/// 只接受「登记过、长度一致」的块；伪造指针或改长度都不会走到 `from_raw_parts`。
 #[no_mangle]
 pub unsafe extern "C" fn gf_mem_free(ptr: *mut c_void, len: usize) {
     if ptr.is_null() || len == 0 {
+        return;
+    }
+    let addr = ptr as usize;
+    let Some(allocated) = allocs().remove(&addr) else {
+        return;
+    };
+    if allocated != len {
+        // 长度不匹配说明调用方状态错了：不释放（泄漏一块）比 UB 安全。
+        allocs().insert(addr, allocated);
         return;
     }
     drop(Vec::from_raw_parts(ptr.cast::<u8>(), len, len));
@@ -682,13 +733,22 @@ pub extern "C" fn gf_room_info() -> *mut u8 {
     ))
 }
 
-/// bot 决策入口自证：对指定座位当前视图 + 合法集 + 搭档状态走 AI-L2 决策，返回动作 JSON
-/// （诊断 / 离线代打用）。
+/// bot 决策入口自证：对**当前行动座位**走 AI-L2 决策，返回动作 JSON。
+///
+/// 视图/合法集/搭档上下文必须同属一个座位；非当前行动座位直接报错，避免拿 A 的合法集
+/// 套 B 的视图算出错乱动作。实现是 L2Bot，名字不再叫 L0。
 #[no_mangle]
-pub extern "C" fn gf_l0_probe(seat: u8) -> *mut u8 {
+pub extern "C" fn gf_l2_probe(seat: u8) -> *mut u8 {
     let Some(r) = room() else {
         return err("no room");
     };
+    let turn = match r.state() {
+        Ok(state) => state.turn_seat,
+        Err(e) => return err(e),
+    };
+    if seat != turn {
+        return err("seat is not current turn");
+    }
     let view = match r.view_bytes(seat) {
         Ok(v) => v,
         Err(e) => return err(e),
@@ -701,6 +761,12 @@ pub extern "C" fn gf_l0_probe(seat: u8) -> *mut u8 {
     let bot = gf_ai::L2Bot;
     let action = bot.decide_with_ctx(&view, seat, &legal, &ctx);
     out(action_json(&action))
+}
+
+/// 兼容旧调用名；行为等同 [`gf_l2_probe`]。
+#[no_mangle]
+pub extern "C" fn gf_l0_probe(seat: u8) -> *mut u8 {
+    gf_l2_probe(seat)
 }
 
 // ---------------- 牌面主题（gf-deckart 运行时合成） ----------------
@@ -719,10 +785,13 @@ fn deck() -> &'static mut Option<gf_deckart::Theme> {
 
 /// 把宿主传进来的字节块读成 slice；长度 0 视为空。
 fn bytes_at(ptr: *const u8, len: usize) -> &'static [u8] {
-    if ptr.is_null() || len == 0 {
+    if len == 0 {
         return &[];
     }
-    // SAFETY: 宿主负责保证 [ptr, ptr+len) 在本次调用内有效（通常来自 `gf_alloc` 或 JS 内存）。
+    if !input_range_ok(ptr, len, 1, MAX_INPUT_BYTES) {
+        return &[];
+    }
+    // SAFETY: 上方已确认整段落在 `gf_alloc` 登记且地址+长度不溢出的块内。
     unsafe { std::slice::from_raw_parts(ptr, len) }
 }
 
@@ -938,4 +1007,28 @@ fn theme_back_impl() -> *mut u8 {
 pub extern "C" fn gf_theme_unload() -> u8 {
     *deck() = None;
     1
+}
+
+#[cfg(test)]
+mod memory_tests {
+    use super::*;
+
+    #[test]
+    fn alloc_ledger_rejects_unknown_and_oversize_ranges() {
+        assert!(gf_alloc(0).is_null());
+        assert!(gf_alloc(MAX_INPUT_BYTES + 1).is_null());
+        let p = gf_alloc(8);
+        assert!(!p.is_null());
+        let p8 = p.cast::<u8>();
+        assert!(input_range_ok(p8, 8, 1, MAX_INPUT_BYTES));
+        assert!(
+            !input_range_ok(p8, 9, 1, MAX_INPUT_BYTES),
+            "长度不能超过分配块"
+        );
+        assert!(
+            !input_range_ok(0x1000 as *const u8, 8, 1, MAX_INPUT_BYTES),
+            "未登记指针一律拒绝"
+        );
+        unsafe { gf_mem_free(p, 8) };
+    }
 }

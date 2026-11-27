@@ -17,6 +17,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
              上线前必须由 config.local.toml 或环境变量覆盖（§8.5）。"
         );
     }
+    if !cfg.require_auth {
+        eprintln!(
+            "警告：[security] require_auth=false：玩家侧接口与 WS 允许匿名访问；\
+             生产环境（尤其 sms.provider={}）必须开启 GF_REQUIRE_AUTH=true。",
+            cfg.sms.provider
+        );
+    }
     if cfg.sms.provider == "log" && cfg.sms.test_whitelist.is_empty() && !cfg.require_auth {
         println!("提示：[sms] 还没接真实通道、也没有测试白名单，短信登录只有日志验证码可用。");
     }

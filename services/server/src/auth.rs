@@ -34,6 +34,14 @@ pub const SMS_DAILY_LIMIT: u32 = 10;
 pub const CODE_TTL_MS: u64 = 5 * 60 * 1_000;
 /// 测试白名单缺省验证码（仅白名单手机号可用）。
 pub const DEFAULT_TEST_CODE: &str = "666666";
+/// 同一验证码最多尝试次数，超过即作废（防在线枚举）。
+const CODE_MAX_ATTEMPTS: u8 = 5;
+/// 登录失败锁定阈值与退避上限。
+const LOGIN_FAIL_THRESHOLD: u32 = 5;
+const LOGIN_LOCK_BASE_MS: u64 = 30 * 1_000;
+const LOGIN_LOCK_MAX_MS: u64 = 30 * 60 * 1_000;
+/// 登录失败计数在长时间无尝试后自动清零。
+const LOGIN_GUARD_IDLE_RESET_MS: u64 = 24 * 60 * 60 * 1_000;
 
 /// 发码结果。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -75,6 +83,10 @@ pub enum SmsError {
 pub enum LoginError {
     InvalidPhone,
     InvalidCredentials,
+    /// 连续失败后的退避锁定；外层应映射 429 并带 `retry_after_ms`。
+    Locked {
+        retry_after_ms: u64,
+    },
 }
 
 /// 短信通道。默认实现只把验证码打到服务端日志（本地联调用）。
@@ -98,9 +110,22 @@ impl SmsSender for LogSmsSender {
 struct CodeEntry {
     code: String,
     expires_ms: u64,
+    /// 该码已用错的次数；与发送限流分开，校码失败不能重置冷却/日限。
+    attempts: u8,
+}
+
+/// 发码限流状态：独立于 `codes`，登录成功/验证码过期都不会清掉 60s 冷却与日限。
+struct SmsThrottle {
     sent_ms: u64,
     day: u64,
     daily_count: u32,
+}
+
+/// 登录失败退避：按手机号哈希与来源 IP 各记一份。
+struct LoginGuard {
+    failures: u32,
+    locked_until_ms: u64,
+    last_ms: u64,
 }
 
 struct RefreshEntry {
@@ -115,6 +140,8 @@ pub struct Auth {
     test_whitelist: Vec<String>,
     test_code: String,
     codes: Mutex<HashMap<String, CodeEntry>>,
+    sms_throttle: Mutex<HashMap<String, SmsThrottle>>,
+    login_guards: Mutex<HashMap<String, LoginGuard>>,
     /// key = `sha256(refresh_token)` 十六进制：库里不存 refresh 原文。
     refresh: Mutex<HashMap<String, RefreshEntry>>,
     profiles: Mutex<HashMap<String, Profile>>,
@@ -146,6 +173,8 @@ impl Auth {
                 .collect(),
             test_code,
             codes: Mutex::new(HashMap::new()),
+            sms_throttle: Mutex::new(HashMap::new()),
+            login_guards: Mutex::new(HashMap::new()),
             refresh: Mutex::new(HashMap::new()),
             profiles: Mutex::new(HashMap::new()),
             by_phone: Mutex::new(HashMap::new()),
@@ -164,19 +193,28 @@ impl Auth {
     }
 
     /// 发验证码。同一手机号 60 秒一次、每日 10 次（§5.15）。
+    ///
+    /// 冷却与日限记在 `sms_throttle`，与待用验证码解耦：登录成功或码过期都不会重置限流。
     pub fn request_sms(&self, phone: &str, now_ms: u64) -> Result<SmsChallenge, SmsError> {
         let phone = normalize_phone(phone).ok_or(SmsError::InvalidPhone)?;
         let hash = self.phone_hash(&phone).ok_or(SmsError::InvalidPhone)?;
         let day = now_ms / (24 * 60 * 60 * 1_000);
         let whitelisted = self.test_whitelist.iter().any(|p| p == &phone);
 
-        let mut codes = self.codes.await_or_poison();
-        if let Some(entry) = codes.get_mut(&hash) {
-            let since = now_ms.saturating_sub(entry.sent_ms);
-            if since < SMS_COOLDOWN_MS {
-                return Err(SmsError::RateLimited {
-                    retry_after_ms: SMS_COOLDOWN_MS - since,
-                });
+        {
+            let mut throttle = self.sms_throttle.await_or_poison();
+            let entry = throttle.entry(hash.clone()).or_insert(SmsThrottle {
+                sent_ms: 0,
+                day,
+                daily_count: 0,
+            });
+            if entry.sent_ms != 0 {
+                let since = now_ms.saturating_sub(entry.sent_ms);
+                if since < SMS_COOLDOWN_MS {
+                    return Err(SmsError::RateLimited {
+                        retry_after_ms: SMS_COOLDOWN_MS - since,
+                    });
+                }
             }
             if entry.day != day {
                 entry.day = day;
@@ -187,37 +225,27 @@ impl Auth {
                     retry_after_ms: 24 * 60 * 60 * 1_000 - now_ms % (24 * 60 * 60 * 1_000),
                 });
             }
-            // 白名单手机号固定测试码，其余每次重新生成。
-            if whitelisted {
-                entry.code = self.test_code.clone();
-            } else {
-                entry.code = six_digit_code();
-            }
-            entry.expires_ms = now_ms.saturating_add(CODE_TTL_MS);
             entry.sent_ms = now_ms;
             entry.daily_count += 1;
-        } else {
-            codes.insert(
-                hash.clone(),
-                CodeEntry {
-                    code: if whitelisted {
-                        self.test_code.clone()
-                    } else {
-                        six_digit_code()
-                    },
-                    expires_ms: now_ms.saturating_add(CODE_TTL_MS),
-                    sent_ms: now_ms,
-                    day,
-                    daily_count: 1,
-                },
-            );
         }
-        let entry_code = codes.get(&hash).map(|e| e.code.clone()).unwrap_or_default();
-        drop(codes);
+
+        let code = if whitelisted {
+            self.test_code.clone()
+        } else {
+            six_digit_code()
+        };
+        self.codes.await_or_poison().insert(
+            hash,
+            CodeEntry {
+                code: code.clone(),
+                expires_ms: now_ms.saturating_add(CODE_TTL_MS),
+                attempts: 0,
+            },
+        );
 
         // 白名单不发真实短信：模板报备未批时靠这条口子跑通内测链路。
         if !whitelisted {
-            self.sms.send(&phone, &entry_code);
+            self.sms.send(&phone, &code);
         }
 
         Ok(SmsChallenge {
@@ -226,33 +254,115 @@ impl Auth {
         })
     }
 
-    /// 校码登录。白名单手机号用固定测试码时，不要求先发过码。
+    /// 校码登录（无来源 IP 版本，仅供内部/测试）。
     pub fn login(&self, phone: &str, code: &str, now_ms: u64) -> Result<Session, LoginError> {
+        self.login_with_peer(phone, code, None, now_ms)
+    }
+
+    /// 校码登录。任何来源都必须先发码；白名单只决定码的内容，不再是免发码后门。
+    ///
+    /// 失败按「手机号哈希 + 来源 IP」双维度累计，连续 5 次后指数退避锁定。
+    pub fn login_with_peer(
+        &self,
+        phone: &str,
+        code: &str,
+        peer: Option<&str>,
+        now_ms: u64,
+    ) -> Result<Session, LoginError> {
         let phone = normalize_phone(phone).ok_or(LoginError::InvalidPhone)?;
         let hash = self.phone_hash(&phone).ok_or(LoginError::InvalidPhone)?;
-        let whitelisted = self.test_whitelist.iter().any(|p| p == &phone);
         let code = code.trim();
+        let mut keys = vec![format!("phone:{hash}")];
+        if let Some(peer) = peer.filter(|p| !p.trim().is_empty()) {
+            keys.push(format!("ip:{}", peer.trim()));
+        }
+        self.check_login_guards(&keys, now_ms)?;
 
-        if whitelisted && code == self.test_code {
-            // 测试白名单直通；仍然清掉该号可能存在的待用码。
-            self.codes.await_or_poison().remove(&hash);
-        } else {
+        let failure = {
             let mut codes = self.codes.await_or_poison();
-            let Some(entry) = codes.get(&hash) else {
+            let Some(entry) = codes.get_mut(&hash) else {
+                drop(codes);
+                self.note_login_failure(&keys, now_ms);
                 return Err(LoginError::InvalidCredentials);
             };
             if entry.expires_ms <= now_ms {
                 codes.remove(&hash);
+                drop(codes);
+                self.note_login_failure(&keys, now_ms);
                 return Err(LoginError::InvalidCredentials);
             }
             if !constant_eq(entry.code.as_bytes(), code.as_bytes()) {
+                entry.attempts = entry.attempts.saturating_add(1);
+                let burn = entry.attempts >= CODE_MAX_ATTEMPTS;
+                if burn {
+                    codes.remove(&hash);
+                }
+                drop(codes);
+                self.note_login_failure(&keys, now_ms);
                 return Err(LoginError::InvalidCredentials);
             }
+            // 成功才消费验证码；失败不清 entry（仍受 attempts 上限约束）。
             codes.remove(&hash);
+            false
+        };
+        if failure {
+            return Err(LoginError::InvalidCredentials);
         }
+        self.clear_login_guards(&keys);
 
         let profile = self.upsert_profile(&hash, &tail4(&phone), now_ms);
         Ok(self.issue_session(&profile.player_id, now_ms))
+    }
+
+    /// 锁定检查；锁过期且长时间无尝试时把失败计数清零。
+    fn check_login_guards(&self, keys: &[String], now_ms: u64) -> Result<(), LoginError> {
+        let mut guards = self.login_guards.await_or_poison();
+        for key in keys {
+            let Some(guard) = guards.get_mut(key) else {
+                continue;
+            };
+            if guard.locked_until_ms > now_ms {
+                return Err(LoginError::Locked {
+                    retry_after_ms: guard.locked_until_ms - now_ms,
+                });
+            }
+            if now_ms.saturating_sub(guard.last_ms) >= LOGIN_GUARD_IDLE_RESET_MS {
+                guard.failures = 0;
+                guard.locked_until_ms = 0;
+            }
+        }
+        guards.retain(|_, g| now_ms.saturating_sub(g.last_ms) < LOGIN_GUARD_IDLE_RESET_MS);
+        Ok(())
+    }
+
+    fn note_login_failure(&self, keys: &[String], now_ms: u64) {
+        let mut guards = self.login_guards.await_or_poison();
+        for key in keys {
+            let guard = guards.entry(key.clone()).or_insert(LoginGuard {
+                failures: 0,
+                locked_until_ms: 0,
+                last_ms: now_ms,
+            });
+            guard.failures = guard.failures.saturating_add(1);
+            guard.last_ms = now_ms;
+            if guard.failures >= LOGIN_FAIL_THRESHOLD {
+                let extra = guard.failures - LOGIN_FAIL_THRESHOLD;
+                let factor = 1u64 << extra.min(10);
+                let lock_ms = LOGIN_LOCK_BASE_MS
+                    .saturating_mul(factor)
+                    .min(LOGIN_LOCK_MAX_MS);
+                guard.locked_until_ms = now_ms.saturating_add(lock_ms);
+            }
+        }
+        // 避免长跑进程里 guard 表只增不减。
+        guards.retain(|_, g| now_ms.saturating_sub(g.last_ms) < LOGIN_GUARD_IDLE_RESET_MS);
+    }
+
+    fn clear_login_guards(&self, keys: &[String]) {
+        let mut guards = self.login_guards.await_or_poison();
+        for key in keys {
+            guards.remove(key);
+        }
     }
 
     /// 换新 access token；旧 refresh 立即失效（§5.15）。
@@ -513,6 +623,84 @@ mod tests {
     }
 
     #[test]
+    fn whitelist_still_requires_requesting_code_first() {
+        let auth = auth(&["13800138000"]);
+        assert_eq!(
+            auth.login("13800138000", DEFAULT_TEST_CODE, 1_000),
+            Err(LoginError::InvalidCredentials),
+            "白名单固定码也不能跳过先发码"
+        );
+        auth.request_sms("13800138000", 2_000).expect("发码");
+        assert!(auth.login("13800138000", DEFAULT_TEST_CODE, 2_001).is_ok());
+    }
+
+    #[test]
+    fn login_success_does_not_reset_sms_cooldown_or_daily_limit() {
+        let auth = auth(&[]);
+        let now = 1_000_000;
+        auth.request_sms("13800138000", now).expect("首条");
+        let hash = auth.phone_hash("13800138000").unwrap();
+        let code = auth.codes.lock().unwrap().get(&hash).unwrap().code.clone();
+        assert!(auth.login("13800138000", &code, now + 1).is_ok());
+        assert_eq!(
+            auth.request_sms("13800138000", now + 10_000),
+            Err(SmsError::RateLimited {
+                retry_after_ms: 50_000
+            }),
+            "登录成功不得把 60s 冷却一起清掉"
+        );
+    }
+
+    #[test]
+    fn stale_failures_are_cleared_after_idle_window() {
+        let auth = auth(&[]);
+        let now = 1_000_000;
+        let hash = auth.phone_hash("13800138000").unwrap();
+        let key = format!("phone:{hash}");
+        auth.request_sms("13800138000", now).expect("发码");
+        for _ in 0..4 {
+            let _ = auth.login_with_peer("13800138000", "000000", Some("1.2.3.4"), now + 2);
+        }
+        assert_eq!(auth.login_guards.lock().unwrap()[&key].failures, 4);
+
+        // 超过 24h 无尝试：旧失败计数必须清零，不能隔天再错一次就直接触发锁定。
+        let later = now + LOGIN_GUARD_IDLE_RESET_MS + 2;
+        let _ = auth.login_with_peer("13800138000", "000000", Some("1.2.3.4"), later);
+        assert_eq!(auth.login_guards.lock().unwrap()[&key].failures, 1);
+    }
+
+    #[test]
+    fn repeated_wrong_codes_lock_and_back_off() {
+        let auth = auth(&[]);
+        let now = 1_000_000;
+        let hash = auth.phone_hash("13800138000").unwrap();
+        auth.request_sms("13800138000", now).expect("发码");
+        let code = auth.codes.lock().unwrap().get(&hash).unwrap().code.clone();
+        for _ in 0..5 {
+            assert_eq!(
+                auth.login_with_peer("13800138000", "000000", Some("1.2.3.4"), now + 2),
+                Err(LoginError::InvalidCredentials)
+            );
+        }
+        match auth.login_with_peer("13800138000", &code, Some("1.2.3.4"), now + 3) {
+            Err(LoginError::Locked { retry_after_ms }) => {
+                assert!(
+                    retry_after_ms > 20_000,
+                    "至少锁 30 秒量级：{retry_after_ms}"
+                )
+            }
+            other => panic!("应被锁定，实际 {other:?}"),
+        }
+        // 冷却过后重新发码，锁已过期，可正常登录。
+        auth.request_sms("13800138000", now + 60_000)
+            .expect("再发码");
+        let code = auth.codes.lock().unwrap().get(&hash).unwrap().code.clone();
+        assert!(auth
+            .login_with_peer("13800138000", &code, Some("1.2.3.4"), now + 60_001)
+            .is_ok());
+    }
+
+    #[test]
     fn access_token_expires_and_verify_round_trips() {
         let auth = auth(&[]);
         let now = 86_400_000;
@@ -584,9 +772,14 @@ mod tests {
     #[test]
     fn same_phone_maps_to_same_player_id() {
         let auth = auth(&["13800138000"]);
-        let a = auth.login("13800138000", DEFAULT_TEST_CODE, 0).unwrap();
+        let now = 1_000_000;
+        auth.request_sms("13800138000", now).unwrap();
+        let a = auth
+            .login("13800138000", DEFAULT_TEST_CODE, now + 1)
+            .unwrap();
+        auth.request_sms("+86 138-0013-8000", now + 60_001).unwrap();
         let b = auth
-            .login("+86 138-0013-8000", DEFAULT_TEST_CODE, 1)
+            .login("+86 138-0013-8000", DEFAULT_TEST_CODE, now + 60_002)
             .unwrap();
         assert_eq!(a.player_id, b.player_id, "同一手机号必须复用同一 playerId");
     }

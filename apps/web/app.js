@@ -178,9 +178,21 @@ function withCards(cards, fn) {
 // 加载失败（包损坏 / 签名不符）一律回退到原来的字卡渲染，牌桌不阻塞。
 
 // 默认加载 defaults；联调其它主题用 ?pkg=pkgs/squabby.gfdeck 指定（服务端 /pkgs/ 已映射到 crates/deckart/pkgs）
-const THEME_PACK_URL = new URLSearchParams(location.search).get('pkg') || 'pkgs/defaults.gfdeck';
-// 开发期签名公钥（私钥种子全 0x11）；正式分发换成后台下发的公钥。
-const THEME_PUBKEY = 'd04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737';
+function safeThemePack(raw) {
+  if (!raw) return 'pkgs/defaults.gfdeck';
+  // 只允许站内 pkgs/ 下的 .gfdeck，挡住 ?pkg=https://… 与路径穿越。
+  if (!/^pkgs\/[A-Za-z0-9._-]+\.gfdeck$/.test(raw)) {
+    console.warn(`忽略非法 ?pkg=${raw}`);
+    return 'pkgs/defaults.gfdeck';
+  }
+  return raw;
+}
+const THEME_PACK_URL = safeThemePack(new URLSearchParams(location.search).get('pkg'));
+// 公钥由构建/部署注入 globalThis.GF_THEME_PUBKEY；开发默认密钥只在 localhost/file 下兜底。
+const DEV_THEME_PUBKEY = 'd04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737';
+const LOCAL_DEV = location.protocol === 'file:'
+  || ['localhost', '127.0.0.1', ''].includes(location.hostname);
+const THEME_PUBKEY = globalThis.GF_THEME_PUBKEY || (LOCAL_DEV ? DEV_THEME_PUBKEY : '');
 const CODE_SUIT = ['S', 'H', 'D', 'C'];
 const CODE_RANK = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
 
@@ -206,6 +218,41 @@ function withBytes(bytes, fn) {
   }
 }
 
+// 主题包可来自 `?pkg=`，签名公钥也可能只是开发密钥；任何进 innerHTML 的 SVG 先净化。
+const SVG_TAGS = new Set(['svg','g','path','rect','circle','ellipse','line','polyline','polygon','defs','linearGradient','radialGradient','stop','use','text','tspan','clipPath','mask']);
+const SVG_ATTRS = new Set(['viewBox','width','height','x','y','x1','y1','x2','y2','cx','cy','r','rx','ry','d','points','fill','fill-opacity','fill-rule','stroke','stroke-width','stroke-opacity','stroke-linecap','stroke-linejoin','stroke-dasharray','opacity','transform','gradientUnits','gradientTransform','offset','stop-color','stop-opacity','id','href','xlink:href','clip-path','mask','text-anchor','font-size','font-family','font-weight','font-style','dominant-baseline','preserveAspectRatio']);
+const SVG_COLOR_ATTRS = new Set(['fill','stroke','stop-color']);
+const isHexColor = (v) => typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v);
+const safePaint = (v) => isHexColor(v) || v === 'none' || v === 'currentColor' || v === 'transparent' || /^url\(#[A-Za-z0-9_-]+\)$/.test(v);
+function assertSvgNode(node) {
+  if (node.nodeType === 3) return;
+  if (node.nodeType !== 1) throw new Error('SVG 含不支持节点');
+  if (!SVG_TAGS.has(node.tagName)) throw new Error(`SVG 含不安全标签 <${node.tagName}>`);
+  Array.from(node.attributes).forEach((a) => {
+    const name = a.name;
+    if (name.startsWith('on') || name === 'style' || !SVG_ATTRS.has(name)) { node.removeAttribute(name); return; }
+    if ((name === 'href' || name === 'xlink:href') && !a.value.trim().startsWith('#')) throw new Error('SVG 只允许 #id 引用');
+    if (SVG_COLOR_ATTRS.has(name) && !safePaint(a.value.trim())) throw new Error(`SVG 颜色不安全：${a.value}`);
+  });
+  Array.from(node.children).forEach(assertSvgNode);
+}
+function sanitizeSvg(markup) {
+  if (typeof markup !== 'string' || !markup.trim()) return null;
+  const doc = new DOMParser().parseFromString(markup, 'image/svg+xml');
+  if (doc.querySelector('parsererror')) return null;
+  const root = doc.documentElement;
+  if (!root || root.tagName !== 'svg') return null;
+  try {
+    assertSvgNode(root);
+  } catch (e) {
+    log(`牌面 SVG 被拒绝：${e.message}`);
+    return null;
+  }
+  const clean = new XMLSerializer().serializeToString(root);
+  if (/<script|<foreignObject|javascript:|on\w+\s*=/i.test(clean)) return null;
+  return clean;
+}
+
 const theme = {
   loaded: false,
   meta: null,
@@ -214,10 +261,15 @@ const theme = {
 
   async load() {
     if (this.loaded || !ex || !ex.gf_theme_load) return this.loaded;
+    if (!THEME_PUBKEY) {
+      log('未注入主题公钥（globalThis.GF_THEME_PUBKEY），不加载主题包');
+      return false;
+    }
     try {
       const buf = new Uint8Array(await (await fetch(THEME_PACK_URL)).arrayBuffer());
       const pub = hexToBytes(THEME_PUBKEY);
-      const r = JSON.parse(withBytes(buf, (ptr, len) => withBytes(pub, (pp, plen) => cstr(ex.gf_theme_load(ptr, len, pp, plen)))));
+      const loadTheme = ex.gf_theme_load_verified || ex.gf_theme_load;
+      const r = JSON.parse(withBytes(buf, (ptr, len) => withBytes(pub, (pp, plen) => cstr(loadTheme(ptr, len, pp, plen)))));
       if (!r.ok) {
         log(`主题加载失败：${r.error}（回退字卡）`);
         return false;
@@ -247,7 +299,7 @@ const theme = {
     const r = JSON.parse(withBytes(code, (ptr, len) => cstr(ex.gf_theme_card(ptr, len, level, pct))));
     this.stats.cards += 1;
     this.stats.ms += performance.now() - t0;
-    const svg = r.ok ? r.svg : null;
+    const svg = r.ok ? sanitizeSvg(r.svg) : null;
     if (!r.ok) this.lastError = r.error;
     this.cache.set(key, svg);
     return svg;

@@ -426,6 +426,14 @@ impl ServerConfig {
                     .to_owned(),
             });
         }
+        if self.env == "production" && !self.sms.test_whitelist.is_empty() {
+            return Err(ConfigError {
+                path: None,
+                detail: "[security] env=production 不允许 sms.test_whitelist 非空；\
+                         白名单固定码只用于内测，生产必须走真实短信 + 先发码再登录"
+                    .to_owned(),
+            });
+        }
         match self.sms.provider.as_str() {
             "log" => Ok(()),
             "yunpian" => {
@@ -631,6 +639,9 @@ mod tests {
         cfg.auth_salt = "a".repeat(32);
         cfg.jwt_secret = "b".repeat(32);
         assert!(cfg.validate().is_ok(), "≥32 字节的自定义密钥应放行");
+
+        cfg.sms.test_whitelist = vec!["13800008000".to_owned()];
+        assert!(cfg.validate().is_err(), "生产不允许测试白名单");
     }
 
     #[test]

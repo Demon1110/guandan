@@ -544,8 +544,10 @@ fn validate(meta: &ThemeMeta, assets: &HashMap<String, String>) -> Result<(), De
     {
         return Err(DeckError::ThemeInvalid("cornerRadius 越界".into()));
     }
-    if !meta.palette.red.starts_with('#') || !meta.palette.black.starts_with('#') {
-        return Err(DeckError::ThemeInvalid("palette 颜色需为 #RRGGBB".into()));
+    if !is_hex_color(&meta.palette.red) || !is_hex_color(&meta.palette.black) {
+        return Err(DeckError::ThemeInvalid(
+            "palette.red / palette.black 必须是严格 #RRGGBB".into(),
+        ));
     }
     if let Some(suits) = &meta.palette.suits {
         for (name, color) in [
@@ -671,9 +673,9 @@ fn validate_label(label: &LabelText) -> Result<(), DeckError> {
             "levelLabel.size 需在 1..=200".into(),
         ));
     }
-    if !label.color.starts_with('#') {
+    if !is_hex_color(&label.color) {
         return Err(DeckError::ThemeInvalid(
-            "levelLabel.color 需为 #RRGGBB".into(),
+            "levelLabel.color 必须是严格 #RRGGBB".into(),
         ));
     }
     if !matches!(label.anchor.as_str(), "start" | "middle" | "end") {
@@ -775,6 +777,42 @@ fn check_svg(rel: &str, text: &str) -> Result<(), DeckError> {
             "{rel} 引用了外部资源（禁止外链）"
         )));
     }
+    let lower = t.to_ascii_lowercase();
+    if lower.contains("<script")
+        || lower.contains("<foreignobject")
+        || lower.contains("javascript:")
+        || lower.contains("<iframe")
+    {
+        return Err(DeckError::AssetInvalid(format!(
+            "{rel} 含脚本/foreignObject 等可执行内容"
+        )));
+    }
+    // 事件属性（onload= / onclick= …）：属性名前必须是空白或 `<`，避免误伤 transform 里的字符。
+    let bytes = lower.as_bytes();
+    for i in 0..bytes.len().saturating_sub(2) {
+        let boundary = i == 0 || bytes[i - 1].is_ascii_whitespace() || bytes[i - 1] == b'<';
+        if boundary && bytes[i] == b'o' && bytes[i + 1] == b'n' {
+            let mut j = i + 2;
+            while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'-') {
+                j += 1;
+            }
+            if j > i + 2 && bytes.get(j) == Some(&b'=') {
+                return Err(DeckError::AssetInvalid(format!(
+                    "{rel} 含事件属性 {}",
+                    &lower[i..j]
+                )));
+            }
+        }
+    }
+    // 只允许 url(#id) 的内部引用；url(http…) / url(data…) 一律拒绝。
+    let mut rest = lower.as_str();
+    while let Some(pos) = rest.find("url(") {
+        let after = rest[pos + 4..].trim_start();
+        if !after.starts_with('#') {
+            return Err(DeckError::AssetInvalid(format!("{rel} 含外部 url() 引用")));
+        }
+        rest = &rest[pos + 4..];
+    }
     Ok(())
 }
 
@@ -831,6 +869,20 @@ mod tests {
         assert!(validate_classic(&spec_with(&[("7", vec![[1.2, 0.5]])])).is_err());
         let many: Vec<[f64; 2]> = (0..17).map(|i| [0.1, i as f64 / 20.0]).collect();
         assert!(validate_classic(&spec_with(&[("7", many)])).is_err());
+    }
+
+    #[test]
+    fn check_svg_rejects_scripts_events_and_external_urls() {
+        let ok = "<svg viewBox=\"0 0 10 10\"><defs><linearGradient id=\"g\"/></defs><path d=\"M0 0h10v10z\" fill=\"url(#g)\"/></svg>";
+        assert!(check_svg("ok.svg", ok).is_ok(), "内部 url(#id) 应放行");
+        for bad in [
+            "<svg viewBox=\"0 0 10 10\"><script>alert(1)</script></svg>",
+            "<svg viewBox=\"0 0 10 10\"><path onload=\"alert(1)\" d=\"M0 0\"/></svg>",
+            "<svg viewBox=\"0 0 10 10\"><foreignObject><body xmlns=\"http://www.w3.org/1999/xhtml\"/></foreignObject></svg>",
+            "<svg viewBox=\"0 0 10 10\"><path fill=\"url(https://evil.test/a.svg#x)\" d=\"M0 0\"/></svg>",
+        ] {
+            assert!(check_svg("bad.svg", bad).is_err(), "必须拒绝：{bad}");
+        }
     }
 
     #[test]

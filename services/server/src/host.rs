@@ -87,6 +87,17 @@ pub enum ReplayExportError {
     Build(String),
 }
 
+/// 动作幂等缓存：容量/TTL 双上限，恶意 requestId 不能把内存撑爆。
+const ACK_CACHE_MAX: usize = 256;
+const ACK_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+const MAX_REQUEST_ID_LEN: usize = 64;
+
+/// 一条动作回执缓存。
+struct AckEntry {
+    at: Instant,
+    frame: Vec<u8>,
+}
+
 /// 一条座位预留。
 #[derive(Clone, Debug)]
 struct Reservation {
@@ -99,7 +110,7 @@ struct Reservation {
 pub struct RoomHost {
     match_id: String,
     room: Mutex<Room>,
-    out: RwLock<HashMap<u8, mpsc::UnboundedSender<Vec<u8>>>>,
+    out: RwLock<HashMap<u8, mpsc::Sender<Vec<u8>>>>,
     /// HTTP 阶段预占的座位，WS 入座时兑现。
     reserved: Mutex<HashMap<u8, Reservation>>,
     /// 已入座的座位属于哪个玩家（账号阶段用于重连时校验身份）。
@@ -108,7 +119,7 @@ pub struct RoomHost {
     seat_tokens: RwLock<HashMap<u8, String>>,
     /// 存档出口：结算 / 场次终止时投递（不阻塞房间锁）。
     recorder: std::sync::Mutex<Option<mpsc::UnboundedSender<StorageEvent>>>,
-    ack_cache: Mutex<HashMap<(u8, String), Vec<u8>>>,
+    ack_cache: Mutex<HashMap<(u8, String), AckEntry>>,
     started_at: Instant,
     opts: RoomOptions,
     started: AtomicBool,
@@ -192,11 +203,7 @@ impl RoomHost {
     /// `hint` 只用于续座（带回原座位）；不传则按最小空座分配。
     /// 满员是否发牌由 [`RoomHost::start_if_full`] 负责——调用方必须先回 `JoinAck`
     /// 再调它，否则新座位的第一帧会变成快照而不是入座回执。
-    pub async fn join(
-        &self,
-        hint: Option<u8>,
-        tx: mpsc::UnboundedSender<Vec<u8>>,
-    ) -> Result<u8, JoinError> {
+    pub async fn join(&self, hint: Option<u8>, tx: mpsc::Sender<Vec<u8>>) -> Result<u8, JoinError> {
         Ok(self.join_as(hint, tx, None).await?.seat)
     }
 
@@ -204,7 +211,7 @@ impl RoomHost {
     pub async fn join_as(
         &self,
         hint: Option<u8>,
-        tx: mpsc::UnboundedSender<Vec<u8>>,
+        tx: mpsc::Sender<Vec<u8>>,
         owner: Option<String>,
     ) -> Result<JoinTicket, JoinError> {
         self.join_with_token(hint, tx, owner, None).await
@@ -214,31 +221,34 @@ impl RoomHost {
     pub async fn join_with_token(
         &self,
         hint: Option<u8>,
-        tx: mpsc::UnboundedSender<Vec<u8>>,
+        tx: mpsc::Sender<Vec<u8>>,
         owner: Option<String>,
         seat_token: Option<&str>,
     ) -> Result<JoinTicket, JoinError> {
         let now = self.now_ms();
-        // 先校验「这个座位原本是不是你的」：账号座位认 owner，匿名座位认一次性令牌。
-        // 放在拿 `out`/`reserved` 锁之前，避免与重连路径的锁序交叉。
+        // 先校验「这个座位原本是不是你的」：只对仍在座（out 里还有连接）的座位生效。
+        // 空座上的旧 owner / 旧令牌不能拦住新玩家——入座时会被覆盖，避免离座残留造成顶号。
         if let Some(seat) = hint.filter(|seat| *seat < SEATS) {
-            let prior_owner = self.owners.read().await.get(&seat).cloned();
-            if prior_owner.is_some()
-                && owner.is_some()
-                && prior_owner.as_deref() != owner.as_deref()
-            {
-                return Err(JoinError::AuthInvalid);
-            }
-            if owner.is_none() {
-                let has_token = self.seat_tokens.read().await.contains_key(&seat);
-                // 匿名重绑必须带对令牌；不带令牌则走后面的「座位已占」拒绝，不能顶号。
-                if has_token
-                    && seat_token.is_some()
-                    && !self
-                        .seat_token_matches(seat, seat_token.unwrap_or(""))
-                        .await
+            let occupied_now = self.out.read().await.contains_key(&seat);
+            if occupied_now {
+                let prior_owner = self.owners.read().await.get(&seat).cloned();
+                if prior_owner.is_some()
+                    && owner.is_some()
+                    && prior_owner.as_deref() != owner.as_deref()
                 {
                     return Err(JoinError::AuthInvalid);
+                }
+                if owner.is_none() {
+                    let has_token = self.seat_tokens.read().await.contains_key(&seat);
+                    // 匿名重绑必须带对令牌；不带令牌则走后面的「座位已占」拒绝，不能顶号。
+                    if has_token
+                        && seat_token.is_some()
+                        && !self
+                            .seat_token_matches(seat, seat_token.unwrap_or(""))
+                            .await
+                    {
+                        return Err(JoinError::AuthInvalid);
+                    }
                 }
             }
         }
@@ -296,8 +306,14 @@ impl RoomHost {
         out.insert(seat, tx);
         drop(out);
         drop(reserved);
-        if let Some(owner) = owner {
-            self.owners.write().await.insert(seat, owner);
+        match owner {
+            Some(owner) => {
+                self.owners.write().await.insert(seat, owner);
+            }
+            None => {
+                // 匿名新占用必须清掉上一手的账号绑定，否则旧账号能凭残留 owner 重连顶号。
+                self.owners.write().await.remove(&seat);
+            }
         }
         let token = new_seat_token();
         self.seat_tokens.write().await.insert(seat, token.clone());
@@ -466,8 +482,16 @@ impl RoomHost {
     /// 返回要回给提交者的 `ActionAck` 帧。
     pub async fn submit(&self, seat: u8, msg: pb::SubmitAction, now: u64) -> Vec<u8> {
         let request_id = msg.request_id.clone();
-        if let Some(cached) = self.ack_cache.lock().await.get(&(seat, request_id.clone())) {
-            return cached.clone();
+        if request_id.is_empty() || request_id.len() > MAX_REQUEST_ID_LEN {
+            // 超长 requestId 不进缓存，也不进业务：直接按非法动作回执。
+            return self.reject(seat, &request_id, REASON_ILLEGAL_ACTION).await;
+        }
+        {
+            let mut cache = self.ack_cache.lock().await;
+            cache.retain(|_, entry| entry.at.elapsed() < ACK_CACHE_TTL);
+            if let Some(cached) = cache.get(&(seat, request_id.clone())) {
+                return cached.frame.clone();
+            }
         }
 
         let action = match action_of(&msg) {
@@ -579,10 +603,26 @@ impl RoomHost {
 
         self.send_seats(frames).await;
         self.send_all(&broadcast).await;
-        self.ack_cache
-            .lock()
-            .await
-            .insert((seat, request_id), ack.clone());
+        {
+            let mut cache = self.ack_cache.lock().await;
+            cache.retain(|_, entry| entry.at.elapsed() < ACK_CACHE_TTL);
+            if cache.len() >= ACK_CACHE_MAX {
+                if let Some(oldest) = cache
+                    .iter()
+                    .min_by_key(|(_, entry)| entry.at)
+                    .map(|(key, _)| key.clone())
+                {
+                    cache.remove(&oldest);
+                }
+            }
+            cache.insert(
+                (seat, request_id),
+                AckEntry {
+                    at: Instant::now(),
+                    frame: ack.clone(),
+                },
+            );
+        }
         ack
     }
 
@@ -623,7 +663,7 @@ impl RoomHost {
     }
 
     /// 重连前把本座位的新连接登记为下行通道（旧连接若还在，直接被顶掉）。
-    pub async fn rebind(&self, seat: u8, tx: mpsc::UnboundedSender<Vec<u8>>) -> bool {
+    pub async fn rebind(&self, seat: u8, tx: mpsc::Sender<Vec<u8>>) -> bool {
         if seat >= SEATS {
             return false;
         }
@@ -827,20 +867,43 @@ impl RoomHost {
     }
 
     async fn send_seats(&self, frames: Vec<(u8, Vec<u8>)>) {
-        let out = self.out.read().await;
-        for (seat, frame) in frames {
-            if let Some(tx) = out.get(&seat) {
-                let _ = tx.send(frame);
+        let mut slow = Vec::new();
+        {
+            let out = self.out.read().await;
+            for (seat, frame) in frames {
+                if let Some(tx) = out.get(&seat) {
+                    if tx.try_send(frame).is_err() {
+                        slow.push(seat);
+                    }
+                }
             }
         }
+        self.drop_slow(slow).await;
     }
 
     async fn send_all(&self, frames: &[Vec<u8>]) {
-        let out = self.out.read().await;
-        for frame in frames {
-            for tx in out.values() {
-                let _ = tx.send(frame.clone());
+        let mut slow = Vec::new();
+        {
+            let out = self.out.read().await;
+            for frame in frames {
+                for (seat, tx) in out.iter() {
+                    if tx.try_send(frame.clone()).is_err() {
+                        slow.push(*seat);
+                    }
+                }
             }
+        }
+        self.drop_slow(slow).await;
+    }
+
+    /// 下行队列满（慢客户端）→ 摘掉该座位连接，让写侧收尾关闭，避免 unbounded 堆内存。
+    async fn drop_slow(&self, slow: Vec<u8>) {
+        if slow.is_empty() {
+            return;
+        }
+        let mut out = self.out.write().await;
+        for seat in slow {
+            out.remove(&seat);
         }
     }
 }
@@ -976,7 +1039,7 @@ mod tests {
             .reserve_for(Some("p-1".to_owned()))
             .await
             .expect("预留");
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(1024);
 
         let other = host
             .join_as(Some(seat), tx.clone(), Some("p-2".to_owned()))
@@ -992,5 +1055,38 @@ mod tests {
             .expect("本人兑现预留");
         assert_eq!(same.seat, seat);
         assert!(!same.token.is_empty(), "入座必须下发匿名重连令牌");
+    }
+
+    #[tokio::test]
+    async fn reoccupying_empty_seat_invalidates_old_owner_and_token() {
+        let host = RoomHost::spawn("m-rebind", 8, RoomOptions::default()).expect("建桌");
+        let (tx1, _rx1) = mpsc::channel(1024);
+        let first = host
+            .join_as(None, tx1, Some("p-1".to_owned()))
+            .await
+            .expect("p-1 入座");
+        host.leave(first.seat, host.now_ms()).await;
+
+        // 空座允许新账号占用，并覆盖旧 owner。
+        let (tx2, _rx2) = mpsc::channel(1024);
+        let second = host
+            .join_as(Some(first.seat), tx2, Some("p-2".to_owned()))
+            .await
+            .expect("空座应允许新账号入座");
+        assert_eq!(host.seat_owner(first.seat).await.as_deref(), Some("p-2"));
+        assert!(
+            !host.seat_token_matches(first.seat, &first.token).await,
+            "新入座必须换发令牌，旧令牌失效"
+        );
+
+        host.leave(first.seat, host.now_ms()).await;
+        // 再被匿名占用：owner 必须清空，旧账号不能靠残留 owner 重连。
+        let (tx3, _rx3) = mpsc::channel(1024);
+        let third = host
+            .join_as(Some(first.seat), tx3, None)
+            .await
+            .expect("匿名占空座");
+        assert_eq!(host.seat_owner(first.seat).await, None);
+        assert_eq!(third.seat, second.seat);
     }
 }

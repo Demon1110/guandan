@@ -42,6 +42,15 @@ async fn call(app: &Arc<App>, uri: &str, token: Option<&str>) -> (StatusCode, Ve
 }
 
 async fn login(app: &Arc<App>) -> String {
+    // 白名单也必须先发码：固定码不再是免发码后门。
+    let sms = Request::builder()
+        .method("POST")
+        .uri("/api/auth/sms")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"phone": PHONE}).to_string()))
+        .expect("请求构造");
+    let resp = app.clone().router().oneshot(sms).await.expect("路由");
+    assert_eq!(resp.status(), StatusCode::OK, "发码失败");
     let (status, bytes) = {
         let request = Request::builder()
             .method("POST")

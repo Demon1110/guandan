@@ -581,11 +581,7 @@ impl M0Engine {
     }
 
     /// 还贡动作：受贡方从手牌挑一张还给对应贡方；还完最后一对才进 play。
-    fn apply_tribute_return(
-        &self,
-        mut state: State,
-        action: Action,
-    ) -> Result<State, EngineError> {
+    fn apply_tribute_return(&self, mut state: State, action: Action) -> Result<State, EngineError> {
         let Action::TributeReturn { card } = action else {
             return Err(EngineError::IllegalAction {
                 reason: "还贡相位只接受 TributeReturn 动作".to_owned(),
@@ -626,11 +622,9 @@ impl M0Engine {
             return Ok(state);
         }
 
-        let leader = state
-            .tribute_leader
-            .ok_or_else(|| EngineError::Internal {
-                message: "进贡完成却没有贡牌最大者".to_owned(),
-            })?;
+        let leader = state.tribute_leader.ok_or_else(|| EngineError::Internal {
+            message: "进贡完成却没有贡牌最大者".to_owned(),
+        })?;
         self.transition(&mut state, PHASE_PLAY)?;
         state.turn_seat = leader;
         Ok(state)
@@ -1313,8 +1307,13 @@ impl M0Engine {
                     .filter(|s| !state.finish_order.contains(s))
                     .collect();
                 // §5.13 第 877 行：其余座位连续 pass 完后，按 `flow.turn.afterAllPass.to` 领出。
-                let all_passed =
-                    state.passes_since_last_play as usize >= active.len().saturating_sub(1);
+                // 已出完的最后出牌者不会再来一票；其余在局座位每人都必须拿到压牌机会。
+                let last_finished = state
+                    .last_play
+                    .as_ref()
+                    .is_some_and(|lp| state.finish_order.contains(&lp.seat));
+                let required = active.len().saturating_sub(usize::from(!last_finished));
+                let all_passed = state.passes_since_last_play as usize >= required;
                 if all_passed {
                     let last_seat = state.last_play.as_ref().unwrap().seat;
                     // N14：新墩起始 lastPlay 清空为 None（§5.12 第 819 行：本回合无人出过牌时该键不出现）。
@@ -1833,9 +1832,7 @@ mod tests {
             vec![tcard(&engine, 0), tcard(&engine, 9)],
         );
 
-        engine
-            .resolve_tribute(&mut state, &prev)
-            .expect("进贡");
+        engine.resolve_tribute(&mut state, &prev).expect("进贡");
         assert_eq!(state.phase, PHASE_TRIBUTE, "贡牌交完停在还贡相位");
         assert_eq!(state.turn_seat, 0, "受贡方先挑还贡牌");
         assert_eq!(state.tribute_events.len(), 1, "此时只记了进贡");
@@ -1861,7 +1858,11 @@ mod tests {
 
         let ret = &state.tribute_events[1];
         assert_eq!((ret.from, ret.to, ret.is_return), (0, 3, true));
-        assert_eq!(ret.card, tcard(&engine, 0), "玩家可自选不大于 10 的牌（这里还 2）");
+        assert_eq!(
+            ret.card,
+            tcard(&engine, 0),
+            "玩家可自选不大于 10 的牌（这里还 2）"
+        );
 
         assert_eq!(state.tribute.from_seat, 3);
         assert_eq!(state.tribute.to_seat, 0);
@@ -1914,7 +1915,6 @@ mod tests {
         assert_eq!(state.phase, PHASE_PLAY);
     }
 
-
     #[test]
     fn tribute_resist_two_big_jokers_skips_whole_segment() {
         // 单贡：贡方 seat3 合计持 2 张大王 → 抗贡，进贡 / 还贡均不发生。
@@ -1966,9 +1966,7 @@ mod tests {
         );
         set_hand(&engine, &mut state, 3, vec![tcard(&engine, 0)]);
 
-        engine
-            .resolve_tribute(&mut state, &prev)
-            .expect("双下进贡");
+        engine.resolve_tribute(&mut state, &prev).expect("双下进贡");
         assert_eq!(state.phase, PHASE_TRIBUTE);
         assert_eq!(state.turn_seat, 1, "第一对受贡方先还贡");
         assert!(!state.tribute_resisted);
@@ -2065,9 +2063,7 @@ mod tests {
         set_hand(&engine, &mut state, 0, receiver.clone());
         let total_before = total_hand_len(&engine, &state);
 
-        engine
-            .resolve_tribute(&mut state, &prev)
-            .expect("进贡");
+        engine.resolve_tribute(&mut state, &prev).expect("进贡");
         state = engine
             .apply(
                 state,
@@ -2159,7 +2155,10 @@ mod tests {
 
         state = engine.apply(state, Action::Pass).expect("seat 1 过牌");
         state = engine.apply(state, Action::Pass).expect("seat 2 过牌");
-        assert_eq!(state.turn_seat, 2, "全过后搭档接风领出");
+        assert_eq!(state.turn_seat, 3, "第三家还没表态，不得提前接风");
+        assert!(state.last_play.is_some(), "本墩还未结束，lastPlay 不能清");
+        state = engine.apply(state, Action::Pass).expect("seat 3 过牌");
+        assert_eq!(state.turn_seat, 2, "三家全过后搭档接风领出");
         assert!(state.last_play.is_none());
         for seat in 1..4u8 {
             assert_eq!(
@@ -2332,8 +2331,7 @@ mod tests {
     fn fail_a_reset_restarts_safety_cap_window_at_next_round() {
         // 第 12 局在 A 上第三次未过（1+4）：levels 退回 2 的同时，安全窗口从第 13 局
         // 重新起算，不能一边回退一边又用旧窗口把场次判成 safety-cap。
-        let (engine, mut state) =
-            classic_settle_state(vec![12, 0], vec![2, 0], vec![0, 1, 3, 2]);
+        let (engine, mut state) = classic_settle_state(vec![12, 0], vec![2, 0], vec![0, 1, 3, 2]);
         state.round_no = 12;
         state.cap_start_round = 1;
         engine.settle(&mut state).expect("settle 失败");
@@ -2358,7 +2356,10 @@ mod tests {
         state.round_no = 12;
         state.cap_start_round = 5;
         engine.settle(&mut state).expect("settle 失败");
-        assert!(state.match_end.is_none(), "窗口只用了 8 局，第 12 局不应结束场次");
+        assert!(
+            state.match_end.is_none(),
+            "窗口只用了 8 局，第 12 局不应结束场次"
+        );
     }
 
     // ---------- matchCap 安全局数上限（§5.13 行 1008） ----------
@@ -2549,10 +2550,12 @@ mod tests {
         assert!(state.finish_order.contains(&0));
         // 出牌后先按正常轮转落到 seat 1。
         assert_eq!(state.turn_seat, 1);
-        // seat 1、seat 2 连续过牌后全过；last_seat=0 已出完，搭档 seat 2 接风领出。
+        // seat 1、2、3 都过牌后才全过；last_seat=0 已出完，搭档 seat 2 接风领出。
         state = engine.apply(state, Action::Pass).expect("seat 1 过牌");
         assert_eq!(state.turn_seat, 2);
         state = engine.apply(state, Action::Pass).expect("seat 2 过牌");
+        assert_eq!(state.turn_seat, 3, "seat 3 还没表态，不能提前结束本墩");
+        state = engine.apply(state, Action::Pass).expect("seat 3 过牌");
         assert_eq!(state.turn_seat, 2, "全过后搭档 seat 2 接风领出");
         assert!(state.last_play.is_none());
     }
@@ -2619,9 +2622,11 @@ mod tests {
         state = engine.apply(state, Action::Pass).expect("seat 1 过牌");
         assert_eq!(state.turn_seat, 2);
         state = engine.apply(state, Action::Pass).expect("seat 2 过牌");
+        assert_eq!(state.turn_seat, 3, "seat 3 还有压牌机会，不能提前接风");
+        state = engine.apply(state, Action::Pass).expect("seat 3 过牌");
         assert_eq!(
             state.turn_seat, 2,
-            "接风成立时 next-player 让位，搭档 seat 2 领出"
+            "三家全过后接风成立，next-player 让位，搭档 seat 2 领出"
         );
         assert!(state.last_play.is_none());
     }

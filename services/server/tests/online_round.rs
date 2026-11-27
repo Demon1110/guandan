@@ -16,7 +16,7 @@ use gf_server::RoomOptions;
 
 const MATCH: &str = "match-host-e2e";
 
-async fn frames(rx: &mut mpsc::UnboundedReceiver<Vec<u8>>) -> Vec<(u16, Vec<u8>)> {
+async fn frames(rx: &mut mpsc::Receiver<Vec<u8>>) -> Vec<(u16, Vec<u8>)> {
     let mut out = Vec::new();
     while let Ok(frame) = rx.try_recv() {
         let (kind, body) = wire::split(&frame).expect("帧头应可拆");
@@ -67,7 +67,7 @@ async fn four_humans_play_a_round_then_settle() {
     // 四座位入座：满员自动发牌。
     let mut rxs = Vec::new();
     for _ in 0..4u8 {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(1024);
         let seat = room.join(None, tx).await.expect("入座失败");
         rxs.push((seat, rx));
     }
@@ -162,7 +162,7 @@ async fn duplicate_request_id_is_idempotent() {
         RoomHost::spawn("match-idem", 0x51ED_0008, RoomOptions::default()).expect("建桌失败");
     let mut rxs = Vec::new();
     for _ in 0..4u8 {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(1024);
         room.join(None, tx).await.expect("入座失败");
         rxs.push(rx);
     }
@@ -203,7 +203,7 @@ async fn stale_seat_seq_is_rejected_without_advancing() {
         RoomHost::spawn("match-stale", 0x51ED_0009, RoomOptions::default()).expect("建桌失败");
     let mut rxs = Vec::new();
     for _ in 0..4u8 {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(1024);
         room.join(None, tx).await.expect("入座失败");
         rxs.push(rx);
     }
@@ -270,7 +270,7 @@ async fn reconnect_without_local_state_gets_reset_snapshot() {
         RoomHost::spawn("match-reconnect", 0x51ED_000A, RoomOptions::default()).expect("建桌失败");
     let mut rxs = Vec::new();
     for _ in 0..4u8 {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(1024);
         room.join(None, tx).await.expect("入座失败");
         rxs.push(rx);
     }
@@ -307,7 +307,7 @@ async fn reconnect_without_local_state_gets_reset_snapshot() {
         }
     }
     let seat = idle.expect("两手动作后必然还有座位没出过手");
-    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (tx, mut rx) = mpsc::channel(1024);
     assert!(room.rebind(seat, tx).await, "重连必须能接管座位通道");
     let frames = room.reconnect(seat, 0).await.expect("重连失败");
     assert_eq!(frames.len(), 1, "零水位只能收到一份快照，不得凭空补发增量");
@@ -338,7 +338,7 @@ async fn reconnect_within_buffer_gets_delta_then_snapshot() {
         RoomHost::spawn("match-delta", 0x51ED_000C, RoomOptions::default()).expect("建桌失败");
     let mut rxs = Vec::new();
     for _ in 0..4u8 {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(1024);
         room.join(None, tx).await.expect("入座失败");
         rxs.push(rx);
     }
@@ -373,7 +373,7 @@ async fn reconnect_within_buffer_gets_delta_then_snapshot() {
     }
     let latest = room.room_seq().await;
 
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(1024);
     assert!(room.rebind(seat, tx).await, "重连必须能接管座位通道");
     let frames = room.reconnect(seat, last).await.expect("重连失败");
     assert!(
@@ -438,13 +438,14 @@ async fn seat_assignment_rejects_overflow_and_reports_free_seats() {
         RoomHost::spawn("match-seats", 0x51ED_000B, RoomOptions::default()).expect("建桌失败");
     let mut keep = Vec::new();
     for _ in 0..3u8 {
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(1024);
         room.join(None, tx.clone()).await.expect("入座失败");
-        keep.push(tx);
+        // 接收端必须活着：有界队列在接收端消失时会判定为掉线并摘座。
+        keep.push((tx, rx));
     }
 
     // 指座到已占座位：拒，并给出当前空座（此时只剩 3）。
-    let (tx, _rx) = mpsc::unbounded_channel();
+    let (tx, _rx) = mpsc::channel(1024);
     let err = room.join(Some(1), tx).await.expect_err("占座必须拒");
     let gf_server::JoinError::SeatTaken { available } = err else {
         panic!("期望 SeatTaken，实际 {err:?}");
@@ -452,7 +453,7 @@ async fn seat_assignment_rejects_overflow_and_reports_free_seats() {
     assert_eq!(available, vec![3], "座位 1 已占，可分配只剩 3");
 
     // 补满第四座 → 满员触发发牌。
-    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (tx, mut rx) = mpsc::channel(1024);
     assert_eq!(room.join(None, tx).await.expect("补满第四座"), 3);
     room.start_if_full().await;
     assert!(
@@ -464,7 +465,7 @@ async fn seat_assignment_rejects_overflow_and_reports_free_seats() {
     );
 
     // 房间已满：再入座必须被拒，并给出空表。
-    let (tx, _rx) = mpsc::unbounded_channel();
+    let (tx, _rx) = mpsc::channel(1024);
     let err = room.join(None, tx).await.expect_err("满员必须拒");
     let gf_server::JoinError::SeatTaken { available } = err else {
         panic!("期望 SeatTaken，实际 {err:?}");

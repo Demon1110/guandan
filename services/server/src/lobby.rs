@@ -13,7 +13,7 @@
 //! 随机数取自 `RandomState`（进程启动时由 OS 播种），只用于房间码/票号/场次号，
 //! 不用于任何鉴权材料——账号切片的令牌必须换用密码学随机源。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::hash::{BuildHasher, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -103,8 +103,8 @@ struct Ticket {
 pub struct Lobby {
     codes: HashMap<String, CodeSlot>,
     tickets: HashMap<String, Ticket>,
-    /// 等待中的票号，按入队顺序（FIFO）。
-    queue: Vec<String>,
+    /// `(gameId, mode)` 分桶的等待票号，按入队顺序（FIFO）。撮合只看本桶，避免全表扫描。
+    queue: HashMap<(String, Mode), VecDeque<String>>,
     seq: AtomicU64,
 }
 
@@ -175,7 +175,10 @@ impl Lobby {
                 changed_ms: now_ms,
             },
         );
-        self.queue.push(id.clone());
+        self.queue
+            .entry((game_id.to_owned(), mode))
+            .or_default()
+            .push_back(id.clone());
         id
     }
 
@@ -186,16 +189,20 @@ impl Lobby {
 
     /// 退队并带回该票的模式（清 Redis 镜像时要用）。
     pub fn cancel_with_mode(&mut self, ticket_id: &str, now_ms: u64) -> (bool, Option<Mode>) {
-        match self.tickets.get_mut(ticket_id) {
+        let (game_id, mode) = match self.tickets.get(ticket_id) {
             Some(ticket) if ticket.state == TicketState::Waiting => {
-                let mode = ticket.mode;
-                ticket.state = TicketState::Timeout;
-                ticket.changed_ms = now_ms;
-                self.queue.retain(|id| id != ticket_id);
-                (true, Some(mode))
+                (ticket.game_id.clone(), ticket.mode)
             }
-            _ => (false, None),
+            _ => return (false, None),
+        };
+        if let Some(ticket) = self.tickets.get_mut(ticket_id) {
+            ticket.state = TicketState::Timeout;
+            ticket.changed_ms = now_ms;
         }
+        if let Some(bucket) = self.queue.get_mut(&(game_id, mode)) {
+            bucket.retain(|id| id != ticket_id);
+        }
+        (true, Some(mode))
     }
 
     /// 轮询：等待超时即转 `timeout` 并出队。
@@ -233,20 +240,11 @@ impl Lobby {
         avoid: &[String],
     ) -> Option<(String, Vec<String>)> {
         self.expire_waiting(now_ms, timeout_ms);
-        let candidates: Vec<String> = self
-            .queue
-            .iter()
-            .filter(|id| {
-                self.tickets.get(*id).is_some_and(|t| {
-                    t.state == TicketState::Waiting && t.game_id == game_id && t.mode == mode
-                })
-            })
-            .cloned()
-            .collect();
-        if candidates.len() < seats {
-            return None;
-        }
-        let group: Vec<String> = candidates.into_iter().take(seats).collect();
+        let key = (game_id.to_owned(), mode);
+        let group: Vec<String> = match self.queue.get(&key) {
+            Some(bucket) if bucket.len() >= seats => bucket.iter().take(seats).cloned().collect(),
+            _ => return None,
+        };
         // 场次号 32 位随机，撞上已有房间的概率极低；仍给出重试闭环。
         let mut match_id = self.new_match_id();
         for _ in 0..16 {
@@ -258,6 +256,9 @@ impl Lobby {
         if avoid.contains(&match_id) {
             return None;
         }
+        if let Some(bucket) = self.queue.get_mut(&key) {
+            bucket.retain(|id| !group.contains(id));
+        }
         for id in &group {
             if let Some(ticket) = self.tickets.get_mut(id) {
                 ticket.state = TicketState::Matched {
@@ -266,20 +267,28 @@ impl Lobby {
                 ticket.changed_ms = now_ms;
             }
         }
-        self.queue.retain(|id| !group.contains(id));
         Some((match_id, group))
     }
 
     /// 某队列当前等待人数（巡检 / 测试用）。
     pub fn waiting(&self, game_id: &str, mode: Mode) -> usize {
         self.queue
-            .iter()
-            .filter(|id| {
-                self.tickets.get(*id).is_some_and(|t| {
-                    t.state == TicketState::Waiting && t.game_id == game_id && t.mode == mode
-                })
+            .get(&(game_id.to_owned(), mode))
+            .map_or(0, |bucket| {
+                bucket
+                    .iter()
+                    .filter(|id| {
+                        self.tickets
+                            .get(*id)
+                            .is_some_and(|t| t.state == TicketState::Waiting)
+                    })
+                    .count()
             })
-            .count()
+    }
+
+    /// 全模式等待票总数（入队上限兜底用）。
+    pub fn total_waiting(&self) -> usize {
+        self.queue.values().map(VecDeque::len).sum()
     }
 
     /// 当前有效房间码数（巡检 / 测试用）。
@@ -305,28 +314,33 @@ impl Lobby {
         for id in dead {
             self.tickets.remove(&id);
         }
-        self.queue.retain(|id| self.tickets.contains_key(id));
+        self.queue.retain(|_, bucket| {
+            bucket.retain(|id| self.tickets.contains_key(id));
+            !bucket.is_empty()
+        });
     }
 
     fn expire_waiting(&mut self, now_ms: u64, timeout_ms: u64) {
-        let expired: Vec<String> = self
-            .queue
-            .iter()
-            .filter(|id| {
-                self.tickets.get(*id).is_some_and(|t| {
+        let mut expired = Vec::new();
+        for bucket in self.queue.values_mut() {
+            bucket.retain(|id| {
+                let keep = !self.tickets.get(id).is_some_and(|t| {
                     t.state == TicketState::Waiting
                         && now_ms.saturating_sub(t.enqueued_ms) >= timeout_ms
-                })
-            })
-            .cloned()
-            .collect();
+                });
+                if !keep {
+                    expired.push(id.clone());
+                }
+                keep
+            });
+        }
         for id in &expired {
             if let Some(ticket) = self.tickets.get_mut(id) {
                 ticket.state = TicketState::Timeout;
                 ticket.changed_ms = now_ms;
             }
         }
-        self.queue.retain(|id| !expired.contains(id));
+        self.queue.retain(|_, bucket| !bucket.is_empty());
     }
 }
 

@@ -47,6 +47,13 @@ pub use store::{RoundRow, StorageEvent, Store};
 /// 本服务只承载掼蛋一个玩法（`GET /api/games` 的 `gameId` 取值）。
 pub const GAME_ID: &str = "guandan";
 
+/// WS 单连接下行队列容量：慢客户端积压到上限即断开，防止 OOM。
+const WS_SEND_QUEUE: usize = 256;
+/// WS 单帧上限（一帧 protobuf 远小于此）。
+const WS_MAX_MESSAGE: usize = 64 * 1024;
+/// WS 单连接每秒最多处理的消息数（含心跳）。
+const WS_MSG_PER_SEC: u32 = 30;
+
 /// 进程级共享状态。
 pub struct App {
     cfg: ServerConfig,
@@ -61,6 +68,8 @@ pub struct App {
     storage_tx: mpsc::UnboundedSender<StorageEvent>,
     storage_rx: Mutex<Option<mpsc::UnboundedReceiver<StorageEvent>>>,
     room_seq: AtomicU64,
+    /// 匹配入队频控：key = 玩家 ID 或来源 IP，value = 上次入队 ms。
+    queue_guard: Mutex<HashMap<String, u64>>,
     started_at: Instant,
 }
 
@@ -109,6 +118,7 @@ impl App {
             storage_tx,
             storage_rx: Mutex::new(Some(storage_rx)),
             room_seq: AtomicU64::new(1),
+            queue_guard: Mutex::new(HashMap::new()),
             started_at: Instant::now(),
         })
     }
@@ -327,6 +337,24 @@ impl App {
     }
 
     /// 入匹配队列，返回票号。
+    /// 匹配入队频控：同一玩家/IP 2 秒内只允许一次；票总量超过 4096 直接拒绝。
+    pub async fn admit_match_queue(&self, key: &str) -> bool {
+        let now = now_unix_ms();
+        let mut guard = self.queue_guard.lock().await;
+        guard.retain(|_, last| now.saturating_sub(*last) < 60_000);
+        if guard
+            .get(key)
+            .is_some_and(|last| now.saturating_sub(*last) < 2_000)
+        {
+            return false;
+        }
+        if self.lobby.lock().await.total_waiting() >= 4_096 {
+            return false;
+        }
+        guard.insert(key.to_owned(), now);
+        true
+    }
+
     pub async fn enqueue(&self, mode: Mode) -> String {
         let ticket = self
             .lobby
@@ -493,7 +521,12 @@ pub async fn serve_on(app: Arc<App>, addr: SocketAddr) -> std::io::Result<()> {
             reaper.reap_rooms().await;
         }
     });
-    axum::serve(listener, app.router()).await
+    axum::serve(
+        listener,
+        app.router()
+            .into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
 }
 
 #[derive(Deserialize)]
@@ -655,13 +688,15 @@ struct MatchQueueBody {
 
 async fn match_queue(
     State(app): State<Arc<App>>,
+    peer: PeerAddr,
     headers: HeaderMap,
     Json(body): Json<MatchQueueBody>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse as _;
-    if let Err(resp) = app.authenticate(&headers) {
-        return *resp;
-    }
+    let owner = match app.authenticate(&headers) {
+        Ok(owner) => owner,
+        Err(resp) => return *resp,
+    };
     let game_id = body.game_id.unwrap_or_else(|| GAME_ID.to_owned());
     if game_id != GAME_ID {
         return invalid_request("GAME_UNKNOWN");
@@ -669,6 +704,19 @@ async fn match_queue(
     let Some(mode) = Mode::parse(&body.mode) else {
         return invalid_request("MODE_UNKNOWN");
     };
+    // 入队频控：优先按玩家 ID，其次按来源 IP；anonymous 且无 peer（单测）不额外限。
+    if let Some(key) = owner
+        .map(|id| format!("player:{id}"))
+        .or_else(|| peer.0.map(|addr| format!("ip:{addr}")))
+    {
+        if !app.admit_match_queue(&key).await {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(serde_json::json!({"reason": "RATE_LIMITED"})),
+            )
+                .into_response();
+        }
+    }
     let ticket = app.enqueue(mode).await;
     // 每次入队顺手撮一次：票数够就直接成房，客户端下一次轮询即见 matched。
     app.pump_match(mode).await;
@@ -740,8 +788,32 @@ struct LoginBody {
     client_version: String,
 }
 
+/// 可选的 TCP 对端地址：`oneshot` 测试没挂 ConnectInfo 时返回 None，生产由
+/// `into_make_service_with_connect_info` 注入。
+struct PeerAddr(Option<SocketAddr>);
+
+impl<S> axum::extract::FromRequestParts<S> for PeerAddr
+where
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(PeerAddr(
+            parts
+                .extensions
+                .get::<axum::extract::ConnectInfo<SocketAddr>>()
+                .map(|info| info.0),
+        ))
+    }
+}
+
 async fn auth_login(
     State(app): State<Arc<App>>,
+    peer: PeerAddr,
     Json(body): Json<LoginBody>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse as _;
@@ -752,7 +824,11 @@ async fn auth_login(
         )
             .into_response();
     }
-    match app.auth.login(&body.phone, &body.code, now_unix_ms()) {
+    let peer = peer.0.map(|addr| addr.to_string());
+    match app
+        .auth
+        .login_with_peer(&body.phone, &body.code, peer.as_deref(), now_unix_ms())
+    {
         Ok(session) => {
             // 账号建档（`player_profile`）：存储未接时是 no-op。
             if let Some(profile) = app.auth.profile(&session.player_id) {
@@ -768,6 +844,14 @@ async fn auth_login(
             }))
             .into_response()
         }
+        Err(auth::LoginError::Locked { retry_after_ms }) => (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({
+                "reason": "RATE_LIMITED",
+                "retryAfterMs": retry_after_ms,
+            })),
+        )
+            .into_response(),
         Err(_) => unauthorized(),
     }
 }
@@ -904,14 +988,48 @@ struct WsQuery {
 async fn ws_upgrade(
     ws: WebSocketUpgrade,
     State(app): State<Arc<App>>,
+    headers: HeaderMap,
     Query(query): Query<WsQuery>,
 ) -> axum::response::Response {
-    let owner = match query
-        .token
-        .as_deref()
+    // 优先 Authorization 头；浏览器不能设自定义头，故同时支持子协议 `gf-token.<jwt>`。
+    // `?token=` 只保留给旧客户端过渡，生产应逐步禁用（会进访问日志/Referer）。
+    let bearer = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
         .map(str::trim)
-        .filter(|t| !t.is_empty())
-    {
+        .filter(|t| !t.is_empty());
+    let subprotocol = headers
+        .get("sec-websocket-protocol")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| {
+            v.split(',')
+                .map(str::trim)
+                .find_map(|p| p.strip_prefix("gf-token."))
+        })
+        .map(str::trim)
+        .filter(|t| !t.is_empty());
+    let (token, from_query) = match bearer.or(subprotocol) {
+        Some(token) => (Some(token.to_owned()), false),
+        None => (
+            query
+                .token
+                .as_deref()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(str::to_owned),
+            true,
+        ),
+    };
+    if from_query && token.is_some() && app.cfg.env == "production" {
+        // 生产禁止 token 进 URL：会落访问日志/Referer。浏览器改用子协议 `gf-token.<jwt>`。
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"reason": "TOKEN_IN_QUERY_DISABLED"})).into_response(),
+        )
+            .into_response();
+    }
+    let owner = match token.as_deref() {
         Some(token) => match app.auth.verify_access(token, now_unix_ms()) {
             Some(player_id) => Some(player_id),
             None => return unauthorized(),
@@ -919,13 +1037,16 @@ async fn ws_upgrade(
         None if app.cfg.require_auth => return unauthorized(),
         None => None,
     };
-    ws.on_upgrade(move |socket| session(app, socket, owner))
+    ws.max_message_size(WS_MAX_MESSAGE)
+        .max_frame_size(WS_MAX_MESSAGE)
+        .protocols(["gf.v1"])
+        .on_upgrade(move |socket| session(app, socket, owner))
 }
 
 /// 单条 WS 连接的生命周期：入座 → 收动作/重连 → 断开记账。
 async fn session(app: Arc<App>, socket: WebSocket, owner: Option<String>) {
     let (mut sink, mut stream) = socket.split();
-    let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(WS_SEND_QUEUE);
 
     let writer = tokio::spawn(async move {
         while let Some(frame) = rx.recv().await {
@@ -937,8 +1058,19 @@ async fn session(app: Arc<App>, socket: WebSocket, owner: Option<String>) {
 
     let mut bound: Option<(Arc<RoomHost>, u8)> = None;
     let idle = std::time::Duration::from_millis(app.cfg.heartbeat_timeout_ms);
+    let mut window = Instant::now();
+    let mut msg_count = 0u32;
 
     loop {
+        if window.elapsed() >= std::time::Duration::from_secs(1) {
+            window = Instant::now();
+            msg_count = 0;
+        }
+        msg_count = msg_count.saturating_add(1);
+        if msg_count > WS_MSG_PER_SEC {
+            // 单连接消息洪水：直接断开，保护房间主循环。
+            break;
+        }
         let next = tokio::time::timeout(idle, stream.next()).await;
         let msg = match next {
             Ok(Some(Ok(msg))) => msg,
@@ -967,25 +1099,29 @@ async fn session(app: Arc<App>, socket: WebSocket, owner: Option<String>) {
                     break;
                 }
                 if !app.cfg.accepts_version(&join.client_version) {
-                    let _ = tx.send(events::join_ack_frame(
-                        &join.match_id,
-                        0,
-                        false,
-                        &[],
-                        Some("CLIENT_TOO_OLD"),
-                        None,
-                    ));
+                    let _ = tx
+                        .send(events::join_ack_frame(
+                            &join.match_id,
+                            0,
+                            false,
+                            &[],
+                            Some("CLIENT_TOO_OLD"),
+                            None,
+                        ))
+                        .await;
                     break;
                 }
                 let Ok(room) = app.room_or_create(&join.match_id).await else {
-                    let _ = tx.send(events::join_ack_frame(
-                        &join.match_id,
-                        0,
-                        false,
-                        &[],
-                        Some("RATE_LIMITED"),
-                        None,
-                    ));
+                    let _ = tx
+                        .send(events::join_ack_frame(
+                            &join.match_id,
+                            0,
+                            false,
+                            &[],
+                            Some("RATE_LIMITED"),
+                            None,
+                        ))
+                        .await;
                     break;
                 };
                 let hint = join.seat.and_then(|s| u8::try_from(s).ok());
@@ -999,40 +1135,46 @@ async fn session(app: Arc<App>, socket: WebSocket, owner: Option<String>) {
                     .await
                 {
                     Ok(ticket) => {
-                        let _ = tx.send(events::join_ack_frame(
-                            &join.match_id,
-                            ticket.seat,
-                            true,
-                            &[],
-                            None,
-                            Some(&ticket.token),
-                        ));
+                        let _ = tx
+                            .send(events::join_ack_frame(
+                                &join.match_id,
+                                ticket.seat,
+                                true,
+                                &[],
+                                None,
+                                Some(&ticket.token),
+                            ))
+                            .await;
                         // 入座回执先发，再按「满四人」开局；新座位随后拿全量快照。
                         room.start_if_full().await;
                         if let Ok(snapshot) = room.join_snapshot(ticket.seat).await {
-                            let _ = tx.send(snapshot);
+                            let _ = tx.send(snapshot).await;
                         }
                         bound = Some((room, ticket.seat));
                     }
                     Err(JoinError::SeatTaken { available }) => {
-                        let _ = tx.send(events::join_ack_frame(
-                            &join.match_id,
-                            0,
-                            false,
-                            &available,
-                            Some("RS_SEAT_TAKEN"),
-                            None,
-                        ));
+                        let _ = tx
+                            .send(events::join_ack_frame(
+                                &join.match_id,
+                                0,
+                                false,
+                                &available,
+                                Some("RS_SEAT_TAKEN"),
+                                None,
+                            ))
+                            .await;
                     }
                     Err(JoinError::AuthInvalid) => {
-                        let _ = tx.send(events::join_ack_frame(
-                            &join.match_id,
-                            0,
-                            false,
-                            &[],
-                            Some("AUTH_INVALID"),
-                            None,
-                        ));
+                        let _ = tx
+                            .send(events::join_ack_frame(
+                                &join.match_id,
+                                0,
+                                false,
+                                &[],
+                                Some("AUTH_INVALID"),
+                                None,
+                            ))
+                            .await;
                         break;
                     }
                 }
@@ -1045,19 +1187,21 @@ async fn session(app: Arc<App>, socket: WebSocket, owner: Option<String>) {
                 if let Ok(msg_seat) = u8::try_from(submit.seat) {
                     if msg_seat != *seat {
                         // §5.9：请求 seat 与绑定座位不一致 → AUTH_INVALID，并记指标。
-                        let _ = tx.send(events::action_ack_frame(
-                            &submit.request_id,
-                            room.seat_watermark(*seat).await,
-                            room.room_seq().await,
-                            false,
-                            Some("AUTH_INVALID"),
-                        ));
+                        let _ = tx
+                            .send(events::action_ack_frame(
+                                &submit.request_id,
+                                room.seat_watermark(*seat).await,
+                                room.room_seq().await,
+                                false,
+                                Some("AUTH_INVALID"),
+                            ))
+                            .await;
                         continue;
                     }
                 }
                 submit.match_id = room.match_id().to_owned();
                 let ack = room.submit(*seat, submit, room.now_ms()).await;
-                let _ = tx.send(ack);
+                let _ = tx.send(ack).await;
             }
             wire::kind::RECONNECT => {
                 let Ok(re) = pb::Reconnect::decode(body) else {
@@ -1085,7 +1229,7 @@ async fn session(app: Arc<App>, socket: WebSocket, owner: Option<String>) {
                     Ok(frames) => {
                         // 增量帧在前、快照在后，必须按顺序下发。
                         for frame in frames {
-                            let _ = tx.send(frame);
+                            let _ = tx.send(frame).await;
                         }
                         bound = Some((room, seat));
                     }

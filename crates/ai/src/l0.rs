@@ -9,7 +9,7 @@
 use gf_engine::contract::Action;
 use gf_table_runtime::{BotContext, BotPolicy, HandPlan};
 
-use crate::shape::{cards_key_of, count_of, top_rank_of};
+use crate::shape::{cards_key_of, count_of, is_bomb_shape, top_rank_of};
 
 /// AI-L0 最小策略 bot（无状态、确定性）。
 #[derive(Clone, Copy, Debug, Default)]
@@ -29,10 +29,13 @@ impl BotPolicy for L0Bot {
     }
 
     fn decide_with_legal(&self, view_bytes: &[u8], seat: u8, legal: &[Action]) -> Action {
-        let _ = (view_bytes, seat);
+        // 跟牌不烧炸弹：炸弹是压场/冲刺资源，最小牌力排序会把它排在最前，
+        // 只剩炸弹时宁可过牌（§5.11 与 §5.13 的配合口径）。
+        let following = crate::view_scan::is_following(view_bytes, seat);
         legal
             .iter()
             .filter(|a| matches!(a, Action::Play { .. }) && count_of(a) > 0)
+            .filter(|a| !(following && is_bomb_shape(a)))
             .min_by_key(|a| (top_rank_of(a), count_of(a), cards_key_of(a)))
             .cloned()
             .unwrap_or(Action::Pass)
@@ -61,9 +64,11 @@ impl BotPolicy for L0Bot {
             return action;
         }
         // 跟牌：合法集里只留「不拆组」的候选，挑不出就过牌——宁可过，不拆对子。
+        // 炸弹永远不在此路径顺手打出：它是压场/冲刺资源，只有全是炸弹时才 Pass。
         legal
             .iter()
             .filter(|a| count_of(a) > 0)
+            .filter(|a| !is_bomb_shape(a))
             .filter(|a| !crate::plan::splits_plan(crate::plan::action_cards(a), plan))
             .min_by_key(|a| (top_rank_of(a), count_of(a), cards_key_of(a)))
             .cloned()

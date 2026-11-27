@@ -152,3 +152,24 @@ fn l0_lead_plays_smallest_single() {
         br#"{"hand":{"cards":[9,3]},"lastPlay":{"seat":2,"patternId":"single","cards":[5]}}"#;
     assert_eq!(bot.decide(follow, 0), Action::Pass);
 }
+
+#[test]
+fn l0_follow_never_burns_bomb_from_legal() {
+    let bot = L0Bot;
+    let follow =
+        br#"{"hand":{"cards":[0,1,26,27,40]},"lastPlay":{"seat":2,"patternId":"single","cards":[5]}}"#;
+    // 合法集里炸弹牌力最低，投机排序会先出炸弹；L0 跟牌必须过滤掉。
+    let legal = vec![
+        Action::Play {
+            cards: vec![0, 1, 26, 27],
+        },
+        Action::Play { cards: vec![40] },
+    ];
+    assert!(is_bomb_shape(&legal[0]));
+    assert_eq!(
+        bot.decide_with_legal(follow, 0, &legal),
+        Action::Play { cards: vec![40] }
+    );
+    // 只剩炸弹可出时，宁可过牌也不烧。
+    assert_eq!(bot.decide_with_legal(follow, 0, &legal[..1]), Action::Pass);
+}

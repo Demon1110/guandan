@@ -72,7 +72,20 @@ async fn login(app: &Arc<App>, phone: &str, code: &str) -> (StatusCode, Value) {
     .await
 }
 
+async fn request_sms(app: &Arc<App>, phone: &str) {
+    let (status, body) = call(
+        app,
+        "POST",
+        "/api/auth/sms",
+        None,
+        Some(json!({"phone": phone})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "发码失败：{body}");
+}
+
 async fn token_of(app: &Arc<App>, phone: &str) -> String {
+    request_sms(app, phone).await;
     let (status, body) = login(app, phone, TEST_CODE).await;
     assert_eq!(status, StatusCode::OK, "白名单登录失败：{body}");
     body["token"].as_str().expect("缺 token").to_owned()
@@ -172,6 +185,7 @@ async fn wrong_code_and_version_gate_are_rejected() {
 #[tokio::test]
 async fn refresh_rotates_and_invalidates_old_token() {
     let app = make_app();
+    request_sms(&app, PHONE_A).await;
     let (_, body) = login(&app, PHONE_A, TEST_CODE).await;
     let refresh = body["refreshToken"]
         .as_str()

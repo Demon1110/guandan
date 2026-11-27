@@ -415,7 +415,11 @@ const num = (v) => {
   if (Math.abs(v - r) < 1e-9) return String(r);
   return v.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
 };
-const hex2 = (s, ink) => s.split('#1B1B1B').join(ink).split('#C62828').join(ink);
+const isHex = (v) => typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v);
+const hex2 = (s, ink) => {
+  const safe = isHex(ink) ? ink : '#1B1B1B';
+  return s.split('#1B1B1B').join(safe).split('#C62828').join(safe);
+};
 const esc = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const isRed = (suit) => suit === 'diamond' || suit === 'heart';
 /* 某花色该用的墨色：palette.suits 里写了就用它，否则回落到红/黑 */
@@ -917,26 +921,60 @@ function updateAssetRows() {
   qa('[data-re]').forEach((el) => { el.classList.toggle('hide', !ART[el.dataset.re].fromFile); });
 }
 
+/* 上传/导入的 SVG 一律先过白名单净化：只留图形标签与安全属性，杜绝 <script>、
+   on* 事件、foreignObject、javascript: 与外部 url()；净化结果才允许进 innerHTML。 */
+const SVG_TAGS = new Set([
+  'svg','g','path','rect','circle','ellipse','line','polyline','polygon','defs',
+  'linearGradient','radialGradient','stop','use','text','tspan','clipPath','mask',
+]);
+const SVG_ATTRS = new Set([
+  'viewBox','width','height','x','y','x1','y1','x2','y2','cx','cy','r','rx','ry','d','points',
+  'fill','fill-opacity','fill-rule','stroke','stroke-width','stroke-opacity','stroke-linecap',
+  'stroke-linejoin','stroke-dasharray','opacity','transform','gradientUnits','gradientTransform',
+  'offset','stop-color','stop-opacity','id','href','xlink:href','clip-path','mask','text-anchor',
+  'font-size','font-family','font-weight','font-style','dominant-baseline','preserveAspectRatio',
+]);
+const SVG_COLOR_ATTRS = new Set(['fill','stroke','stop-color']);
+function safePaint(v) {
+  return isHex(v) || v === 'none' || v === 'currentColor' || v === 'transparent'
+    || /^url\(#[A-Za-z0-9_-]+\)$/.test(v);
+}
+function sanitizeSvgNode(node) {
+  if (node.nodeType === 3) return;
+  if (node.nodeType !== 1) throw new Error('SVG 含不支持的节点');
+  const tag = node.tagName;
+  if (!SVG_TAGS.has(tag)) throw new Error(`SVG 含不安全标签 <${tag}>`);
+  Array.from(node.attributes).forEach((attr) => {
+    const name = attr.name;
+    if (name.startsWith('on') || name === 'style') { node.removeAttribute(name); return; }
+    if (!SVG_ATTRS.has(name)) { node.removeAttribute(name); return; }
+    if (name === 'href' || name === 'xlink:href') {
+      if (!attr.value.trim().startsWith('#')) throw new Error('SVG 只允许引用同文件 #id');
+    }
+    if (SVG_COLOR_ATTRS.has(name) && !safePaint(attr.value.trim())) {
+      throw new Error(`SVG 属性 ${name} 的值不安全：${attr.value}`);
+    }
+  });
+  Array.from(node.children).forEach(sanitizeSvgNode);
+}
 function parseSvg(text, key) {
-  const openEnd = text.indexOf('>');
-  const closeStart = text.lastIndexOf('</svg>');
-  if (openEnd < 0 || closeStart < 0 || closeStart <= openEnd) throw new Error('不是完整的内联 <svg> 文件');
-  const tag = text.slice(0, openEnd);
-  const vb = tag.match(/viewBox=["']([^"']+)["']/);
+  const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
+  if (doc.querySelector('parsererror')) throw new Error('不是完整的 XML/SVG 文件');
+  const root = doc.documentElement;
+  if (!root || root.tagName !== 'svg') throw new Error('根节点必须是 <svg>');
+  if (/<script|foreignObject|javascript:|on\w+\s*=/i.test(text)) throw new Error('SVG 含脚本或事件属性');
+  sanitizeSvgNode(root);
+  const vb = (root.getAttribute('viewBox') || '').split(/[,\s]+/).filter(Boolean).map(Number);
   let w, h;
-  if (vb) {
-    const parts = vb[1].split(/[,\s]+/).filter(Boolean).map(Number);
-    if (parts.length !== 4 || !parts.every(Number.isFinite)) throw new Error('viewBox 解析不了');
-    w = parts[2]; h = parts[3];
-  } else {
-    const wm = tag.match(/\swidth=["']([\d.]+)/), hm = tag.match(/\sheight=["']([\d.]+)/);
-    if (!wm || !hm) throw new Error('既没有 viewBox 也没有 width/height');
-    w = Number(wm[1]); h = Number(hm[1]);
+  if (vb.length === 4 && vb.every(Number.isFinite)) { w = vb[2]; h = vb[3]; }
+  else {
+    w = Number(root.getAttribute('width')); h = Number(root.getAttribute('height'));
   }
-  if (!(w > 0 && h > 0)) throw new Error('尺寸为 0');
-  const inner = text.slice(openEnd + 1, closeStart).trim();
+  if (!(w > 0 && h > 0)) throw new Error('既没有 viewBox 也没有有效 width/height');
+  const ser = new XMLSerializer();
+  const inner = Array.from(root.children).map((n) => ser.serializeToString(n)).join('').trim();
   if (!inner) throw new Error('SVG 里没有图形内容');
-  if (/url\(#|xlink:href=["']#/.test(inner) === false && /<image\b/i.test(inner)) throw new Error('不支持位图 <image> 引用');
+  if (/<script|<foreignObject|javascript:|on\w+\s*=/i.test(inner)) throw new Error('SVG 净化后仍含危险内容');
   return { w, h, inner };
 }
 
@@ -1088,12 +1126,23 @@ function applyTheme(o) {
   state.name = o.name ?? DEFAULTS.name;
   state.license = o.license ?? DEFAULTS.license;
   state.canvas = { ...DEFAULTS.canvas, ...(o.canvas || {}) };
-  state.palette = { ...DEFAULTS.palette, ...(o.palette || {}) };
-  const rawSuits = (o.palette || {}).suits;
+  const rawPalette = o.palette || {};
+  const pal = { ...DEFAULTS.palette };
+  ['red','black','paper','level','wild'].forEach((k) => {
+    if (rawPalette[k] === undefined) return;
+    if (!isHex(rawPalette[k])) throw new Error(`palette.${k} 必须是 #RRGGBB`);
+    pal[k] = rawPalette[k];
+  });
+  state.palette = pal;
+  const rawSuits = rawPalette.suits;
   state.palette.suits = null;
   if (rawSuits && typeof rawSuits === 'object' && !Array.isArray(rawSuits)) {
     const keep = {};
-    ['spade','heart','diamond','club'].forEach((k) => { if (typeof rawSuits[k] === 'string') keep[k] = rawSuits[k]; });
+    ['spade','heart','diamond','club'].forEach((k) => {
+      if (rawSuits[k] === undefined) return;
+      if (!isHex(rawSuits[k])) throw new Error(`palette.suits.${k} 必须是 #RRGGBB`);
+      keep[k] = rawSuits[k];
+    });
     if (Object.keys(keep).length) state.palette.suits = keep;
   }
   state.layout = o.layout === 'classic' ? 'classic' : (o.layout === 'compact' ? 'compact' : DEFAULTS.layout);
