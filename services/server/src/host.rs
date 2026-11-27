@@ -13,6 +13,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use rand::RngCore;
+
 use gf_engine::contract::{Action, State};
 use gf_engine::engine::PHASE_SETTLE;
 use gf_protocol::gf::protocol::v1 as pb;
@@ -59,11 +61,21 @@ impl Default for RoomOptions {
     }
 }
 
+/// 入座成功回执：座位 + 匿名断线重连令牌。
+#[derive(Clone, Debug)]
+pub struct JoinTicket {
+    pub seat: u8,
+    /// 只发给本人；重连时带回，否则凭座位号也顶不掉别人。
+    pub token: String,
+}
+
 /// 入座拒绝原因。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum JoinError {
     /// 目标座位或被占、或房间已满（`RS_SEAT_TAKEN`）。
     SeatTaken { available: Vec<u8> },
+    /// 续座令牌不对（`AUTH_INVALID`）。
+    AuthInvalid,
 }
 
 /// 回放导出拒绝原因。
@@ -92,6 +104,8 @@ pub struct RoomHost {
     reserved: Mutex<HashMap<u8, Reservation>>,
     /// 已入座的座位属于哪个玩家（账号阶段用于重连时校验身份）。
     owners: RwLock<HashMap<u8, String>>,
+    /// 匿名座位的一次性令牌：断线重连必须出示，防止别人凭座位号顶号。
+    seat_tokens: RwLock<HashMap<u8, String>>,
     /// 存档出口：结算 / 场次终止时投递（不阻塞房间锁）。
     recorder: std::sync::Mutex<Option<mpsc::UnboundedSender<StorageEvent>>>,
     ack_cache: Mutex<HashMap<(u8, String), Vec<u8>>>,
@@ -103,6 +117,10 @@ pub struct RoomHost {
     /// 本局发牌时刻（墙钟毫秒），结算行要用。
     round_start_ms: AtomicU64,
     closed: AtomicBool,
+    /// 结束时刻（回收任务用）。
+    closed_at: std::sync::Mutex<Option<Instant>>,
+    /// 最后一次有人入座/重连/离开的时刻（空房回收用）。
+    last_active: std::sync::Mutex<Instant>,
 }
 
 impl RoomHost {
@@ -125,6 +143,7 @@ impl RoomHost {
             out: RwLock::new(HashMap::new()),
             reserved: Mutex::new(HashMap::new()),
             owners: RwLock::new(HashMap::new()),
+            seat_tokens: RwLock::new(HashMap::new()),
             recorder: std::sync::Mutex::new(None),
             ack_cache: Mutex::new(HashMap::new()),
             started_at: Instant::now(),
@@ -134,6 +153,8 @@ impl RoomHost {
             announced_settle: AtomicU64::new(0),
             round_start_ms: AtomicU64::new(0),
             closed: AtomicBool::new(false),
+            closed_at: std::sync::Mutex::new(None),
+            last_active: std::sync::Mutex::new(Instant::now()),
         });
 
         let weak = Arc::downgrade(&host);
@@ -176,7 +197,7 @@ impl RoomHost {
         hint: Option<u8>,
         tx: mpsc::UnboundedSender<Vec<u8>>,
     ) -> Result<u8, JoinError> {
-        self.join_as(hint, tx, None).await
+        Ok(self.join_as(hint, tx, None).await?.seat)
     }
 
     /// 带身份的入座：账号预留的座位只由同一 `owner` 兑现（账号切片起收紧）。
@@ -185,8 +206,42 @@ impl RoomHost {
         hint: Option<u8>,
         tx: mpsc::UnboundedSender<Vec<u8>>,
         owner: Option<String>,
-    ) -> Result<u8, JoinError> {
+    ) -> Result<JoinTicket, JoinError> {
+        self.join_with_token(hint, tx, owner, None).await
+    }
+
+    /// 入座/续座统一入口：`seat_token` 只用于证明「这个座位原本是我的」。
+    pub async fn join_with_token(
+        &self,
+        hint: Option<u8>,
+        tx: mpsc::UnboundedSender<Vec<u8>>,
+        owner: Option<String>,
+        seat_token: Option<&str>,
+    ) -> Result<JoinTicket, JoinError> {
         let now = self.now_ms();
+        // 先校验「这个座位原本是不是你的」：账号座位认 owner，匿名座位认一次性令牌。
+        // 放在拿 `out`/`reserved` 锁之前，避免与重连路径的锁序交叉。
+        if let Some(seat) = hint.filter(|seat| *seat < SEATS) {
+            let prior_owner = self.owners.read().await.get(&seat).cloned();
+            if prior_owner.is_some()
+                && owner.is_some()
+                && prior_owner.as_deref() != owner.as_deref()
+            {
+                return Err(JoinError::AuthInvalid);
+            }
+            if owner.is_none() {
+                let has_token = self.seat_tokens.read().await.contains_key(&seat);
+                // 匿名重绑必须带对令牌；不带令牌则走后面的「座位已占」拒绝，不能顶号。
+                if has_token
+                    && seat_token.is_some()
+                    && !self
+                        .seat_token_matches(seat, seat_token.unwrap_or(""))
+                        .await
+                {
+                    return Err(JoinError::AuthInvalid);
+                }
+            }
+        }
         // 锁序固定：先 `out` 再 `reserved`（`reserve` 同序），避免交叉等待。
         let mut out = self.out.write().await;
         let mut reserved = self.reserved.lock().await;
@@ -244,12 +299,54 @@ impl RoomHost {
         if let Some(owner) = owner {
             self.owners.write().await.insert(seat, owner);
         }
-        Ok(seat)
+        let token = new_seat_token();
+        self.seat_tokens.write().await.insert(seat, token.clone());
+        self.touch();
+        Ok(JoinTicket { seat, token })
     }
 
     /// 该座位绑定的玩家（未带 token 入座的座位为 `None`）。
     pub async fn seat_owner(&self, seat: u8) -> Option<String> {
         self.owners.read().await.get(&seat).cloned()
+    }
+
+    /// 校验匿名座位的重连令牌（常量时间比较，避免按字节时序猜）。
+    pub async fn seat_token_matches(&self, seat: u8, token: &str) -> bool {
+        let expected = self.seat_tokens.read().await.get(&seat).cloned();
+        let Some(expected) = expected else {
+            return false;
+        };
+        let given = token.trim().as_bytes();
+        let expected = expected.as_bytes();
+        if given.len() != expected.len() {
+            return false;
+        }
+        given
+            .iter()
+            .zip(expected)
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            == 0
+    }
+
+    fn touch(&self) {
+        if let Ok(mut last) = self.last_active.lock() {
+            *last = Instant::now();
+        }
+    }
+
+    /// 回收判定：已结束超过保留时长，或从未开局且长时间无人。
+    pub async fn reapable(&self, retention: Duration, idle: Duration) -> bool {
+        if self.closed.load(Ordering::Relaxed) {
+            let closed_at = *self.closed_at.lock().unwrap_or_else(|p| p.into_inner());
+            if closed_at.is_some_and(|at| at.elapsed() >= retention) {
+                return true;
+            }
+        }
+        if !self.started.load(Ordering::Relaxed) && self.out.read().await.is_empty() {
+            let last = *self.last_active.lock().unwrap_or_else(|p| p.into_inner());
+            return last.elapsed() >= idle;
+        }
+        false
     }
 
     /// 该玩家是否坐在这桌的某个座位上（回放导出鉴权用）。
@@ -531,6 +628,7 @@ impl RoomHost {
             return false;
         }
         self.out.write().await.insert(seat, tx);
+        self.touch();
         true
     }
 
@@ -554,6 +652,7 @@ impl RoomHost {
     /// 座位离线记账（WS 断开 / 心跳超时）。
     pub async fn leave(&self, seat: u8, now: u64) {
         self.out.write().await.remove(&seat);
+        self.touch();
         let mut room = self.room.lock().await;
         let _ = room.disconnect(seat, now);
     }
@@ -648,6 +747,8 @@ impl RoomHost {
                     }
                     Ok(StepOutcome::MatchEnded(end)) => {
                         self.closed.store(true, Ordering::Relaxed);
+                        *self.closed_at.lock().unwrap_or_else(|p| p.into_inner()) =
+                            Some(Instant::now());
                         self.record(StorageEvent::MatchEnded {
                             match_id: self.match_id.clone(),
                             winner_team: end.winner_team,
@@ -762,6 +863,13 @@ fn free_for(
             },
         )
         .collect()
+}
+
+/// 匿名座位重连令牌：128 位随机十六进制，只随 JoinAck 下发一次。
+fn new_seat_token() -> String {
+    let mut raw = [0u8; 16];
+    rand::rng().fill_bytes(&mut raw);
+    raw.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn auto_reason_str(reason: AutoReason) -> &'static str {
@@ -882,6 +990,7 @@ mod tests {
             .join_as(Some(seat), tx, Some("p-1".to_owned()))
             .await
             .expect("本人兑现预留");
-        assert_eq!(same, seat);
+        assert_eq!(same.seat, seat);
+        assert!(!same.token.is_empty(), "入座必须下发匿名重连令牌");
     }
 }

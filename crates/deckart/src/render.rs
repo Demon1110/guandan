@@ -602,8 +602,13 @@ fn viewbox_size(tag: &str) -> Option<(f64, f64)> {
     let idx = tag.find("viewBox=")?;
     let rest = &tag[idx + "viewBox=".len()..];
     let quote = rest.chars().next()?;
-    let end = rest[1..].find(quote)? + 1;
-    let body = &rest[1..end];
+    // 只接受成对引号；按字符边界切，避免多字节引号（如全角引号）触发切片 panic。
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let after = &rest[quote.len_utf8()..];
+    let end = after.find(quote)?;
+    let body = &after[..end];
     let parts: Vec<f64> = body
         .split(|c: char| c == ',' || c.is_whitespace())
         .filter(|s| !s.is_empty())
@@ -688,6 +693,20 @@ mod tests {
                 assert!((0.0..=1.0).contains(&p[0]) && (0.0..=1.0).contains(&p[1]));
             }
         }
+    }
+
+    #[test]
+    fn viewbox_parses_ascii_quotes_and_ignores_multibyte() {
+        assert_eq!(
+            viewbox_size("<svg viewBox=\"0 0 250 350\">"),
+            Some((250.0, 350.0))
+        );
+        assert_eq!(
+            viewbox_size("<svg viewBox='0,0,10,20'>"),
+            Some((10.0, 20.0))
+        );
+        // 多字节引号不能拿来切片：不 panic，按「无法解析」处理。
+        assert_eq!(viewbox_size("<svg viewBox=“0 0 250 350”>"), None);
     }
 
     #[test]

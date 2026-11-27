@@ -189,6 +189,63 @@ fn signature_requires_matching_public_key() {
 }
 
 #[test]
+fn clearing_signature_flag_cannot_bypass_verification() {
+    let dir = theme_dir();
+    let out = tmp("strip").with_extension("gfdeck");
+    let (key, key_id) = builtin_key();
+    let sk = sign_key();
+    pack_dir(
+        &dir,
+        &out,
+        &PackOptions {
+            key: &key,
+            key_id: &key_id,
+            signing_key: Some(&sk),
+        },
+    )
+    .unwrap();
+    let signed = std::fs::read(&out).unwrap();
+    let mut stripped = signed.clone();
+    let flags = u16::from_le_bytes([stripped[6], stripped[7]]);
+    stripped[6..8].copy_from_slice(&(flags & !0b0100u16).to_le_bytes());
+    stripped.truncate(stripped.len() - 64);
+    let evil = tmp("strip-evil").with_extension("gfdeck");
+    std::fs::write(&evil, &stripped).unwrap();
+
+    let good: VerifyingKey = sign_key().verifying_key();
+    let err = open(&evil, &key, Some(&good)).unwrap_err();
+    assert_eq!(err.code(), "DK-PACK-SIGNATURE", "清签名位不能降级成裸包");
+}
+
+#[test]
+fn header_flags_are_bound_into_signature() {
+    let dir = theme_dir();
+    let out = tmp("aad").with_extension("gfdeck");
+    let (key, key_id) = builtin_key();
+    let sk = sign_key();
+    pack_dir(
+        &dir,
+        &out,
+        &PackOptions {
+            key: &key,
+            key_id: &key_id,
+            signing_key: Some(&sk),
+        },
+    )
+    .unwrap();
+    let signed = std::fs::read(&out).unwrap();
+    let mut tampered = signed;
+    let flags = u16::from_le_bytes([tampered[6], tampered[7]]);
+    tampered[6..8].copy_from_slice(&(flags ^ 0b0010u16).to_le_bytes());
+    let evil = tmp("aad-evil").with_extension("gfdeck");
+    std::fs::write(&evil, &tampered).unwrap();
+
+    let good: VerifyingKey = sign_key().verifying_key();
+    let err = open(&evil, &key, Some(&good)).unwrap_err();
+    assert_eq!(err.code(), "DK-PACK-SIGNATURE", "改 flags 必须破坏签名");
+}
+
+#[test]
 fn info_is_readable_without_key() {
     let dir = theme_dir();
     let out = tmp("info").with_extension("gfdeck");

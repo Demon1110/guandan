@@ -446,7 +446,9 @@ async fn seat_assignment_rejects_overflow_and_reports_free_seats() {
     // 指座到已占座位：拒，并给出当前空座（此时只剩 3）。
     let (tx, _rx) = mpsc::unbounded_channel();
     let err = room.join(Some(1), tx).await.expect_err("占座必须拒");
-    let gf_server::JoinError::SeatTaken { available } = err;
+    let gf_server::JoinError::SeatTaken { available } = err else {
+        panic!("期望 SeatTaken，实际 {err:?}");
+    };
     assert_eq!(available, vec![3], "座位 1 已占，可分配只剩 3");
 
     // 补满第四座 → 满员触发发牌。
@@ -464,7 +466,9 @@ async fn seat_assignment_rejects_overflow_and_reports_free_seats() {
     // 房间已满：再入座必须被拒，并给出空表。
     let (tx, _rx) = mpsc::unbounded_channel();
     let err = room.join(None, tx).await.expect_err("满员必须拒");
-    let gf_server::JoinError::SeatTaken { available } = err;
+    let gf_server::JoinError::SeatTaken { available } = err else {
+        panic!("期望 SeatTaken，实际 {err:?}");
+    };
     assert!(available.is_empty(), "满员时 availableSeats 必须为空表");
 }
 

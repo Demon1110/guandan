@@ -30,16 +30,20 @@ async fn next_frame(
         let msg = tokio::time::timeout(Duration::from_secs(5), socket.next())
             .await
             .expect("等帧超时")?;
-        match msg.expect("读帧失败") {
-            Message::Binary(bytes) => {
-                let (kind, body) = wire::split(&bytes).expect("帧头应可拆");
-                return Some((kind, body.to_vec()));
-            }
-            Message::Close(_) => return None,
-            other => {
-                eprintln!("[client] 非二进制帧：{other:?}");
-                continue;
-            }
+        match msg {
+            Ok(msg) => match msg {
+                Message::Binary(bytes) => {
+                    let (kind, body) = wire::split(&bytes).expect("帧头应可拆");
+                    return Some((kind, body.to_vec()));
+                }
+                Message::Close(_) => return None,
+                other => {
+                    eprintln!("[client] 非二进制帧：{other:?}");
+                    continue;
+                }
+            },
+            // 服务端主动断开（含鉴权失败）表现为读错误，统一当连接结束。
+            Err(_) => return None,
         }
     }
 }
@@ -61,6 +65,7 @@ async fn four_clients_join_over_websocket() {
     });
 
     let mut clients = Vec::new();
+    let mut seat_tokens = Vec::new();
     let mut seen_snapshots = Vec::new();
 
     // 先四座位全部入座（各自的入座回执必须第一帧到）。
@@ -69,6 +74,7 @@ async fn four_clients_join_over_websocket() {
         let join = pb::JoinRoom {
             match_id: "match-ws".to_owned(),
             seat: None,
+            seat_token: String::new(),
             client_version: "0.1.0".to_owned(),
         };
         socket
@@ -84,6 +90,8 @@ async fn four_clients_join_over_websocket() {
         assert!(ack.accept, "入座应被接受");
         assert_eq!(ack.seat, expect_seat, "座位按最小空位分配");
         assert!(ack.reason.is_none());
+        assert!(!ack.seat_token.is_empty(), "匿名入座必须下发重连令牌");
+        seat_tokens.push(ack.seat_token);
         clients.push(socket);
     }
 
@@ -107,6 +115,49 @@ async fn four_clients_join_over_websocket() {
         assert!(!snapshot.view.is_empty(), "视图不得为空");
         seen_snapshots.push(snapshot);
     }
+
+    // 匿名重连必须出示座位令牌：无令牌的 RECONNECT 不能顶掉座位 0。
+    clients[0].close(None).await.expect("断开座位 0");
+    tokio::time::sleep(Duration::from_millis(80)).await;
+
+    let mut attacker = connect(addr).await;
+    let hijack = pb::Reconnect {
+        match_id: "match-ws".to_owned(),
+        seat: 0,
+        last_seat_seq: 0,
+        seat_token: String::new(),
+    };
+    attacker
+        .send(Message::Binary(
+            wire::encode(wire::kind::RECONNECT, &hijack.encode_to_vec()).into(),
+        ))
+        .await
+        .expect("发重连帧失败");
+    assert!(
+        next_frame(&mut attacker).await.is_none(),
+        "匿名重连缺座位令牌必须被断开"
+    );
+
+    // 本人带令牌可以重连，并拿到增量/快照。
+    let mut owner = connect(addr).await;
+    let legit = pb::Reconnect {
+        match_id: "match-ws".to_owned(),
+        seat: 0,
+        last_seat_seq: 0,
+        seat_token: seat_tokens[0].clone(),
+    };
+    owner
+        .send(Message::Binary(
+            wire::encode(wire::kind::RECONNECT, &legit.encode_to_vec()).into(),
+        ))
+        .await
+        .expect("发重连帧失败");
+    let (kind, _) = next_frame(&mut owner).await.expect("本人重连应收到帧");
+    assert!(
+        matches!(kind, wire::kind::ROOM_DELTA | wire::kind::ROOM_SNAPSHOT),
+        "重连应补发增量或快照，实际 {kind}"
+    );
+    let _ = owner.close(None).await;
 
     for socket in &mut clients {
         let _ = socket.close(None).await;
@@ -132,6 +183,7 @@ async fn client_too_old_is_refused() {
     let join = pb::JoinRoom {
         match_id: "match-old".to_owned(),
         seat: None,
+        seat_token: String::new(),
         client_version: "0.1.0".to_owned(),
     };
     socket

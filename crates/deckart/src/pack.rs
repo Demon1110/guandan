@@ -4,12 +4,16 @@
 //! ```text
 //! +0   magic "GFDK"
 //! +4   u16 格式版本
-//! +6   u16 flags（bit0 压缩预留 / bit1 加密 / bit2 签名）
+//! +6   u16 flags（bit0 压缩预留 / bit1 加密 / bit2 签名 / bit3 签名覆盖头字段）
 //! +8   u32 header_len
 //! +12  header JSON（明文：themeId / themeVersion / license / keyId / entries）
 //! ..   payload（每条 entry = nonce12 || ciphertext+tag16）
 //! ..   signature（64B，仅 flags 含签名时）
 //! ```
+//!
+//! **安全边界**：AES-256 只做内容混淆（内置密钥随包分发，拿不到真正机密性）；
+//! 真实性由 Ed25519 签名提供。生产包必须签名、并在验签时绑定 `keyId`，内置密钥仅限
+//! 开发/主题预览，不得承载需要防篡改的内容。
 
 use std::collections::HashMap;
 #[cfg(feature = "pack-write")]
@@ -34,6 +38,8 @@ pub const FORMAT_VERSION: u16 = 1;
 pub const FLAG_COMPRESSED: u16 = 0b0001;
 pub const FLAG_ENCRYPTED: u16 = 0b0010;
 pub const FLAG_SIGNED: u16 = 0b0100;
+/// 签名覆盖头字段（flags + headerLen）的新格式；老包不带此位，按旧口径校验。
+pub const FLAG_SIGNED_AAD: u16 = 0b1000;
 
 const NONCE_LEN: usize = 12;
 const TAG_LEN: usize = 16;
@@ -53,7 +59,8 @@ fn builtin_key_part2() -> [u8; 16] {
     ]
 }
 
-/// 内置默认密钥与 keyId。`themeKey` 由服务端下发时用 `key_id` 区分（方案 B 预留）。
+/// 内置默认密钥与 keyId。**只提供混淆，不是机密性保证**：密钥随客户端分发，
+/// 任何人都能解包。生产主题包应使用外部 `themeKey` + `key_id` 绑定，并强制签名。
 pub fn builtin_key() -> ([u8; 32], String) {
     let mut key = [0u8; 32];
     key[..16].copy_from_slice(&builtin_key_part1());
@@ -169,8 +176,11 @@ pub fn pack_theme(
     let mut flags = FLAG_ENCRYPTED;
     let mut signature: Option<[u8; SIG_LEN]> = None;
     if let Some(sk) = opts.signing_key {
-        flags |= FLAG_SIGNED;
+        flags |= FLAG_SIGNED | FLAG_SIGNED_AAD;
         let mut signed = Vec::new();
+        // AAD：把 flags 与 headerLen 一起签进去，防止「清签名位/改加密位」绕过。
+        signed.extend_from_slice(&flags.to_le_bytes());
+        signed.extend_from_slice(&(header_json.len() as u32).to_le_bytes());
         signed.extend_from_slice(&header_json);
         signed.extend_from_slice(&payload);
         signature = Some(sk.sign(&signed).to_bytes());
@@ -242,6 +252,21 @@ pub fn open(
     open_bytes(&std::fs::read(pack)?, key, verify_key)
 }
 
+/// 生产口径：强制验签 + 绑定 `keyId`。`verify_key` 不能省略，`keyId` 必须与包内一致，
+/// 内置混淆密钥（`builtin-v1`）默认不作为生产 keyId 使用。
+pub fn open_bytes_verified(
+    bytes: &[u8],
+    key: &[u8; 32],
+    verify_key: &VerifyingKey,
+    expected_key_id: &str,
+) -> Result<Theme, DeckError> {
+    let info = info_from_bytes(bytes)?;
+    if info.key_id != expected_key_id {
+        return Err(DeckError::PackSignature);
+    }
+    open_bytes(bytes, key, Some(verify_key))
+}
+
 /// 解密并组装主题（字节来源，不落盘）。wasm 侧从这里进。
 pub fn open_bytes(
     bytes: &[u8],
@@ -249,18 +274,26 @@ pub fn open_bytes(
     verify_key: Option<&VerifyingKey>,
 ) -> Result<Theme, DeckError> {
     let c = parse_container(bytes)?;
-    if c.flags & FLAG_SIGNED != 0 {
-        let Some(vk) = verify_key else {
+    if let Some(vk) = verify_key {
+        // 给了公钥就必须验签：不能靠「清掉签名位」把签名包降级成裸包。
+        if c.flags & FLAG_SIGNED == 0 {
             return Err(DeckError::PackSignature);
-        };
+        }
         let Some(sig_bytes) = c.sig else {
             return Err(DeckError::PackCorrupt("缺签名".into()));
         };
-        let mut signed = Vec::with_capacity(c.header_json.len() + c.payload.len() + 1);
+        let mut signed = Vec::with_capacity(c.header_json.len() + c.payload.len() + 8);
+        if c.flags & FLAG_SIGNED_AAD != 0 {
+            // 新格式：flags 与 headerLen 也在签名覆盖范围内。
+            signed.extend_from_slice(&c.flags.to_le_bytes());
+            signed.extend_from_slice(&(c.header_len as u32).to_le_bytes());
+        }
         signed.extend_from_slice(&c.header_json);
         signed.extend_from_slice(&c.payload);
         vk.verify_strict(&signed, &Signature::from_bytes(&sig_bytes))
             .map_err(|_| DeckError::PackSignature)?;
+    } else if c.flags & FLAG_SIGNED != 0 {
+        return Err(DeckError::PackSignature);
     }
     let plain = decrypt_entries(&c.header, c.payload, c.flags, key)?;
     let assets: HashMap<String, String> = plain
@@ -312,6 +345,7 @@ pub fn unpack(
 struct Container {
     header: PackHeader,
     header_json: Vec<u8>,
+    header_len: usize,
     payload: Vec<u8>,
     flags: u16,
     sig: Option<[u8; SIG_LEN]>,
@@ -378,6 +412,7 @@ fn parse_container(bytes: &[u8]) -> Result<Container, DeckError> {
     Ok(Container {
         header,
         header_json,
+        header_len,
         payload,
         flags,
         sig,

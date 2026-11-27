@@ -748,6 +748,36 @@ pub unsafe extern "C" fn gf_theme_load(
     pub_ptr: *const u8,
     pub_len: usize,
 ) -> *mut u8 {
+    // 跨 FFI 边界 panic 会 abort 整个 wasm 实例，任何输入都只能返回错误串。
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        theme_load_impl(pack_ptr, pack_len, pub_ptr, pub_len)
+    }))
+    .unwrap_or_else(|_| theme_err("theme load panicked"))
+}
+
+/// 生产入口：必须提供公钥，签名包缺失/伪造一律拒绝（不提供 `gf_theme_load` 的无密钥降级）。
+#[no_mangle]
+pub unsafe extern "C" fn gf_theme_load_verified(
+    pack_ptr: *const u8,
+    pack_len: usize,
+    pub_ptr: *const u8,
+    pub_len: usize,
+) -> *mut u8 {
+    if pub_len == 0 {
+        return theme_err("public key required");
+    }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        theme_load_impl(pack_ptr, pack_len, pub_ptr, pub_len)
+    }))
+    .unwrap_or_else(|_| theme_err("theme load panicked"))
+}
+
+unsafe fn theme_load_impl(
+    pack_ptr: *const u8,
+    pack_len: usize,
+    pub_ptr: *const u8,
+    pub_len: usize,
+) -> *mut u8 {
     let pack = bytes_at(pack_ptr, pack_len);
     if pack.is_empty() {
         return theme_err("empty pack");
@@ -807,6 +837,11 @@ pub unsafe extern "C" fn gf_theme_load(
 /// 返回 `{"ok":true,"cards":[{"code","svg"}...]}`。
 #[no_mangle]
 pub extern "C" fn gf_theme_preview() -> *mut u8 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(theme_preview_impl))
+        .unwrap_or_else(|_| theme_err("theme preview panicked"))
+}
+
+fn theme_preview_impl() -> *mut u8 {
     let Some(t) = deck() else {
         return theme_err("no theme loaded");
     };
@@ -824,6 +859,18 @@ pub extern "C" fn gf_theme_preview() -> *mut u8 {
 /// 返回 `{"ok":true,"code","svg"}`。缓存键建议 `(themeId, themeVersion, code, levelRank, cornerPct)`。
 #[no_mangle]
 pub unsafe extern "C" fn gf_theme_card(
+    code_ptr: *const u8,
+    code_len: usize,
+    level_rank: u8,
+    corner_pct: u8,
+) -> *mut u8 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        theme_card_impl(code_ptr, code_len, level_rank, corner_pct)
+    }))
+    .unwrap_or_else(|_| theme_err("theme card panicked"))
+}
+
+unsafe fn theme_card_impl(
     code_ptr: *const u8,
     code_len: usize,
     level_rank: u8,
@@ -872,6 +919,11 @@ pub unsafe extern "C" fn gf_theme_card(
 /// 牌背（跟级牌无关，一个主题只有一张）。返回 `{"ok":true,"svg"}`。
 #[no_mangle]
 pub extern "C" fn gf_theme_back() -> *mut u8 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(theme_back_impl))
+        .unwrap_or_else(|_| theme_err("theme back panicked"))
+}
+
+fn theme_back_impl() -> *mut u8 {
     let Some(t) = deck() else {
         return theme_err("no theme loaded");
     };

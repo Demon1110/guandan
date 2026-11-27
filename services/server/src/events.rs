@@ -239,6 +239,7 @@ pub fn join_ack_frame(
     accept: bool,
     available_seats: &[u8],
     reason: Option<&str>,
+    seat_token: Option<&str>,
 ) -> Vec<u8> {
     let msg = pb::JoinAck {
         match_id: match_id.to_owned(),
@@ -246,6 +247,7 @@ pub fn join_ack_frame(
         accept,
         available_seats: available_seats.iter().map(|s| u32::from(*s)).collect(),
         reason: reason.map(str::to_owned),
+        seat_token: seat_token.unwrap_or_default().to_owned(),
     };
     encode(kind::JOIN_ACK, &prost::Message::encode_to_vec(&msg))
 }

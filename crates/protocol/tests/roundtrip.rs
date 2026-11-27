@@ -21,6 +21,7 @@ fn join_room_roundtrip() {
     let msg = JoinRoom {
         match_id: "match-001".into(),
         seat: Some(2),
+        seat_token: "tok-join".into(),
         client_version: "1.4.2".into(),
     };
     let back = roundtrip(&msg);
@@ -36,6 +37,7 @@ fn join_ack_roundtrip_with_available_seats() {
         accept: false,
         available_seats: vec![1, 3],
         reason: Some("RS_SEAT_TAKEN".into()),
+        seat_token: "tok-seat-0".into(),
     };
     let back = roundtrip(&msg);
     assert_eq!(msg, back);

@@ -64,6 +64,31 @@ pub struct App {
     started_at: Instant,
 }
 
+/// 建房拒绝原因（对外只暴露短原因，细节进日志）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RoomCreateError {
+    /// 场次号不合规（长度/字符集），也挡住把 `:` 之类拼进 Redis 键的玩法。
+    InvalidMatchId,
+    /// 进程内房间数已达 `max_rooms`。
+    TooManyRooms,
+    /// 规则集建桌失败（正常不会发生）。
+    Engine(String),
+}
+
+/// 场次号白名单：1..=48 个 `[A-Za-z0-9_-]`，且必须以字母/数字开头。
+pub fn valid_match_id(match_id: &str) -> bool {
+    let bytes = match_id.as_bytes();
+    if bytes.is_empty() || bytes.len() > 48 {
+        return false;
+    }
+    if !bytes[0].is_ascii_alphanumeric() {
+        return false;
+    }
+    bytes
+        .iter()
+        .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-' || *byte == b'_')
+}
+
 impl App {
     /// 建进程状态。
     pub fn new(cfg: ServerConfig) -> Arc<Self> {
@@ -195,25 +220,32 @@ impl App {
     }
 
     /// 取房间；不存在则按需建房（本机联调期的「进房即建房」）。
-    pub async fn room_or_create(&self, match_id: &str) -> Arc<RoomHost> {
+    pub async fn room_or_create(&self, match_id: &str) -> Result<Arc<RoomHost>, RoomCreateError> {
+        if !valid_match_id(match_id) {
+            return Err(RoomCreateError::InvalidMatchId);
+        }
         if let Some(room) = self.rooms.read().await.get(match_id).cloned() {
-            return room;
+            return Ok(room);
         }
         let mut rooms = self.rooms.write().await;
         if let Some(room) = rooms.get(match_id).cloned() {
-            return room;
+            return Ok(room);
+        }
+        if rooms.len() >= self.cfg.max_rooms {
+            return Err(RoomCreateError::TooManyRooms);
         }
         let seed = self.room_seq.fetch_add(1, Ordering::Relaxed);
         let opts = RoomOptions {
             tick_ms: self.cfg.tick_ms,
             next_deal_ms: self.cfg.next_deal_ms,
         };
-        let room = RoomHost::spawn(match_id.to_owned(), seed, opts).expect("经典规则集建桌失败");
+        let room = RoomHost::spawn(match_id.to_owned(), seed, opts)
+            .map_err(|err| RoomCreateError::Engine(err.to_string()))?;
         if self.store().is_some() {
             room.attach_recorder(self.storage_tx.clone());
         }
         rooms.insert(match_id.to_owned(), room.clone());
-        room
+        Ok(room)
     }
 
     /// 只取已有房间（回放查询等不该顺手建房的地方用）。
@@ -221,20 +253,55 @@ impl App {
         self.rooms.read().await.get(match_id).cloned()
     }
 
+    /// 回收已结束/空置房间，返回清掉的个数。每 60 秒由后台任务调一次。
+    pub async fn reap_rooms(&self) -> usize {
+        let retention = std::time::Duration::from_millis(self.cfg.room_retention_ms);
+        let idle = std::time::Duration::from_millis(self.cfg.room_idle_ms);
+        let candidates: Vec<(String, Arc<RoomHost>)> = self
+            .rooms
+            .read()
+            .await
+            .iter()
+            .map(|(id, room)| (id.clone(), room.clone()))
+            .collect();
+        let mut dead = Vec::new();
+        for (id, room) in candidates {
+            if room.reapable(retention, idle).await {
+                dead.push(id);
+            }
+        }
+        if dead.is_empty() {
+            return 0;
+        }
+        let mut rooms = self.rooms.write().await;
+        for id in &dead {
+            rooms.remove(id);
+        }
+        println!(
+            "[rooms] 回收 {} 张房间（上限 {}）",
+            dead.len(),
+            self.cfg.max_rooms
+        );
+        dead.len()
+    }
+
     /// 建房（返回可用房间号）。房间号由调用方给定，便于房间码分享。
-    pub async fn create_room(&self, match_id: &str) -> Arc<RoomHost> {
+    pub async fn create_room(&self, match_id: &str) -> Result<Arc<RoomHost>, RoomCreateError> {
         self.room_or_create(match_id).await
     }
 
     /// `POST /api/room/create` 的实现：生成场次号 → 建房 → 出房间码。
-    pub async fn create_room_with_code(&self, mode: Mode) -> (Arc<RoomHost>, String) {
+    pub async fn create_room_with_code(
+        &self,
+        mode: Mode,
+    ) -> Result<(Arc<RoomHost>, String), RoomCreateError> {
         let match_id = loop {
             let id = self.lobby.lock().await.new_match_id();
             if !self.rooms.read().await.contains_key(&id) {
                 break id;
             }
         };
-        let room = self.room_or_create(&match_id).await;
+        let room = self.room_or_create(&match_id).await?;
         if let Some(store) = self.store() {
             store
                 .insert_match(
@@ -250,13 +317,13 @@ impl App {
             let mut lobby = self.lobby.lock().await;
             lobby.issue_code(&match_id, self.now_ms(), self.cfg.room_code_ttl_ms)
         };
-        (room, code)
+        Ok((room, code))
     }
 
     /// 凭房间码找房间；失效码返回 `None`。
     pub async fn room_by_code(&self, code: &str) -> Option<Arc<RoomHost>> {
         let match_id = self.lobby.lock().await.resolve_code(code, self.now_ms())?;
-        Some(self.room_or_create(&match_id).await)
+        self.room_or_create(&match_id).await.ok()
     }
 
     /// 入匹配队列，返回票号。
@@ -312,7 +379,10 @@ impl App {
             &taken,
         )?;
         drop(lobby);
-        self.room_or_create(&match_id).await;
+        if self.room_or_create(&match_id).await.is_err() {
+            // 房间数触顶：本批票先不放行，避免客户端拿着票找不到房。
+            return None;
+        }
         if let Some(store) = self.store() {
             store
                 .insert_match(
@@ -415,6 +485,14 @@ pub async fn serve_on(app: Arc<App>, addr: SocketAddr) -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let local = listener.local_addr()?;
     println!("gf-server 监听 {local}");
+    // 房间回收：已结束的留 10 分钟给回放导出，空房留 10 分钟；上限另有 max_rooms 兜底。
+    let reaper = app.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            reaper.reap_rooms().await;
+        }
+    });
     axum::serve(listener, app.router()).await
 }
 
@@ -436,18 +514,30 @@ async fn healthz(State(app): State<Arc<App>>) -> impl IntoResponse {
 async fn create_room(
     State(app): State<Arc<App>>,
     Json(body): Json<CreateRoomBody>,
-) -> impl IntoResponse {
-    if body.match_id.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"reason": "RS_SCHEMA_INVALID"})),
-        );
+) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    let match_id = body.match_id.trim();
+    match app.create_room(match_id).await {
+        Ok(room) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"match_id": room.match_id(), "seats": host::SEATS})),
+        )
+            .into_response(),
+        Err(RoomCreateError::InvalidMatchId) => invalid_request("MATCH_ID_INVALID"),
+        Err(RoomCreateError::TooManyRooms) => (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({"reason": "RATE_LIMITED"})),
+        )
+            .into_response(),
+        Err(err) => {
+            eprintln!("[lobby] 建房失败：{err:?}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"reason": "INTERNAL"})),
+            )
+                .into_response()
+        }
     }
-    let room = app.create_room(body.match_id.trim()).await;
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({"match_id": room.match_id(), "seats": host::SEATS})),
-    )
 }
 
 /// `POST /api/room/create`（§5.15）：建房并出房间码。
@@ -484,7 +574,24 @@ async fn room_create(
     {
         return invalid_request("SEATS_MISMATCH");
     }
-    let (room, code) = app.create_room_with_code(mode).await;
+    let (room, code) = match app.create_room_with_code(mode).await {
+        Ok(pair) => pair,
+        Err(RoomCreateError::TooManyRooms) => {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(serde_json::json!({"reason": "RATE_LIMITED"})),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            eprintln!("[lobby] 建房失败：{err:?}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"reason": "INTERNAL"})),
+            )
+                .into_response();
+        }
+    };
     Json(serde_json::json!({
         "matchId": room.match_id(),
         "inviteCode": code,
@@ -532,6 +639,8 @@ async fn room_join(
             "reason": "RS_SEAT_TAKEN",
         }))
         .into_response(),
+        // reserve_for 本身不会产生 AuthInvalid，这里只为匹配闭集。
+        Err(JoinError::AuthInvalid) => unauthorized(),
     }
 }
 
@@ -858,33 +967,52 @@ async fn session(app: Arc<App>, socket: WebSocket, owner: Option<String>) {
                     break;
                 }
                 if !app.cfg.accepts_version(&join.client_version) {
-                    // TODO(M2-OPEN-02)：设计要求连接级错误走 WS Close code，本切片先借 JoinAck 载体。
                     let _ = tx.send(events::join_ack_frame(
                         &join.match_id,
                         0,
                         false,
                         &[],
                         Some("CLIENT_TOO_OLD"),
+                        None,
                     ));
                     break;
                 }
-                let room = app.room_or_create(&join.match_id).await;
+                let Ok(room) = app.room_or_create(&join.match_id).await else {
+                    let _ = tx.send(events::join_ack_frame(
+                        &join.match_id,
+                        0,
+                        false,
+                        &[],
+                        Some("RATE_LIMITED"),
+                        None,
+                    ));
+                    break;
+                };
                 let hint = join.seat.and_then(|s| u8::try_from(s).ok());
-                match room.join_as(hint, tx.clone(), owner.clone()).await {
-                    Ok(seat) => {
+                match room
+                    .join_with_token(
+                        hint,
+                        tx.clone(),
+                        owner.clone(),
+                        (!join.seat_token.is_empty()).then_some(join.seat_token.as_str()),
+                    )
+                    .await
+                {
+                    Ok(ticket) => {
                         let _ = tx.send(events::join_ack_frame(
                             &join.match_id,
-                            seat,
+                            ticket.seat,
                             true,
                             &[],
                             None,
+                            Some(&ticket.token),
                         ));
                         // 入座回执先发，再按「满四人」开局；新座位随后拿全量快照。
                         room.start_if_full().await;
-                        if let Ok(snapshot) = room.join_snapshot(seat).await {
+                        if let Ok(snapshot) = room.join_snapshot(ticket.seat).await {
                             let _ = tx.send(snapshot);
                         }
-                        bound = Some((room, seat));
+                        bound = Some((room, ticket.seat));
                     }
                     Err(JoinError::SeatTaken { available }) => {
                         let _ = tx.send(events::join_ack_frame(
@@ -893,7 +1021,19 @@ async fn session(app: Arc<App>, socket: WebSocket, owner: Option<String>) {
                             false,
                             &available,
                             Some("RS_SEAT_TAKEN"),
+                            None,
                         ));
+                    }
+                    Err(JoinError::AuthInvalid) => {
+                        let _ = tx.send(events::join_ack_frame(
+                            &join.match_id,
+                            0,
+                            false,
+                            &[],
+                            Some("AUTH_INVALID"),
+                            None,
+                        ));
+                        break;
                     }
                 }
             }
@@ -923,15 +1063,20 @@ async fn session(app: Arc<App>, socket: WebSocket, owner: Option<String>) {
                 let Ok(re) = pb::Reconnect::decode(body) else {
                     break;
                 };
-                let room = app.room_or_create(&re.match_id).await;
                 let Ok(seat) = u8::try_from(re.seat) else {
                     break;
                 };
-                // 带 token 的重连只允许回到本人占过的座位（§5.9 AUTH_INVALID 的座位口径）。
+                let Some(room) = app.room(&re.match_id).await else {
+                    break;
+                };
+                // 带 token 的重连只允许回到本人占过的座位（§5.9 AUTH_INVALID 的座位口径）；
+                // 匿名座位必须出示 JoinAck 下发的一次性令牌，否则凭座位号就能顶号。
                 if let Some(owner) = &owner {
                     if room.seat_owner(seat).await.as_deref() != Some(owner.as_str()) {
                         break;
                     }
+                } else if !room.seat_token_matches(seat, &re.seat_token).await {
+                    break;
                 }
                 if !room.rebind(seat, tx.clone()).await {
                     break;
@@ -964,4 +1109,42 @@ async fn session(app: Arc<App>, socket: WebSocket, owner: Option<String>) {
     // 让写侧把队列里的帧刷完再收尾（直接 abort 会截断最后几帧）。
     drop(tx);
     let _ = writer.await;
+}
+
+#[cfg(test)]
+mod audit_tests {
+    use super::*;
+
+    #[test]
+    fn match_id_whitelist_blocks_paths_and_junk() {
+        assert!(valid_match_id("match-001_A"));
+        assert!(valid_match_id("a"));
+        assert!(!valid_match_id(""));
+        assert!(!valid_match_id("../etc/passwd"));
+        assert!(!valid_match_id("-leading"));
+        assert!(!valid_match_id("with space"));
+        assert!(!valid_match_id(&"x".repeat(49)));
+    }
+
+    #[tokio::test]
+    async fn room_cap_and_id_validation_are_enforced() {
+        let app = App::new(ServerConfig {
+            max_rooms: 1,
+            tick_ms: 50,
+            ..ServerConfig::default()
+        });
+        assert!(matches!(
+            app.room_or_create("../x").await,
+            Err(RoomCreateError::InvalidMatchId)
+        ));
+        assert!(app.room_or_create("m-1").await.is_ok());
+        assert!(matches!(
+            app.room_or_create("m-2").await,
+            Err(RoomCreateError::TooManyRooms)
+        ));
+        assert!(
+            app.room_or_create("m-1").await.is_ok(),
+            "已有房间不受上限影响"
+        );
+    }
 }

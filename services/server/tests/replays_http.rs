@@ -79,7 +79,7 @@ async fn replay_requires_login_and_seat_ownership() {
     let (status, _) = call(&app, "/api/replays/m-none", Some(&token)).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "没有这桌就是 404");
 
-    app.create_room("m-exists").await;
+    app.create_room("m-exists").await.expect("建房");
     let (status, _) = call(&app, "/api/replays/m-exists", Some(&token)).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "没坐这桌不能导出");
 }

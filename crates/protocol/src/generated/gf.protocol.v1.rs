@@ -10,6 +10,9 @@ pub struct JoinRoom {
     /// 客户端构建版本，semver 字符串 MAJOR.MINOR.PATCH（§5.16 行 950）。
     #[prost(string, tag = "3")]
     pub client_version: ::prost::alloc::string::String,
+    /// 续座时带回 JoinAck.seat_token；新座位留空。匿名座位凭它证明是本人。
+    #[prost(string, tag = "4")]
+    pub seat_token: ::prost::alloc::string::String,
 }
 /// S→C 入座响应（§5.9 行 712）。成功与 RS_SEAT_TAKEN 都走本帧。
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -29,6 +32,10 @@ pub struct JoinAck {
     /// TODO(M0-GAP-proto-02): reason 是否收为枚举待协议评审，v1 暂用字符串载体。
     #[prost(string, optional, tag = "5")]
     pub reason: ::core::option::Option<::prost::alloc::string::String>,
+    /// 匿名座位的一次性重连令牌（accept=true 时下发，只给本人）。
+    /// 断线重连必须原样带回；带 access token 的座位不依赖它。
+    #[prost(string, tag = "6")]
+    pub seat_token: ::prost::alloc::string::String,
 }
 /// C→S 断线重连（§5.9 行 713）。lastSeatSeq 之后的增量由服务端补齐；
 /// 该水位早于缓冲起点时只发 RoomSnapshot 并以快照 roomSeq 为新起点（§6.2）。
@@ -42,6 +49,9 @@ pub struct Reconnect {
     /// 每座位单调递增序号，u64（§5.9 行 714）。
     #[prost(uint64, tag = "3")]
     pub last_seat_seq: u64,
+    /// 匿名座位的重连令牌（JoinAck.seat_token）；带 access token 的座位可缺省。
+    #[prost(string, tag = "4")]
+    pub seat_token: ::prost::alloc::string::String,
 }
 /// play 分支：只传牌 id；patternId 由服务端判定（§5.9 行 727）。
 #[derive(Clone, PartialEq, ::prost::Message)]

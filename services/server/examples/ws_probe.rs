@@ -21,6 +21,7 @@ async fn main() {
     let join = pb::JoinRoom {
         match_id: "probe".to_owned(),
         seat: None,
+        seat_token: String::new(),
         client_version: "0.1.0".to_owned(),
     };
     socket

@@ -39,6 +39,14 @@ pub struct ServerConfig {
     pub room_code_ttl_ms: u64,
     /// 匹配排队超时（毫秒），超时后轮询返回 `timeout`。
     pub match_timeout_ms: u64,
+    /// 部署环境：`dev`（默认）或 `production`。生产环境拒绝开发默认密钥。
+    pub env: String,
+    /// 进程内房间上限（防循环建房把内存/CPU 打满）。
+    pub max_rooms: usize,
+    /// 已结束房间保留时长（回放导出窗口），过期后回收。
+    pub room_retention_ms: u64,
+    /// 未开局且无人在线的空房保留时长。
+    pub room_idle_ms: u64,
     /// 手机号哈希盐（§5.8：单盐，轮换按 §9.7 五步；生产必须覆盖）。
     pub auth_salt: String,
     /// access/refresh token 的 HS256 签名密钥（§8.5：支持双密钥轮换）。
@@ -160,7 +168,11 @@ impl Default for ServerConfig {
             heartbeat_timeout_ms: 30_000,
             room_code_ttl_ms: crate::lobby::DEFAULT_CODE_TTL_MS,
             match_timeout_ms: crate::lobby::DEFAULT_QUEUE_TIMEOUT_MS,
-            // 开发默认值只为本机联调能跑；生产未覆盖视为配置事故（启动时会告警）。
+            env: "dev".to_owned(),
+            max_rooms: 1_024,
+            room_retention_ms: 10 * 60 * 1_000,
+            room_idle_ms: 10 * 60 * 1_000,
+            // 开发默认值只为本机联调能跑；生产未覆盖视为配置事故（`env=production` 时启动失败）。
             auth_salt: "gf-dev-salt-change-me".to_owned(),
             jwt_secret: "gf-dev-jwt-secret-change-me".to_owned(),
             require_auth: false,
@@ -232,6 +244,18 @@ impl ServerConfig {
         }
         if let Some(v) = file.server.match_timeout_ms {
             self.match_timeout_ms = v.max(1_000);
+        }
+        if let Some(v) = file.server.env {
+            self.env = v.trim().to_ascii_lowercase();
+        }
+        if let Some(v) = file.server.max_rooms {
+            self.max_rooms = v.max(1);
+        }
+        if let Some(v) = file.server.room_retention_ms {
+            self.room_retention_ms = v.max(30_000);
+        }
+        if let Some(v) = file.server.room_idle_ms {
+            self.room_idle_ms = v.max(30_000);
         }
         if let Some(v) = file.server.require_auth {
             self.require_auth = v;
@@ -338,6 +362,14 @@ impl ServerConfig {
         if let Some(v) = env_u64("GF_MATCH_TIMEOUT_MS") {
             self.match_timeout_ms = v.max(1_000);
         }
+        if let Ok(v) = env::var("GF_ENV") {
+            self.env = v.trim().to_ascii_lowercase();
+        }
+        if let Ok(v) = env::var("GF_MAX_ROOMS") {
+            if let Ok(parsed) = v.trim().parse::<usize>() {
+                self.max_rooms = parsed.max(1);
+            }
+        }
         if let Ok(v) = env::var("GF_AUTH_SALT") {
             self.auth_salt = v;
         }
@@ -379,6 +411,21 @@ impl ServerConfig {
 
     /// 必填校验：短信选了云片却没凭据，宁可启动失败，也别静默退回日志发码。
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.env == "production" && self.uses_dev_secrets() {
+            return Err(ConfigError {
+                path: None,
+                detail: "[security] env=production 但仍在使用开发默认 auth_salt / jwt_secret；\
+                         必须由 GF_AUTH_SALT / GF_JWT_SECRET 注入 ≥32 字节随机密钥"
+                    .to_owned(),
+            });
+        }
+        if self.env == "production" && (self.auth_salt.len() < 32 || self.jwt_secret.len() < 32) {
+            return Err(ConfigError {
+                path: None,
+                detail: "[security] env=production 要求 auth_salt / jwt_secret 各至少 32 字节"
+                    .to_owned(),
+            });
+        }
         match self.sms.provider.as_str() {
             "log" => Ok(()),
             "yunpian" => {
@@ -507,6 +554,10 @@ struct ServerSection {
     heartbeat_timeout_ms: Option<u64>,
     room_code_ttl_ms: Option<u64>,
     match_timeout_ms: Option<u64>,
+    env: Option<String>,
+    max_rooms: Option<usize>,
+    room_retention_ms: Option<u64>,
+    room_idle_ms: Option<u64>,
     require_auth: Option<bool>,
 }
 
@@ -564,6 +615,23 @@ pub fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn production_refuses_dev_secrets_and_short_keys() {
+        let mut cfg = ServerConfig {
+            env: "production".to_owned(),
+            ..ServerConfig::default()
+        };
+        assert!(cfg.validate().is_err(), "生产 + 开发默认密钥必须拒绝启动");
+
+        cfg.auth_salt = "short".to_owned();
+        cfg.jwt_secret = "x".repeat(32);
+        assert!(cfg.validate().is_err(), "生产密钥不足 32 字节必须拒绝");
+
+        cfg.auth_salt = "a".repeat(32);
+        cfg.jwt_secret = "b".repeat(32);
+        assert!(cfg.validate().is_ok(), "≥32 字节的自定义密钥应放行");
+    }
 
     #[test]
     fn version_gate_defaults_to_open() {
