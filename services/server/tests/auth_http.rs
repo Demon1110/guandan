@@ -208,6 +208,7 @@ async fn require_auth_gates_lobby_and_binds_seats() {
         require_auth: true,
         sms: SmsConfig {
             test_whitelist: vec![PHONE_A.to_owned(), PHONE_B.to_owned()],
+            test_code: TEST_CODE.to_owned(),
             ..SmsConfig::default()
         },
         ..ServerConfig::default()

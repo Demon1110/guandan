@@ -33,7 +33,7 @@ cargo clippy -p gf-server --all-targets -- -D warnings
 | `[security]` | `auth_salt`、`jwt_secret` | 手机号哈希盐、token 签名密钥；默认值是开发串，启动告警 |
 | `[database]` | `url`、`max_connections`、`connect_timeout_ms` | 留空 = 不落库 |
 | `[redis]` | `url`、`snapshot_ttl_ms`、`snapshot_interval_ms`、`actions_max_len` | 留空 = 不写快照/动作流/队列镜像 |
-| `[sms]` | `provider`、`api_key`、`sign`、`text_template`、`template_id`、`test_whitelist` | 见下 |
+| `[sms]` | `provider`、`api_key`、`sign`、`text_template`、`template_id`、`send_enabled`、`send_whitelist`、`test_whitelist`、`test_code` | 见下 |
 
 短信两种模式（`provider = "yunpian"`）：
 
@@ -41,6 +41,8 @@ cargo clippy -p gf-server --all-targets -- -D warnings
 - `template_id = 376861`：走云片「指定模板」，`template_param`（默认 `#code#`）作为变量名传 `tpl_value`。
 
 `provider = "log"` 时只把验证码打进服务端日志（只打尾号 4 位）；选了 `yunpian` 却漏填 `api_key`/`sign` 会启动失败，避免静默退回日志。
+
+短信默认是挡板：`send_enabled = false`，无论 `provider` 填什么都不碰云片接口，验证码只打日志；即使把开关打开，也只有 `send_whitelist` 里的号码会真实下发，其余号码在入队前就被拦下（日志记一行「挡板拦截」）。`test_whitelist` 是登录侧的固定码口子：这些号直接用 `test_code`（默认 `666666`）登录，且不发任何短信。
 
 环境变量仍可覆盖部署相关项（其余走配置文件）：
 
@@ -50,7 +52,7 @@ cargo clippy -p gf-server --all-targets -- -D warnings
 | `GF_AUTH_SALT` / `GF_JWT_SECRET` | 覆盖 `[security]` |
 | `GF_DATABASE_URL` / `GF_REDIS_URL` | 覆盖 `[database].url` / `[redis].url`；不填即纯内存运行 |
 | `GF_SMS_PROVIDER` / `GF_SMS_API_KEY` | 覆盖 `[sms].provider` / `[sms].api_key` |
-| `GF_SMS_TEST_WHITELIST` / `GF_SMS_TEST_CODE` | 覆盖 `[sms].test_whitelist` / `[sms].test_code` |
+| `GF_SMS_SEND_ENABLED` / `GF_SMS_TEST_WHITELIST` / `GF_SMS_TEST_CODE` | 覆盖 `[sms].send_enabled` / `[sms].test_whitelist` / `[sms].test_code` |
 | `GF_REQUIRE_AUTH` | `1`/`true` 时玩家侧接口与 WS 都必须带 access token |
 | `GF_BIND`、`GF_TICK_MS`、`GF_ROOM_CODE_TTL_MS`、`GF_MATCH_TIMEOUT_MS` 等 | 覆盖 `[server]` 同名项 |
 
@@ -112,7 +114,7 @@ cargo clippy -p gf-server --all-targets -- -D warnings
 
 - access 是 HS256 JWT（15 分钟），refresh 是 32 字节随机串（30 天），库里只存其 SHA-256。
 - 手机号规范化后取 `HMAC-SHA256(server_salt, phone)` 与尾号 4 位入库（`player_profile` 字段位），原文只在发码链路内存里出现。
-- 验证码由 `[sms]` 决定投递方式：`provider = "yunpian"` 走云片真实通道（后台线程发送，接口不阻塞）；`log` 只写日志。白名单号始终用 `test_code` 直通、不发真实短信，模板报备未批时靠这条口子跑内测。
+- 验证码由 `[sms]` 决定投递方式：默认挡板（`send_enabled = false`），一条真实短信都不发、只把验证码写进服务端日志；`send_enabled = true` 且 `provider = "yunpian"` 时才走云片，并且只发给 `send_whitelist` 里的号码，其余号码直接拦下。白名单号始终用 `test_code`（默认 `666666`）直通、不发真实短信，模板报备未批时靠这条口子跑内测。
 - 带 token 入座会把座位绑定到玩家；重连回座位时校验同一玩家，HTTP 预占也按玩家 ID 绑定（见下节）。
 
 ## 持久化（PostgreSQL / Redis）

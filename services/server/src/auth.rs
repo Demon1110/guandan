@@ -33,7 +33,7 @@ pub const SMS_DAILY_LIMIT: u32 = 10;
 /// 验证码有效期。
 pub const CODE_TTL_MS: u64 = 5 * 60 * 1_000;
 /// 测试白名单缺省验证码（仅白名单手机号可用）。
-pub const DEFAULT_TEST_CODE: &str = "123456";
+pub const DEFAULT_TEST_CODE: &str = "666666";
 
 /// 发码结果。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -89,7 +89,7 @@ pub struct LogSmsSender;
 impl SmsSender for LogSmsSender {
     fn send(&self, phone: &str, code: &str) {
         println!(
-            "[sms] -> 尾号 {}：验证码 {code}（未接真实通道）",
+            "[sms][挡板] -> 尾号 {}：验证码 {code}（未真实发送）",
             tail4(phone)
         );
     }

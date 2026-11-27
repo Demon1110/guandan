@@ -21,19 +21,21 @@ const YUNPIAN_SINGLE_SEND: &str = "/v2/sms/single_send.json";
 /// 云片「指定模板」接口。
 const YUNPIAN_TPL_SINGLE_SEND: &str = "/v2/sms/tpl_single_send.json";
 
-/// 按配置选发送器：`yunpian` 且有 apikey 走真实通道，其余一律日志通道。
+/// 按配置选发送器：只有「云片 + 有 apikey + 真发开关打开」才走真实通道，
+/// 其余一律日志通道（挡板）。挡板状态在启动日志里明确写出来。
 pub fn build_sender(cfg: &SmsConfig) -> Box<dyn SmsSender> {
-    if cfg.provider == "yunpian" && !cfg.api_key.trim().is_empty() {
+    if cfg.provider == "yunpian" && !cfg.api_key.trim().is_empty() && cfg.send_enabled {
         match YunpianSender::spawn(cfg) {
             Ok(sender) => {
                 println!(
-                    "[sms] 云片通道已启用（{}，模板 {}）",
+                    "[sms] 云片通道已启用（{}，模板 {}，真发白名单 {} 个号）",
                     cfg.endpoint,
                     if cfg.template_id == 0 {
                         "智能匹配".to_owned()
                     } else {
                         cfg.template_id.to_string()
-                    }
+                    },
+                    cfg.send_whitelist.len()
                 );
                 Box::new(sender)
             }
@@ -43,6 +45,8 @@ pub fn build_sender(cfg: &SmsConfig) -> Box<dyn SmsSender> {
             }
         }
     } else {
+        // 挡板：验证码照常生成、照常能登录（白名单号），但一条真实短信都不发。
+        println!("[sms] 挡板开启：不调用云片，验证码只打进服务端日志");
         Box::new(LogSmsSender)
     }
 }
@@ -50,6 +54,8 @@ pub fn build_sender(cfg: &SmsConfig) -> Box<dyn SmsSender> {
 /// 云片发送器：`send` 只入队，真正的 HTTP 调用在后台线程。
 pub struct YunpianSender {
     tx: Sender<Job>,
+    /// 允许真实接收短信的号码（已规范化 11 位）；空 = 谁都不发。
+    allowed: Vec<String>,
 }
 
 struct Job {
@@ -60,15 +66,27 @@ struct Job {
 impl YunpianSender {
     fn spawn(cfg: &SmsConfig) -> std::io::Result<Self> {
         let (tx, rx) = mpsc::channel::<Job>();
+        let allowed: Vec<String> = cfg
+            .send_whitelist
+            .iter()
+            .filter_map(|phone| normalize_digits(phone))
+            .collect();
         let cfg = cfg.clone();
         thread::Builder::new()
             .name("gf-sms-yunpian".to_owned())
             .spawn(move || worker(cfg, rx))?;
-        Ok(Self { tx })
+        Ok(Self { tx, allowed })
     }
 
-    /// 只入队；线程挂了就打日志，发码接口本身仍然返回（验证码已落表）。
+    /// 只入队；号码不在发送白名单就直接拦下（防误发给无关用户）。
     fn enqueue(&self, phone: &str, code: &str) {
+        if !is_send_allowed(&self.allowed, phone) {
+            eprintln!(
+                "[sms] 挡板拦截：尾号 {} 不在 send_whitelist，拒绝真实发送",
+                tail4(phone)
+            );
+            return;
+        }
         let job = Job {
             phone: phone.to_owned(),
             code: code.to_owned(),
@@ -76,6 +94,29 @@ impl YunpianSender {
         if self.tx.send(job).is_err() {
             eprintln!("[sms] 云片队列不可用，尾号 {} 的验证码未发出", tail4(phone));
         }
+    }
+}
+
+/// 真实发送白名单判定：号码规范化成 11 位数字再比，`+86` 前缀也能匹配。
+pub fn is_send_allowed(allowed: &[String], phone: &str) -> bool {
+    match normalize_digits(phone) {
+        Some(digits) => allowed
+            .iter()
+            .any(|item| normalize_digits(item).as_deref() == Some(digits.as_str())),
+        None => false,
+    }
+}
+
+fn normalize_digits(raw: &str) -> Option<String> {
+    let digits: String = raw.chars().filter(|c| c.is_ascii_digit()).collect();
+    let digits = digits
+        .strip_prefix("86")
+        .filter(|rest| rest.len() == 11)
+        .unwrap_or(&digits);
+    if digits.len() == 11 && digits.starts_with('1') {
+        Some(digits.to_owned())
+    } else {
+        None
     }
 }
 
@@ -189,8 +230,10 @@ mod tests {
             template_param: param.to_owned(),
             endpoint: "https://sms.yunpian.com/".to_owned(),
             timeout_ms: 5_000,
+            send_enabled: true,
+            send_whitelist: vec!["13800138000".to_owned()],
             test_whitelist: Vec::new(),
-            test_code: "123456".to_owned(),
+            test_code: "666666".to_owned(),
         }
     }
 
@@ -244,5 +287,17 @@ mod tests {
     fn default_provider_stays_on_log_channel() {
         let cfg = SmsConfig::default();
         assert_eq!(cfg.provider, "log");
+        assert!(!cfg.send_enabled, "默认必须是挡板，不能真发");
+        assert!(cfg.send_whitelist.is_empty());
+    }
+
+    #[test]
+    fn send_whitelist_blocks_everyone_else() {
+        let allowed = vec!["15330213553".to_owned()];
+        assert!(is_send_allowed(&allowed, "15330213553"));
+        assert!(is_send_allowed(&allowed, "+86 153-3021-3553"));
+        assert!(!is_send_allowed(&allowed, "13800138000"), "别的号必须拦下");
+        assert!(!is_send_allowed(&[], "15330213553"), "空白名单 = 谁都不发");
+        assert!(!is_send_allowed(&allowed, "12345"), "畸形号码不发");
     }
 }

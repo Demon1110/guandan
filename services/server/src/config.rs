@@ -121,6 +121,10 @@ pub struct SmsConfig {
     pub endpoint: String,
     /// 单次发送超时（毫秒）。
     pub timeout_ms: u64,
+    /// 真实发送总开关。`false` = 挡板：短信只打日志、绝不外发（默认，防误发）。
+    pub send_enabled: bool,
+    /// 允许真实接收短信的号码（规范化 11 位）。空表 = 一个人都不发。
+    pub send_whitelist: Vec<String>,
     /// 短信通道未批前的测试白名单手机号（规范化 11 位；空表 = 口子关闭）。
     pub test_whitelist: Vec<String>,
     /// 白名单手机号使用的固定验证码。
@@ -138,6 +142,8 @@ impl Default for SmsConfig {
             template_param: "#code#".to_owned(),
             endpoint: "https://sms.yunpian.com".to_owned(),
             timeout_ms: 5_000,
+            send_enabled: false,
+            send_whitelist: Vec::new(),
             test_whitelist: Vec::new(),
             test_code: crate::auth::DEFAULT_TEST_CODE.to_owned(),
         }
@@ -284,6 +290,12 @@ impl ServerConfig {
         if let Some(v) = file.sms.timeout_ms {
             self.sms.timeout_ms = v.max(100);
         }
+        if let Some(v) = file.sms.send_enabled {
+            self.sms.send_enabled = v;
+        }
+        if let Some(v) = file.sms.send_whitelist {
+            self.sms.send_whitelist = v;
+        }
         if let Some(v) = file.sms.test_whitelist {
             self.sms.test_whitelist = v;
         }
@@ -347,6 +359,9 @@ impl ServerConfig {
         if let Ok(v) = env::var("GF_SMS_API_KEY") {
             self.sms.api_key = v.trim().to_owned();
         }
+        if let Ok(v) = env::var("GF_SMS_SEND_ENABLED") {
+            self.sms.send_enabled = matches!(v.trim(), "1" | "true" | "TRUE" | "True" | "yes");
+        }
         if let Ok(v) = env::var("GF_SMS_TEST_WHITELIST") {
             self.sms.test_whitelist = v
                 .split(',')
@@ -406,9 +421,17 @@ impl ServerConfig {
         } else {
             "off"
         };
+        // 短信必须让人一眼看出是真发还是挡板，避免上线后误以为在发。
+        let sms = if self.sms.provider == "yunpian" && self.sms.send_enabled {
+            "yunpian(真发)"
+        } else if self.sms.provider == "yunpian" {
+            "yunpian(挡板)"
+        } else {
+            self.sms.provider.as_str()
+        };
         format!(
-            "bind={} require_auth={} postgres={pg} redis={redis} sms={}",
-            self.bind, self.require_auth, self.sms.provider
+            "bind={} require_auth={} postgres={pg} redis={redis} sms={sms}",
+            self.bind, self.require_auth
         )
     }
 
@@ -522,6 +545,8 @@ struct SmsSection {
     template_param: Option<String>,
     endpoint: Option<String>,
     timeout_ms: Option<u64>,
+    send_enabled: Option<bool>,
+    send_whitelist: Option<Vec<String>>,
     test_whitelist: Option<Vec<String>>,
     test_code: Option<String>,
 }

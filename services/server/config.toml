@@ -56,8 +56,14 @@ template_param = "#code#"
 endpoint = "https://sms.yunpian.com"
 timeout_ms = 5000
 
-# 模板报备未批前的测试白名单：这些号用固定码、不发真实短信。
-# 空表 = 口子关闭。填 11 位手机号，例：["13800138000"]
+# 真实发送总开关。false = 挡板：短信一条都不发，验证码只打日志（默认，防误发）。
+send_enabled = false
+# 允许真实接收短信的号码（11 位）。空表 = 谁都不发，和 send_enabled 是双保险。
+# 例：["15330213553"]
+send_whitelist = []
+
+# 测试白名单：这些号走固定验证码、且不触发真实发送（空表 = 口子关闭）。
+# 例：["15330213553"]
 test_whitelist = []
-test_code = "123456"
+test_code = "666666"
 
