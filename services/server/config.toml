@@ -31,6 +31,8 @@ connect_timeout_ms = 5000
 
 [redis]
 # 留空 = 不写快照/动作流/队列镜像。
+# 无密码：redis://127.0.0.1:6379
+# 有密码：redis://:密码@主机:6379/库号；密码里的 @ ! : / 等要走百分号编码（@→%40，!→%21）。
 url = ""                         # redis://127.0.0.1:6379
 snapshot_ttl_ms = 60000          # 房间快照 TTL
 snapshot_interval_ms = 30000     # 快照刷新间隔
