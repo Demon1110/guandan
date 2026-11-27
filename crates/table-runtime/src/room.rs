@@ -628,7 +628,11 @@ impl Room {
                     .tribute_return_default(self.state()?)
                     .map(|card| Action::TributeReturn { card });
                 let action = default_card
-                    .or_else(|| self.legal_normalized().ok().and_then(|l| l.into_iter().next()))
+                    .or_else(|| {
+                        self.legal_normalized()
+                            .ok()
+                            .and_then(|l| l.into_iter().next())
+                    })
                     .unwrap_or(Action::TributeReturn { card: 0 });
                 return self.apply_action(idx, action, now_ms, None);
             }
@@ -835,6 +839,26 @@ impl Room {
             view.bytes,
             snapshot_reset,
         ))
+    }
+
+    /// 场次标识（回放包 manifest 用）。
+    pub fn match_id(&self) -> &str {
+        &self.match_id
+    }
+
+    /// 场次种子（回放包重建用，原值）。
+    pub fn seed(&self) -> u64 {
+        self.seed
+    }
+
+    /// 规则集身份串（建桌时锁定）。
+    pub fn ruleset_id(&self) -> &str {
+        &self.ruleset_id
+    }
+
+    /// 规则集版本串（建桌时锁定）。
+    pub fn ruleset_version(&self) -> &str {
+        &self.ruleset_version
     }
 
     /// 回放录制自证：把全量日志从首局起点重放，`stateHash` 必须与权威状态逐字节相等。

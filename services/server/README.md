@@ -117,6 +117,17 @@ cargo clippy -p gf-server --all-targets -- -D warnings
 - 验证码由 `[sms]` 决定投递方式：默认挡板（`send_enabled = false`），一条真实短信都不发、只把验证码写进服务端日志；`send_enabled = true` 且 `provider = "yunpian"` 时才走云片，并且只发给 `send_whitelist` 里的号码，其余号码直接拦下。白名单号始终用 `test_code`（默认 `666666`）直通、不发真实短信，模板报备未批时靠这条口子跑内测。
 - 带 token 入座会把座位绑定到玩家；重连回座位时校验同一玩家，HTTP 预占也按玩家 ID 绑定（见下节）。
 
+## 回放包（§7.7）
+
+`GET /api/replays/{matchId}` 返回一个 zip（`manifest.json` / `actions.jsonl` / `hash_trace.jsonl` /
+`logs.txt` / `client_summary.json`），只对**已结束**房间、且调用者坐在这桌的请求放行：
+
+- 匿名请求 → 401；不是本桌玩家 → 403；房间还在打 → 409 + `TOO_LATE`。
+- 导出时服务端自己重放一遍：从 `seed` 重新发牌、按 `roomSeq` 应用全部动作，末态 `stateHash`
+  必须与房间权威状态一致，结论写进 `manifest.verified`；不一致也照常出包（便于排查），但日志会亮一行。
+- 包内含他人手牌，属敏感数据；离线重放与后续观战都只读这个包，不新增房间广播扇出。
+- 离线复现用 `tools/replay-viewer`：`replay-viewer <matchId.zip>`，退出码 0 表示逐步哈希一致。
+
 ## 持久化（PostgreSQL / Redis）
 
 `M2` 第四切片。两侧各自独立可缺席：连接串不填、连不上、建表失败都只打日志并降级，

@@ -34,6 +34,7 @@ base64 = "0.22"
 rand = "0.9"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
 redis = { version = "0.27", default-features = false, features = ["tokio-comp"] }
+zip = { version = "2.6.1", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tokio-tungstenite = "0.29"

@@ -10,5 +10,7 @@ members = [
     "crates/runtime-spike",
     # 后端服务
     "services/server",
+    # 运维工具
+    "tools/replay-viewer",
 ]
 resolver = "2"

@@ -4,15 +4,18 @@
 //! - 联机骨架：HTTP 建房、WS protobuf、满四人发牌、动作判定、结算广播；
 //! - 增量重连：`ReconnectBuffer` 内补发 `RoomDelta`，跨局/结算落快照重置；
 //! - 大厅：房间码、凭码预占座位、匹配队列（内存态）；
-//! - 账号：手机号 + 短信验证码登录、access/refresh token、测试白名单。
+//! - 账号：手机号 + 短信验证码登录、access/refresh token、测试白名单；
+//! - PG/Redis 落库：战绩、账号、快照、动作流、队列镜像；
+//! - 回放包导出：`GET /api/replays/{matchId}`（§7.7），离线复现用 `tools/replay-viewer`。
 //!
-//! 未做：PG/Redis 落库、回放导出、观战、桌面壳产物。
+//! 未做：结算重试与死信补偿、回放式观战 UI、桌面壳跨平台产物。
 
 pub mod auth;
 pub mod config;
 pub mod events;
 pub mod host;
 pub mod lobby;
+pub mod replay;
 pub mod sms;
 pub mod store;
 
@@ -37,7 +40,7 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 
 pub use auth::{Auth, Profile, Session};
 pub use config::{DatabaseConfig, RedisConfig, ServerConfig, SmsConfig};
-pub use host::{JoinError, RoomHost, RoomOptions};
+pub use host::{JoinError, ReplayExportError, RoomHost, RoomOptions};
 pub use lobby::{Lobby, Mode, TicketState};
 pub use store::{RoundRow, StorageEvent, Store};
 
@@ -213,6 +216,11 @@ impl App {
         room
     }
 
+    /// 只取已有房间（回放查询等不该顺手建房的地方用）。
+    pub async fn room(&self, match_id: &str) -> Option<Arc<RoomHost>> {
+        self.rooms.read().await.get(match_id).cloned()
+    }
+
     /// 建房（返回可用房间号）。房间号由调用方给定，便于房间码分享。
     pub async fn create_room(&self, match_id: &str) -> Arc<RoomHost> {
         self.room_or_create(match_id).await
@@ -339,6 +347,7 @@ impl App {
             .route("/api/auth/login", post(auth_login))
             .route("/api/auth/refresh", post(auth_refresh))
             .route("/api/profile", get(profile))
+            .route("/api/replays/{match_id}", get(replay_package))
             .route("/ws", get(ws_upgrade))
             .with_state(self.clone())
     }
@@ -697,6 +706,74 @@ async fn profile(State(app): State<Arc<App>>, headers: HeaderMap) -> axum::respo
         "stats": [],
     }))
     .into_response()
+}
+
+/// `GET /api/replays/{matchId}`（§5.15）：只对已结束房间、且调用者是该桌玩家的请求返回回放包。
+///
+/// 包内含他人手牌，属敏感数据，所以不认匿名请求；不是本桌玩家一律 403。
+async fn replay_package(
+    State(app): State<Arc<App>>,
+    Path(match_id): Path<String>,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    let player_id = match app.authenticate(&headers) {
+        Ok(Some(player_id)) => player_id,
+        Ok(None) => return unauthorized(),
+        Err(resp) => return *resp,
+    };
+    let Some(room) = app.room(&match_id).await else {
+        return not_found("PLAY_REPLAY_NOT_FOUND");
+    };
+    if !room.seated(&player_id).await {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"reason": "AUTH_INVALID"})),
+        )
+            .into_response();
+    }
+    match room.export_replay().await {
+        Ok(pkg) => {
+            if !pkg.verified {
+                eprintln!("[replay] {match_id} 重放末态与权威不一致，包仍导出待排查");
+            }
+            let mut response = axum::body::Bytes::from(pkg.bytes).into_response();
+            let headers = response.headers_mut();
+            headers.insert(
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderValue::from_static("application/zip"),
+            );
+            if let Ok(value) = axum::http::HeaderValue::from_str(&format!(
+                "attachment; filename=\"{}.zip\"",
+                match_id.replace('"', "")
+            )) {
+                headers.insert(axum::http::header::CONTENT_DISPOSITION, value);
+            }
+            response
+        }
+        Err(ReplayExportError::NotFinished) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"reason": "TOO_LATE", "detail": "REPLAY_NOT_FINISHED"})),
+        )
+            .into_response(),
+        Err(ReplayExportError::Build(err)) => {
+            eprintln!("[replay] {match_id} 导出失败：{err}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"reason": "REPLAY_FAILED"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+fn not_found(reason: &str) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({"reason": reason})),
+    )
+        .into_response()
 }
 
 /// 入参不合规（§5.7 没有专门的「参数错误」码，统一复用 `RS_SCHEMA_INVALID`，

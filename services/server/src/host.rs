@@ -66,6 +66,15 @@ pub enum JoinError {
     SeatTaken { available: Vec<u8> },
 }
 
+/// 回放导出拒绝原因。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReplayExportError {
+    /// 房间还在打，不能导出。
+    NotFinished,
+    /// 打包或重放自证失败（内部原因只进日志）。
+    Build(String),
+}
+
 /// 一条座位预留。
 #[derive(Clone, Debug)]
 struct Reservation {
@@ -241,6 +250,24 @@ impl RoomHost {
     /// 该座位绑定的玩家（未带 token 入座的座位为 `None`）。
     pub async fn seat_owner(&self, seat: u8) -> Option<String> {
         self.owners.read().await.get(&seat).cloned()
+    }
+
+    /// 该玩家是否坐在这桌的某个座位上（回放导出鉴权用）。
+    pub async fn seated(&self, player_id: &str) -> bool {
+        self.owners
+            .read()
+            .await
+            .values()
+            .any(|owner| owner == player_id)
+    }
+
+    /// 导出一局的回放包（§7.7）。只允许房间结束后调用。
+    pub async fn export_replay(&self) -> Result<crate::replay::ReplayPackage, ReplayExportError> {
+        if !self.closed.load(Ordering::Relaxed) {
+            return Err(ReplayExportError::NotFinished);
+        }
+        let room = self.room.lock().await;
+        crate::replay::build(&room).map_err(ReplayExportError::Build)
     }
 
     /// 挂上存档通道（`App` 启动时挂一次；不挂时结算不落库）。
