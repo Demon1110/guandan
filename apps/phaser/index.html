@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>掼蛋 · Phaser 版</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: #08301f; font-family: system-ui, sans-serif; }
+    #game-root { width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; }
+    #boot-status {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      color: #cdeedd; font-size: 18px; z-index: 10;
+    }
+    #help {
+      position: absolute; bottom: 8px; left: 12px; color: #7fb99a; font-size: 12px; pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="game-root"></div>
+  <div id="boot-status">正在加载 wasm 与引擎…</div>
+  <div id="help">点「新局」开始 · 点手牌选中 · 出牌/过牌/提示 · 三个 bot 自动接管</div>
+
+  <script src="vendor/phaser.min.js"></script>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
