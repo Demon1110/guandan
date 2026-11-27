@@ -3,6 +3,7 @@
 import { Game } from './game.js';
 import { H, TableScene, W } from './scenes/TableScene.js';
 import { Skin } from './skin.js';
+import { ReplayStore } from './store.js';
 import { setupUI } from './ui.js';
 import { WasmBridge } from './wasm.js';
 
@@ -13,7 +14,9 @@ async function boot() {
     await wasm.load();
     status.textContent = 'wasm 已加载 · 正在载入主题…';
 
-    const game = new Game(wasm);
+    // 回放存档：动作日志 + 场次元信息存 IndexedDB，由 Game 在每手落盘、恢复时重演。
+    const store = new ReplayStore();
+    const game = new Game(wasm, store);
     const skin = new Skin(wasm);
     const scene = new TableScene(game, skin);
 
@@ -47,10 +50,10 @@ async function boot() {
     scene.themeReady = Promise.resolve(themeResult);
 
     // 调试与自动化冒烟用：挂到 window 便于脚本驱动。
-    window.__gf = { wasm, game, skin, scene };
+    window.__gf = { wasm, game, skin, scene, store };
 
     // 开局弹框 / 设置面板：不再自动开局，由用户选择新局或继续。
-    setupUI({ wasm, game, skin, scene });
+    await setupUI({ wasm, game, skin, scene, store });
     status.style.display = 'none';
   } catch (err) {
     status.textContent = `加载失败：${err.message}`;

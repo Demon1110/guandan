@@ -867,7 +867,9 @@ export class TableScene extends Phaser.Scene {
       // 恢复的各家最后出牌由 lastBySeat 还原表现层
       this.restoreTricks();
     } else if (ev.type === 'play') {
-      this.animatePlay(ev.seat, ev.action);
+      // ev.level 是 submit 前捕获的级牌：最后一手结算后引擎已升级级牌，纹理只预热了旧级牌，
+      // 必须用当时级牌渲染，否则 makeCardView 抛"主题纹理缺失"并中断结算流程。
+      this.animatePlay(ev.seat, ev.action, false, ev.level);
     } else if (ev.type === 'tribute') {
       this.animateTribute(ev.event);
     } else if (ev.type === 'settle') {
@@ -1096,8 +1098,10 @@ export class TableScene extends Phaser.Scene {
     this.trickViews.set(seat, []);
   }
 
-  animatePlay(seat, action, silent = false) {
+  animatePlay(seat, action, silent = false, level = null) {
     if (!action || action.tributeReturn) return;
+    // 未指定时用当前级牌（bot 出牌/读档还原走这条）；结算最后一手会显式传入升级前级牌。
+    level = level ?? this.gameModel.levelRankLabel();
     const slot = SLOT_ORDER[this.gameModel.relSlot(seat)];
     const p = SLOTS[slot];
     this.clearSeatTrick(seat);
@@ -1119,7 +1123,7 @@ export class TableScene extends Phaser.Scene {
       const fromX = slot === 'bottom' ? SLOTS.bottom.cx : p.cx;
       const fromY = slot === 'bottom' ? SLOTS.bottom.handY : p.cy + 40;
       const c = this.makeCardView(id, fromX, fromY, {
-        scale: PLAY_SCALE * 0.92, faceUp: true, level: this.gameModel.levelRankLabel(),
+        scale: PLAY_SCALE * 0.92, faceUp: true, level,
       });
       views.push(c);
       const ox = (i - (cards.length - 1) / 2) * gap;
