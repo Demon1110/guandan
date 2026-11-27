@@ -88,11 +88,17 @@ async fn settlement_lands_in_pg_and_redis_when_configured() {
     .await
     .expect("复查 round_record 失败");
     assert_eq!(rounds_again, 1, "重复落库必须被 ON CONFLICT 吃掉");
+    // jsonb 直接解到 `serde_json::Value` 要 sqlx 的 `json` feature；这里取 text 再解析，
+    // 既少一个 feature，也顺便验证「库里存的确实是合法 JSON 文本」。
+    let players_text: String = sqlx::query_scalar(
+        "SELECT players::text FROM round_record WHERE match_id = $1 AND round_no = 1",
+    )
+    .bind(&match_id)
+    .fetch_one(&pool)
+    .await
+    .expect("查 players 失败");
     let players: serde_json::Value =
-        sqlx::query_scalar("SELECT players FROM round_record WHERE match_id = $1 AND round_no = 1")
-            .bind(&match_id)
-            .fetch_one(&pool)
-            .await
-            .expect("查 players 失败");
+        serde_json::from_str(&players_text).expect("players 必须是合法 JSON");
     assert_eq!(players.as_array().map(Vec::len), Some(4));
+    assert_eq!(players[0]["rank"], 1);
 }

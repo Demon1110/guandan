@@ -243,7 +243,7 @@ impl Store {
         let round_sql = "INSERT INTO round_record \
              (match_id, round_no, players, result, levels_after, ruleset_version, \
               engine_version, interpreter_version, started_at, ended_at) \
-             VALUES ($1, $2, to_jsonb($3::text), to_jsonb($4::text), to_jsonb($5::text), $6, $7, $8, $9, $10) \
+             VALUES ($1, $2, $3::text::jsonb, $4::text::jsonb, $5::text::jsonb, $6, $7, $8, $9, $10) \
              ON CONFLICT (match_id, round_no) DO NOTHING";
         let result = async {
             sqlx::query(event_sql)
