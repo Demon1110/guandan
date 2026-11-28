@@ -246,6 +246,59 @@ async fn admin_audit_records_operator_header() {
 }
 
 #[tokio::test]
+async fn games_list_stays_visible_when_client_is_too_old() {
+    let app = App::new(ServerConfig {
+        min_client_version: "1.10.0".to_owned(),
+        ..ServerConfig::default()
+    });
+
+    let (status, body) = call(&app, "GET", "/api/games?clientVersion=1.9.0", None, None).await;
+    assert_eq!(status, StatusCode::OK, "旧客户端也要能看到玩法列表：{body}");
+    assert_eq!(body["compatible"], false);
+    assert_eq!(body["upgrade"]["required"], true);
+    assert_eq!(body["upgrade"]["reason"], "CLIENT_TOO_OLD");
+    assert_eq!(body["minClientVersion"], "1.10.0");
+    let game = &body["items"][0];
+    assert_eq!(game["gameId"], "guandan");
+    assert_eq!(game["seatsCount"], 4);
+    assert_eq!(game["modes"].as_array().expect("modes").len(), 3);
+
+    let (status, body) = call(&app, "GET", "/api/games?clientVersion=1.10.0", None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["compatible"], true);
+    assert!(body["upgrade"].is_null());
+
+    // 没上报版本按旧客户端处理，但仍然返回列表。
+    let (status, body) = call(&app, "GET", "/api/games", None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["compatible"], false);
+    assert_eq!(body["items"].as_array().expect("items").len(), 1);
+}
+
+#[tokio::test]
+async fn admin_game_switch_is_reflected_in_public_games_list() {
+    let app = make_app(ADMIN_TOKEN);
+    let (status, _) = admin(
+        &app,
+        "PUT",
+        "/api/admin/games/guandan",
+        Some(json!({
+            "displayName": "掼蛋",
+            "enabled": false,
+            "modes": ["casual"],
+            "nextDealMs": 5000,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = call(&app, "GET", "/api/games", None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["items"][0]["enabled"], false);
+    let modes = body["items"][0]["modes"].as_array().expect("modes");
+    assert!(modes.iter().all(|mode| mode["enabled"] == false));
+}
+
+#[tokio::test]
 async fn admin_game_setting_validates_and_gates_room_create() {
     let app = make_app(ADMIN_TOKEN);
     request_sms(&app, PHONE_A).await;

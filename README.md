@@ -388,6 +388,7 @@ cargo test -p gf-server
 | `POST /api/room/create` | 建房出码，body `{gameId, mode, seatsCount}` → `{matchId, inviteCode, matchType}` |
 | `POST /api/room/join` | 凭码预占座位，body `{inviteCode}` → `{matchId, seat, accept, availableSeats?, reason?}` |
 | `POST /api/match/queue` | 入队，body `{gameId, mode}` → `{ticketId}`（满四人即成房） |
+| `GET /api/games` | 公开玩法列表；`?clientVersion=` 或 `X-Client-Version`，版本不足仍返回 200 + `upgrade` 提示 |
 | `GET /api/match/queue/{ticketId}` | 轮询 `{state: waiting\|matched\|timeout, matchId?}` |
 | `DELETE /api/match/queue/{ticketId}` | 退队 `{ok}` |
 | `POST /api/auth/sms` | 发验证码 `{phone}` → `{requestId, cooldownSec}`；超 60s/10 次日限回 429 `RATE_LIMITED` |

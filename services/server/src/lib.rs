@@ -38,6 +38,7 @@ use gf_protocol::gf::protocol::v1 as pb;
 use gf_protocol::wire;
 use prost::Message as _;
 use serde::Deserialize;
+use serde_json::{json, Value};
 use tokio::sync::{mpsc, Mutex, RwLock};
 
 pub use auth::{Auth, Profile, Session};
@@ -550,6 +551,7 @@ impl App {
             .route("/api/auth/logout", post(auth_logout))
             .route("/api/auth/refresh", post(auth_refresh))
             .route("/api/profile", get(profile))
+            .route("/api/games", get(games))
             .route("/api/replays/{match_id}", get(replay_package))
             .route("/ws", get(ws_upgrade))
             .merge(admin::router())
@@ -1314,6 +1316,79 @@ fn storage_unavailable() -> axum::response::Response {
 /// `GET /api/profile`（§5.15）：个人资料。
 ///
 /// `stats` 在 PG 切片接入 `player_stat` 前恒为空表——字段位先按契约留好。
+/// 大厅玩法列表：版本不达标也返回 200 与完整列表，附带升级提示；
+/// 真正拦对局的是 WS `JoinRoom.clientVersion` 的 `CLIENT_TOO_OLD`。
+#[derive(Debug, Deserialize)]
+struct GamesQuery {
+    #[serde(alias = "clientVersion")]
+    client_version: Option<String>,
+}
+
+async fn games(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(query): Query<GamesQuery>,
+) -> axum::response::Response {
+    let client_version = query
+        .client_version
+        .or_else(|| {
+            headers
+                .get("x-client-version")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned)
+        })
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    let compatible = match client_version.as_deref() {
+        Some(version) => app.cfg.accepts_version(version),
+        None => app.cfg.min_client_version.trim().is_empty(),
+    };
+    let setting = app.admin.game_setting().await;
+    let modes = [
+        ("casual", "休闲场"),
+        ("ranked", "排位场"),
+        ("mixed", "混合场"),
+    ]
+    .into_iter()
+    .map(|(mode, label)| {
+        json!({
+            "mode": mode,
+            "label": label,
+            "enabled": setting.enabled && setting.modes.iter().any(|m| m == mode),
+        })
+    })
+    .collect::<Vec<_>>();
+    let upgrade = if compatible {
+        Value::Null
+    } else {
+        json!({
+            "required": true,
+            "reason": "CLIENT_TOO_OLD",
+            "minimumVersion": app.cfg.min_client_version,
+            "message": "当前客户端版本低于服务端最低要求，请升级后再进入对局。",
+        })
+    };
+    Json(json!({
+        "ok": true,
+        "serverTimeMs": now_unix_ms(),
+        "clientVersion": client_version,
+        "minClientVersion": app.cfg.min_client_version,
+        "compatible": compatible,
+        "upgrade": upgrade,
+        "items": [{
+            "gameId": admin::DEFAULT_GAME_ID,
+            "displayName": setting.display_name,
+            "enabled": setting.enabled,
+            "modes": modes,
+            "rulesetVersion": gf_table_runtime::DEFAULT_RULESET_VERSION,
+            "seatsCount": host::SEATS,
+            "nextDealMs": setting.next_deal_ms,
+            "updatedAtMs": setting.updated_at_ms,
+        }],
+    }))
+    .into_response()
+}
+
 async fn profile(State(app): State<Arc<App>>, headers: HeaderMap) -> axum::response::Response {
     use axum::response::IntoResponse as _;
     let player_id = match app.authenticate(&headers) {

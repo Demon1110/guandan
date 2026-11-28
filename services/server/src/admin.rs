@@ -124,6 +124,11 @@ impl AdminState {
         self.setting.read().await.clone()
     }
 
+    /// 玩法配置快照（大厅玩法列表读它，避免把内部锁露出去）。
+    pub async fn game_setting(&self) -> GameSetting {
+        self.setting.read().await.clone()
+    }
+
     pub async fn game_enabled(&self) -> bool {
         self.setting.read().await.enabled
     }

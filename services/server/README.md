@@ -96,6 +96,19 @@ cargo clippy -p gf-server --all-targets -- -D warnings
 | `GET` | `/api/match/queue/{ticketId}` | → `{state: waiting\|matched\|timeout, matchId?}` |
 | `DELETE` | `/api/match/queue/{ticketId}` | → `{ok}` |
 
+### 玩法列表与版本提示
+
+`GET /api/games?clientVersion=1.9.0`（也可用 `X-Client-Version` 头）是公开大厅列表，
+不要求登录。即使版本低于 `minClientVersion` 也返回 `200` 和完整列表，便于旧客户端把
+「可玩玩法 + 升级提示」渲染出来；真正拦对局的是 WS `JoinRoom.clientVersion` 的
+`CLIENT_TOO_OLD`。
+
+响应顶层含 `compatible`、`clientVersion`、`minClientVersion`、`upgrade`（不兼容时为
+`{required:true, reason:"CLIENT_TOO_OLD", minimumVersion, message}`，兼容时为 `null`），
+`items` 里是玩法配置：`gameId`、`displayName`、`enabled`、`modes[]`（含中英文标签与开关）、
+`rulesetVersion`、`seatsCount`、`nextDealMs`。未上报版本按旧客户端处理（`compatible=false`），
+但在未配置 `minClientVersion` 时一律放行。
+
 - `mode` 是 `casual` / `ranked` / `mixed`，映射到 `matchType`：`human-casual` / `human-ranked` / `mixed`。
 - 房间码 6 位、去掉易混字符（无 `0/1/I/L/O`），大小写不敏感，有效期默认 24h（`GF_ROOM_CODE_TTL_MS`）。
 - 满员走 `reason: RS_SEAT_TAKEN` + `availableSeats: []`，**不返回 HTTP 409**（§5.15 明确）。
