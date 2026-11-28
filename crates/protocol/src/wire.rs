@@ -21,6 +21,8 @@ pub mod kind {
     pub const SUBMIT_ACTION: u16 = 3;
     /// `Heartbeat`
     pub const HEARTBEAT: u16 = 4;
+    /// `RematchReady`
+    pub const REMATCH_READY: u16 = 5;
 
     /// `JoinAck`
     pub const JOIN_ACK: u16 = 11;
@@ -36,6 +38,8 @@ pub mod kind {
     pub const SETTLE_RESULT: u16 = 16;
     /// `TrusteeState`
     pub const TRUSTEE_STATE: u16 = 17;
+    /// `RematchState`
+    pub const REMATCH_STATE: u16 = 18;
 }
 
 /// 帧编解码错误。
@@ -79,7 +83,11 @@ pub fn split(frame: &[u8]) -> Result<(u16, &[u8]), WireError> {
 pub fn is_client_kind(kind: u16) -> bool {
     matches!(
         kind,
-        kind::JOIN_ROOM | kind::RECONNECT | kind::SUBMIT_ACTION | kind::HEARTBEAT
+        kind::JOIN_ROOM
+            | kind::RECONNECT
+            | kind::SUBMIT_ACTION
+            | kind::HEARTBEAT
+            | kind::REMATCH_READY
     )
 }
 
@@ -94,6 +102,7 @@ pub fn is_server_kind(kind: u16) -> bool {
             | kind::PHASE_CHANGE
             | kind::SETTLE_RESULT
             | kind::TRUSTEE_STATE
+            | kind::REMATCH_STATE
     )
 }
 
@@ -132,6 +141,7 @@ mod tests {
             kind::RECONNECT,
             kind::SUBMIT_ACTION,
             kind::HEARTBEAT,
+            kind::REMATCH_READY,
         ] {
             assert!(is_client_kind(k), "C→S 类型 {k} 应合法");
             assert!(!is_server_kind(k), "C→S 类型 {k} 不应被判为服务端帧");
@@ -144,6 +154,7 @@ mod tests {
             kind::PHASE_CHANGE,
             kind::SETTLE_RESULT,
             kind::TRUSTEE_STATE,
+            kind::REMATCH_STATE,
         ] {
             assert!(is_server_kind(k), "S→C 类型 {k} 应合法");
             assert!(!is_client_kind(k), "S→C 类型 {k} 不应被判为客户端帧");

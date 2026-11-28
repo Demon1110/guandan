@@ -194,3 +194,21 @@ fn settle_result_roundtrip_without_reason_defaults_none() {
     assert_eq!(msg, back);
     assert_eq!(back.reason, None);
 }
+
+#[test]
+fn rematch_frames_roundtrip() {
+    let ready = RematchReady {
+        match_id: "match-001".into(),
+        seat: 2,
+    };
+    assert_eq!(roundtrip(&ready), ready);
+
+    let state = RematchState {
+        match_id: "match-001".into(),
+        room_seq: 88,
+        ready_seats: vec![0, 2],
+        human_seats: vec![0, 1, 2, 3],
+        remaining_ms: 3_000,
+    };
+    assert_eq!(roundtrip(&state), state);
+}

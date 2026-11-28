@@ -85,9 +85,18 @@ impl TicketState {
     }
 }
 
+#[derive(Clone)]
 struct CodeSlot {
     match_id: String,
     expires_ms: u64,
+}
+
+/// 房间码查询结果（区分未知与过期）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CodeLookup {
+    Active(String),
+    Expired,
+    Unknown,
 }
 
 struct Ticket {
@@ -157,10 +166,23 @@ impl Lobby {
 
     /// 凭码找房间；大小写不敏感（客户端可能全小写输入）。
     pub fn resolve_code(&mut self, code: &str, now_ms: u64) -> Option<String> {
+        match self.lookup_code(code, now_ms) {
+            CodeLookup::Active(match_id) => Some(match_id),
+            CodeLookup::Expired | CodeLookup::Unknown => None,
+        }
+    }
+
+    /// 房间码查询结果：区分“没发过”和“发过但已过期”，供 HTTP 分别回
+    /// `INVITE_CODE_UNKNOWN` / `INVITE_CODE_EXPIRED`（§5.7）。
+    pub fn lookup_code(&mut self, code: &str, now_ms: u64) -> CodeLookup {
+        let key = code.trim().to_ascii_uppercase();
+        let hit = self.codes.get(&key).cloned();
         self.sweep_codes(now_ms);
-        self.codes
-            .get(&code.trim().to_ascii_uppercase())
-            .map(|slot| slot.match_id.clone())
+        match hit {
+            Some(slot) if slot.expires_ms <= now_ms => CodeLookup::Expired,
+            Some(slot) => CodeLookup::Active(slot.match_id),
+            None => CodeLookup::Unknown,
+        }
     }
 
     /// 入队，返回票号（匿名票；票号即凭据）。

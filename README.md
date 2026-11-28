@@ -144,6 +144,25 @@ cargo build -p gf-engine --target wasm32-unknown-unknown --release
 | 协议往返 | `cargo test -p gf-protocol` |
 | wasm 端编译检查 | `cargo check -p gf-engine --target wasm32-unknown-unknown` |
 
+**联机服务端与两个前端**
+
+```powershell
+# 服务端（默认 127.0.0.1:8080；联机页默认连 8090，按下面覆盖）
+$env:GF_BIND = "127.0.0.1:8090"
+cargo run -p gf-server
+
+# 静态站（另开一个终端）
+pwsh apps/web/serve.ps1 -Port 8123
+# 单机 bot：http://127.0.0.1:8123/index.html
+# 可选联机：http://127.0.0.1:8123/online.html
+
+# 桌面壳（Windows 本机，产物在 apps/desktop/dist）
+pwsh apps/desktop/build-installer.ps1
+# 其它平台走 CI 的 matrix，不要求本机交叉编译
+```
+
+联机页的「服务端」输入框保存到 `localStorage`，换端口/内网地址不用改代码；桌面壳的 CSP 已放行 `localhost` / `127.0.0.1` 的 http 与 ws。
+
 **基准（`harness = false`，直接打印数字，不走 criterion）**
 
 | 基准 | 命令 | 看什么 |
@@ -335,7 +354,7 @@ guandan/
 | --- | --- | --- |
 | M0 | ✅ 已收口 | 契约锁定、双端 `stateHash` 一致、断线恢复原型、非法 RuleSet 反证、空转与包体实测 |
 | M1 | ✅ 已收口 | 牌型全表、枚举路径重构、结算两批、进贡/还贡/抗贡、跨局携带、快照 wire、组牌推荐、房间主干（含计时/托管/断线恢复/再来一局）、AI-L0/L1/L2（跟牌/留牌/记牌/队友配合）、Web 端（牌桌/大厅/结算/设置）+ IndexedDB 续局、校验器 L2–L4、CI 双产物 gate、性能与容量 gate（353.3µs / 3,952–7,904 房间）、接风与进贡后手牌刷新专项；覆盖率门禁按 **行 ≥90% 且区域 ≥90%**（实测行 92.23% / 区域 91.61%，函数 89.95%，分支 85.05% 作观测项），口径与缺口见 `docs/assets/m1-coverage-baseline.md` |
-| M2 | 🟡 进行中 | 已落地：`services/server` 联机骨架（入座/开局/动作/结算）、传输帧头（`gf_protocol::wire`）、快照 `roundNo` 补齐、增量重连（`ReconnectBuffer` → `RoomDelta`，跨局/结算落快照重置）、房间码与匹配队列（内存态）、手机号账号与短信验证码（测试白名单 + 座位绑定）、PG/Redis 落库（战绩/账号/快照/动作流/队列镜像）、回放包导出（`GET /api/replays/{matchId}`，服务端重放自证）与离线回放器 `tools/replay-viewer`；待做：第 24 周联机内测、桌面壳三端产物、回放只读观战 |
+| M2 | 🟢 代码已收口 | 已落地：`services/server` 联机骨架（入座/开局/动作/结算/续局）、传输帧头（`gf_protocol::wire`，C→S 5 / S→C 8 帧）、快照 `roundNo` 补齐、增量重连、房间码与匹配队列、手机号账号与座位绑定、PG/Redis 落库、回放包导出；2026-11-28 补齐全员 ready + 超时续局、`/api/games`、§5.7 四个错误码、CORS、可选联机页 `apps/web/online.html`、桌面三端 CI。剩余只是环境验证：Linux/macOS 实机冒烟、第 24 周 4 人真实网络内测签核 |
 | M3 / M4 | 未开始 | 见 `docs/开发计划.md` |
 
 **M1 目前的硬账**
@@ -401,8 +420,8 @@ cargo test -p gf-server
 
 ```
 [ kind: u16 大端 ][ protobuf body ]      一帧一条消息；不设长度前缀（WS 自带边界）
-C→S  1 JoinRoom | 2 Reconnect | 3 SubmitAction | 4 Heartbeat
-S→C 11 JoinAck | 12 RoomSnapshot | 13 RoomDelta | 14 ActionAck | 15 PhaseChange | 16 SettleResult | 17 TrusteeState
+C→S  1 JoinRoom | 2 Reconnect | 3 SubmitAction | 4 Heartbeat | 5 RematchReady
+S→C 11 JoinAck | 12 RoomSnapshot | 13 RoomDelta | 14 ActionAck | 15 PhaseChange | 16 SettleResult | 17 TrusteeState | 18 RematchState
 ```
 
 **已实现的语义**
@@ -413,14 +432,16 @@ S→C 11 JoinAck | 12 RoomSnapshot | 13 RoomDelta | 14 ActionAck | 15 PhaseChang
 - 断线：WS 断开/30s 无消息即记 `Offline`，房间按宽限托管；重连优先补发 `RoomDelta` 增量（水位在 200 条缓冲内且未跨局、未落在结算空窗期），末尾附 `snapshotReset=false` 快照；其余情形只发 `snapshotReset=true` 全量快照。
 - 服务端自证：`RoomHost::state_hash()` 与 `replay_hash()` 必须相等，四座位整局用例已锁。
 - 大厅：房间码 6 位（去易混字符、大小写不敏感、24h 有效）、凭码预占座位（`reserve()`，60s TTL）；匹配队列按 `(gameId, mode)` FIFO 分池，满四人撮合成同一场次，v1 不推 WS 匹配事件。
+- 续局：结算后各人类座位可发 `RematchReady`，全员确认立即开下一局；未齐时 `next_deal_ms` 超时兜底。bot 视为 ready，不依赖房主；`RematchState` 广播确认进度，重连/进房补发。
 - 账号：手机号 + 短信验证码登录；手机号只存 `HMAC-SHA256(盐, 号)` + 尾号 4 位；access 是 15 分钟 HS256 JWT，refresh 30 天单端轮换；短信通道未批前 `GF_SMS_TEST_WHITELIST` 走固定测试码；带 token 的预占与入座把座位绑定到玩家，重连校验同一玩家。
+- 在线入口：`apps/web/online.html`（可选）走公开玩法列表 + 登录 + 建房/凭码/匹配 + WS 牌桌；`index.html` 仍是本地 bot 单机，桌面壳同时打包两者。
 
-**本切片明确没做**（按开发计划 §3 M2 顺序）：结算重试与死信补偿、回放导出与观战、桌面壳三端产物、第 24 周联机内测。
+**M2 剩余口径已裁定（2026-11-28）**
 
-**三个待裁口径**（代码里留了 TODO 常量）
+- `M2-OPEN-01`：联机「再来一局」= **全员 ready + 超时兜底**，只增 `RematchReady` / `RematchState` 两帧，不改 `actions.kind` 闭集。
+- `M2-GAP-proto-04`：动作级拒绝正式码为 `ACTION_ILLEGAL`（`ActionAck.reason`，不断连、不推进水位）。
+- `M2-GAP-05`：房间码/票号错误用 `INVITE_CODE_UNKNOWN` / `INVITE_CODE_EXPIRED` / `TICKET_UNKNOWN`，HTTP 404 + 顶层 `reason`，不再复用 `RS_SCHEMA_INVALID` + `detail`。
 
-- `M2-OPEN-01`：联机「再来一局」由谁触发（会动 `actions.kind` 闭集）——当前服务端定时续局。
-- `M2-GAP-proto-04`：玩家误点被引擎拒绝时 `ActionAck.reason` 无 §5.7 表内码——暂用 `ILLEGAL_ACTION` 占位，裁决后替换。
-- `M2-GAP-05`：邀请码/票号不存在在 §5.7 表里无对应码——暂用 `RS_SCHEMA_INVALID` + `detail`（`INVITE_CODE_UNKNOWN` / `TICKET_UNKNOWN` 等），裁决后替换。
+**仍未做**：结算重试与死信补偿、实时旁观（只做回放）、Linux/macOS 实机冒烟、第 24 周 4 人真实网络内测的人工签核（自动化侧已有真实 TCP 四连接与重连用例）。
 
 

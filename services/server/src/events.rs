@@ -196,6 +196,36 @@ pub fn settle_frame(
     encode(kind::SETTLE_RESULT, &prost::Message::encode_to_vec(&msg))
 }
 
+/// 单独一条 `TurnChanged` 增量：new deal 开始/续局时补发，客户端不必等第一次动作才知道轮到谁。
+pub fn turn_changed_frame(match_id: &str, room_seq: u64, seat: u8, deadline_ms: u64) -> Vec<u8> {
+    let event = pb::DeltaEvent {
+        event: Some(pb::delta_event::Event::TurnChanged(pb::TurnChangedEvent {
+            seat: u32::from(seat),
+            deadline_ms,
+        })),
+    };
+    delta_frame(match_id, room_seq, vec![event])
+}
+
+/// 结算后续局确认状态帧。`ready_seats` / `human_seats` 只含人类座位，
+/// `remaining_ms` 为距超时自动开局的剩余毫秒（已确认齐时可为 0）。
+pub fn rematch_state_frame(
+    match_id: &str,
+    room_seq: u64,
+    ready_seats: &[u8],
+    human_seats: &[u8],
+    remaining_ms: u64,
+) -> Vec<u8> {
+    let msg = pb::RematchState {
+        match_id: match_id.to_owned(),
+        room_seq,
+        ready_seats: ready_seats.iter().map(|s| u32::from(*s)).collect(),
+        human_seats: human_seats.iter().map(|s| u32::from(*s)).collect(),
+        remaining_ms,
+    };
+    encode(kind::REMATCH_STATE, &prost::Message::encode_to_vec(&msg))
+}
+
 /// `SettleResult.result` 的 canonical JSON：键序 `winner_team, ranks, points`，
 /// 单行、无空白、不写 `null`（可选字段缺省即省略）。
 pub fn settle_json(summary: &SettleSummary) -> String {

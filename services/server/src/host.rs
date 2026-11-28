@@ -8,7 +8,7 @@
 //! 时钟：一律用 `RoomHost` 自己的单调毫秒（进程起点起算），不读挂钟，
 //! 房间层的时间参数保持调用方可控。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -36,12 +36,11 @@ pub const SEATS: u8 = 4;
 /// 只有同一玩家能兑现；无账号（token 缺省）时退化为「带同一座位号即兑现」。
 pub const RESERVATION_TTL_MS: u64 = 60_000;
 
-/// 未在 §5.7 错误码全表内的临时动作级拒绝码。
+/// §5.7 动作级拒绝码：引擎/房间判定拒绝一次 `SubmitAction`。
 ///
-/// 设计缺口（M2-GAP-proto-04，待项目方裁决）：玩家误点导致的引擎拒绝
-/// （`EngineError::IllegalAction`）在 §5.7 全表里没有对应码，而 `ActionAck.reason`
-/// 又要求「不在表内即违约」。本切片先用本常量占位，裁决后替换为正式码。
-pub const REASON_ILLEGAL_ACTION: &str = "ILLEGAL_ACTION";
+/// 只写在 `ActionAck.reason`，不影响连接存活；客户端据此提示“这一步不合法”，
+/// 并以随帧 `stateHash` / `roomSeq` 回到权威状态。
+pub const REASON_ACTION_ILLEGAL: &str = "ACTION_ILLEGAL";
 
 /// 房间主循环参数。
 #[derive(Clone, Copy, Debug)]
@@ -131,6 +130,8 @@ pub struct RoomHost {
     opts: RoomOptions,
     started: AtomicBool,
     next_deal_at: AtomicU64,
+    /// 结算后「再来一局」已确认的人类座位；开下一局或新结算时清空。
+    rematch_ready: std::sync::Mutex<HashSet<u8>>,
     announced_settle: AtomicU64,
     /// 本局发牌时刻（墙钟毫秒），结算行要用。
     round_start_ms: AtomicU64,
@@ -171,6 +172,7 @@ impl RoomHost {
             opts,
             started: AtomicBool::new(false),
             next_deal_at: AtomicU64::new(0),
+            rematch_ready: std::sync::Mutex::new(HashSet::new()),
             announced_settle: AtomicU64::new(0),
             round_start_ms: AtomicU64::new(0),
             closed: AtomicBool::new(false),
@@ -481,7 +483,18 @@ impl RoomHost {
                     snapshots.push((seat, events::snapshot_frame(&wire, true)));
                 }
             }
-            (snapshots, vec![events::phase_frame(state.phase, deadline)])
+            (
+                snapshots,
+                vec![
+                    events::phase_frame(state.phase, deadline),
+                    events::turn_changed_frame(
+                        &self.match_id,
+                        room.room_seq(),
+                        state.turn_seat,
+                        deadline,
+                    ),
+                ],
+            )
         };
         self.send_seats(snapshots).await;
         self.send_all(&broadcast).await;
@@ -496,7 +509,7 @@ impl RoomHost {
         let request_id = msg.request_id.clone();
         if request_id.is_empty() || request_id.len() > MAX_REQUEST_ID_LEN {
             // 超长 requestId 不进缓存，也不进业务：直接按非法动作回执。
-            return self.reject(seat, &request_id, REASON_ILLEGAL_ACTION).await;
+            return self.reject(seat, &request_id, REASON_ACTION_ILLEGAL).await;
         }
         {
             let mut cache = self.ack_cache.lock().await;
@@ -508,7 +521,7 @@ impl RoomHost {
 
         let action = match action_of(&msg) {
             Ok(action) => action,
-            Err(()) => return self.reject(seat, &request_id, REASON_ILLEGAL_ACTION).await,
+            Err(()) => return self.reject(seat, &request_id, REASON_ACTION_ILLEGAL).await,
         };
         if self.closed.load(Ordering::Relaxed) {
             return self.reject(seat, &request_id, "TOO_LATE").await;
@@ -598,7 +611,7 @@ impl RoomHost {
                             RoomError::WrongTurn { .. }
                             | RoomError::NotInPlay
                             | RoomError::NotStarted => "TOO_LATE",
-                            _ => REASON_ILLEGAL_ACTION,
+                            _ => REASON_ACTION_ILLEGAL,
                         };
                         events::action_ack_frame(
                             &request_id,
@@ -704,6 +717,98 @@ impl RoomHost {
             .collect()
     }
 
+    /// 重连/进房时补发一次当前续局确认状态；不在结算空窗期返回 None。
+    pub async fn rematch_state_frame(&self) -> Option<Vec<u8>> {
+        let (room_seq, human_seats) = {
+            let room = self.room.lock().await;
+            let state = room.state().ok()?;
+            if state.phase != PHASE_SETTLE {
+                return None;
+            }
+            (
+                room.room_seq(),
+                (0..SEATS)
+                    .filter(|seat| room.is_human(*seat))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let deadline = self.next_deal_at.load(Ordering::Relaxed);
+        if deadline == 0 {
+            return None;
+        }
+        let mut ready_seats = self
+            .rematch_ready
+            .lock()
+            .expect("rematch ready poisoned")
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        ready_seats.sort_unstable();
+        Some(events::rematch_state_frame(
+            &self.match_id,
+            room_seq,
+            &ready_seats,
+            &human_seats,
+            deadline.saturating_sub(self.now_ms()),
+        ))
+    }
+
+    /// 收到 `RematchReady`：只接受本局仍在线的真人座位，幂等。
+    /// 返回 true 表示人类座位已确认齐、下一拍会立即发下一局。
+    pub async fn mark_rematch_ready(&self, seat: u8) -> bool {
+        let now = self.now_ms();
+        let (room_seq, human_seats) = {
+            let room = self.room.lock().await;
+            let Ok(state) = room.state() else {
+                return false;
+            };
+            if state.phase != PHASE_SETTLE || !room.is_human(seat) {
+                return false;
+            }
+            (
+                room.room_seq(),
+                (0..SEATS).filter(|s| room.is_human(*s)).collect::<Vec<_>>(),
+            )
+        };
+        if self.next_deal_at.load(Ordering::Relaxed) == 0 {
+            return false;
+        }
+
+        let all_ready = {
+            let mut ready = self.rematch_ready.lock().expect("rematch ready poisoned");
+            ready.insert(seat);
+            human_seats.iter().all(|s| ready.contains(s))
+        };
+        if all_ready {
+            // 下一拍走 pump 的续局分支，快照/相位帧仍由唯一主循环生成。
+            self.next_deal_at.store(now, Ordering::Relaxed);
+        }
+        let mut ready_seats = self
+            .rematch_ready
+            .lock()
+            .expect("rematch ready poisoned")
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        ready_seats.sort_unstable();
+        let remaining = if all_ready {
+            0
+        } else {
+            self.next_deal_at
+                .load(Ordering::Relaxed)
+                .saturating_sub(now)
+        };
+        self.send_all(&[events::rematch_state_frame(
+            &self.match_id,
+            room_seq,
+            &ready_seats,
+            &human_seats,
+            remaining,
+        )])
+        .await;
+        all_ready
+    }
+
     /// 重连前把本座位的新连接登记为下行通道（旧连接若还在，直接被顶掉）。
     pub async fn rebind(&self, seat: u8, tx: mpsc::Sender<Vec<u8>>) -> bool {
         if seat >= SEATS {
@@ -788,9 +893,14 @@ impl RoomHost {
             let before = room.state().ok().cloned().unwrap();
 
             if before.phase == PHASE_SETTLE && next_at != 0 && now >= next_at {
-                // 结算后定时续局（M2-OPEN-01：触发方待裁定）。
+                // 结算后续局：全员 ready 会把 next_deal_at 提前到当前时刻，
+                // 未齐时由 next_deal_ms 超时兜底（M2-OPEN-01 已裁定）。
                 if room.next_round(now).is_ok() {
                     self.next_deal_at.store(0, Ordering::Relaxed);
+                    self.rematch_ready
+                        .lock()
+                        .expect("rematch ready poisoned")
+                        .clear();
                     self.round_start_ms
                         .store(crate::now_unix_ms(), Ordering::Relaxed);
                     let deadline = room.turn_deadline_ms().unwrap_or(now);
@@ -801,6 +911,22 @@ impl RoomHost {
                             }
                         }
                         broadcast.push(events::phase_frame(state.phase, deadline));
+                        broadcast.push(events::turn_changed_frame(
+                            &self.match_id,
+                            room.room_seq(),
+                            state.turn_seat,
+                            deadline,
+                        ));
+                        let human_seats = (0..SEATS)
+                            .filter(|seat| room.is_human(*seat))
+                            .collect::<Vec<_>>();
+                        broadcast.push(events::rematch_state_frame(
+                            &self.match_id,
+                            room.room_seq(),
+                            &[],
+                            &human_seats,
+                            0,
+                        ));
                     }
                 }
             } else {
@@ -878,6 +1004,22 @@ impl RoomHost {
             self.opts.next_deal_ms,
         ));
         frames.push(events::phase_frame(PHASE_SETTLE, 0));
+        let human_seats = (0..SEATS)
+            .filter(|seat| room.is_human(*seat))
+            .collect::<Vec<_>>();
+        let next_at = now.saturating_add(self.opts.next_deal_ms);
+        self.next_deal_at.store(next_at, Ordering::Relaxed);
+        self.rematch_ready
+            .lock()
+            .expect("rematch ready poisoned")
+            .clear();
+        frames.push(events::rematch_state_frame(
+            &self.match_id,
+            room.room_seq(),
+            &[],
+            &human_seats,
+            self.opts.next_deal_ms,
+        ));
 
         // 结算事实投给存档任务：players 由 App 按座位归属补，房间不碰账号。
         let actions: Vec<_> = room
@@ -901,10 +1043,6 @@ impl RoomHost {
             },
             actions,
         });
-        self.next_deal_at.store(
-            now.saturating_add(self.opts.next_deal_ms),
-            Ordering::Relaxed,
-        );
         frames
     }
 

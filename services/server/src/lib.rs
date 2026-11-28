@@ -44,7 +44,7 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 pub use auth::{Auth, Profile, Session};
 pub use config::{DatabaseConfig, RedisConfig, ServerConfig, SmsConfig};
 pub use host::{JoinError, ReplayExportError, RoomHost, RoomOptions};
-pub use lobby::{Lobby, Mode, TicketState};
+pub use lobby::{CodeLookup, Lobby, Mode, TicketState};
 pub use store::{RoundRow, StorageEvent, Store};
 
 /// 本服务只承载掼蛋一个玩法（`GET /api/games` 的 `gameId` 取值）。
@@ -423,8 +423,19 @@ impl App {
 
     /// 凭房间码找房间；失效码返回 `None`。
     pub async fn room_by_code(&self, code: &str) -> Option<Arc<RoomHost>> {
-        let match_id = self.lobby.lock().await.resolve_code(code, self.now_ms())?;
-        self.room_or_create(&match_id).await.ok()
+        self.room_by_code_result(code).await.ok()
+    }
+
+    /// 凭房间码找房间，保留「未知 / 过期」区分（HTTP 需要分别回错误码）。
+    pub async fn room_by_code_result(&self, code: &str) -> Result<Arc<RoomHost>, CodeLookup> {
+        match self.lobby.lock().await.lookup_code(code, self.now_ms()) {
+            CodeLookup::Active(match_id) => self
+                .room_or_create(&match_id)
+                .await
+                .map_err(|_| CodeLookup::Unknown),
+            CodeLookup::Expired => Err(CodeLookup::Expired),
+            CodeLookup::Unknown => Err(CodeLookup::Unknown),
+        }
     }
 
     /// 入匹配队列，返回票号。
@@ -555,6 +566,9 @@ impl App {
             .route("/api/replays/{match_id}", get(replay_package))
             .route("/ws", get(ws_upgrade))
             .merge(admin::router())
+            // 联机大厅是独立静态页（apps/web/online.html），本机/内网分开部署时需要跨源。
+            // 鉴权走 Bearer 头而非 Cookie，permissive 不会带上凭据；生产可再收窄 origin。
+            .layer(tower_http::cors::CorsLayer::permissive())
             .layer(DefaultBodyLimit::max(MAX_HTTP_BODY))
             .with_state(self.clone())
     }
@@ -820,10 +834,12 @@ async fn room_join(
         Ok(owner) => owner,
         Err(resp) => return *resp,
     };
-    let Some(room) = app.room_by_code(&body.invite_code).await else {
-        // 错误码表里没有「邀请码不存在」，按入参不合规走 `RS_SCHEMA_INVALID`，
-        // 具体原因放 `detail`（`M2-GAP-05`，待项目方决定是否补正式码）。
-        return invalid_request("INVITE_CODE_UNKNOWN");
+    let room = match app.room_by_code_result(&body.invite_code).await {
+        Ok(room) => room,
+        // §5.7：房间码未知 / 已过期分开回，不再包 `RS_SCHEMA_INVALID` 的 detail。
+        Err(CodeLookup::Expired) => return not_found("INVITE_CODE_EXPIRED"),
+        Err(CodeLookup::Unknown) => return not_found("INVITE_CODE_UNKNOWN"),
+        Err(CodeLookup::Active(_)) => unreachable!("Active 分支已返回房间"),
     };
     match room.reserve_for(owner).await {
         Ok(seat) => Json(serde_json::json!({
@@ -918,7 +934,7 @@ async fn match_status(
             }
             Json(body).into_response()
         }
-        None => invalid_request("TICKET_UNKNOWN"),
+        None => not_found("TICKET_UNKNOWN"),
     }
 }
 
@@ -1657,6 +1673,9 @@ async fn session(app: Arc<App>, socket: WebSocket, owner: Option<String>) {
                         if let Ok(snapshot) = room.join_snapshot(ticket.seat).await {
                             let _ = tx.send(snapshot).await;
                         }
+                        if let Some(frame) = room.rematch_state_frame().await {
+                            let _ = tx.send(frame).await;
+                        }
                         bound = Some((room, ticket.seat));
                     }
                     Err(JoinError::SeatTaken { available }) => {
@@ -1710,6 +1729,17 @@ async fn session(app: Arc<App>, socket: WebSocket, owner: Option<String>) {
                 let ack = room.submit(*seat, submit, room.now_ms()).await;
                 let _ = tx.send(ack).await;
             }
+            wire::kind::REMATCH_READY => {
+                let Some((room, seat)) = &bound else { break };
+                let Ok(ready) = pb::RematchReady::decode(body) else {
+                    break;
+                };
+                if !ready.match_id.is_empty() && ready.match_id != room.match_id() {
+                    // 房间号不符不切房间，按非法请求忽略；确认态仍以绑定座位为准。
+                    continue;
+                }
+                let _ = room.mark_rematch_ready(*seat).await;
+            }
             wire::kind::RECONNECT => {
                 let Ok(re) = pb::Reconnect::decode(body) else {
                     break;
@@ -1736,6 +1766,9 @@ async fn session(app: Arc<App>, socket: WebSocket, owner: Option<String>) {
                     Ok(frames) => {
                         // 增量帧在前、快照在后，必须按顺序下发。
                         for frame in frames {
+                            let _ = tx.send(frame).await;
+                        }
+                        if let Some(frame) = room.rematch_state_frame().await {
                             let _ = tx.send(frame).await;
                         }
                         bound = Some((room, seat));

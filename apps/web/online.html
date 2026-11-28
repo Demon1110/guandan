@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>掼蛋 · 联机大厅</title>
+  <link rel="stylesheet" href="online.css" />
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">掼</span>
+        <div>
+          <h1>联机大厅</h1>
+          <p>房间码 / 快速匹配 · 单机练习请回 <a href="index.html">本地房间</a></p>
+        </div>
+      </div>
+      <div class="server-box">
+        <label>服务端
+          <input id="server-url" spellcheck="false" placeholder="http://127.0.0.1:8090" />
+        </label>
+        <button id="server-check" class="ghost">连一下</button>
+        <span id="server-status" class="pill">未连接</span>
+      </div>
+    </header>
+
+    <section id="notice" class="notice hidden" role="status"></section>
+
+    <main class="grid">
+      <section class="card span-2" id="games-card">
+        <div class="card-head">
+          <div>
+            <h2>玩法</h2>
+            <p class="muted" id="games-sub">读取服务端公开玩法列表，判断当前客户端版本是否可进入。</p>
+          </div>
+          <span id="client-version" class="pill">客户端 2.0.0</span>
+        </div>
+        <div id="upgrade" class="upgrade hidden"></div>
+        <div id="games" class="games">
+          <div class="skeleton">正在读取玩法…</div>
+        </div>
+      </section>
+
+      <section class="card" id="auth-card">
+        <div class="card-head">
+          <div>
+            <h2>身份</h2>
+            <p class="muted">游客也能建房入座；登录后座位与战绩绑账号。</p>
+          </div>
+        </div>
+        <div id="auth-guest" class="auth-guest">
+          <span>当前：游客</span>
+          <button id="auth-open" class="ghost">手机号登录</button>
+        </div>
+        <form id="auth-form" class="auth-form hidden">
+          <label>手机号 <input id="auth-phone" inputmode="tel" autocomplete="tel" placeholder="本机测试号需在短信白名单" /></label>
+          <label>验证码 <input id="auth-code" inputmode="numeric" autocomplete="one-time-code" placeholder="白名单测试码 666666" /></label>
+          <div class="row">
+            <button type="button" id="auth-send" class="ghost">发验证码</button>
+            <button type="submit" class="primary">登录 / 注册</button>
+          </div>
+          <p id="auth-note" class="fine"></p>
+        </form>
+        <div id="auth-me" class="auth-me hidden">
+          <div>
+            <strong id="auth-player">已登录</strong>
+            <p class="fine" id="auth-expire"></p>
+          </div>
+          <button id="auth-logout" class="ghost">退出</button>
+        </div>
+      </section>
+
+      <section class="card span-2" id="enter-card">
+        <div class="card-head">
+          <div>
+            <h2>进桌</h2>
+            <p class="muted">三种入口都沿用同一套 REST + WS，联机是可选玩法，不影响本地 bot 对局。</p>
+          </div>
+        </div>
+        <div class="enter-grid">
+          <div class="enter-block">
+            <h3>开房</h3>
+            <p class="fine">生成 6 位房间码，分享给另外三位。</p>
+            <div class="row">
+              <button id="create-casual" class="primary">休闲房</button>
+              <button id="create-ranked" class="ghost">排位房</button>
+            </div>
+          </div>
+          <div class="enter-block">
+            <h3>凭码加入</h3>
+            <p class="fine">大小写不敏感；过期码会明确提示。</p>
+            <form id="join-form" class="row">
+              <input id="join-code" maxlength="6" spellcheck="false" placeholder="ABC123" />
+              <button type="submit" class="primary">加入</button>
+            </form>
+          </div>
+          <div class="enter-block">
+            <h3>快速匹配</h3>
+            <p class="fine">同模式满四人自动成房，最长等 60 秒。</p>
+            <div class="row">
+              <button id="queue-casual" class="primary">匹配休闲</button>
+              <button id="queue-ranked" class="ghost">匹配排位</button>
+            </div>
+            <div id="queue-state" class="fine"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <section id="waiting" class="waiting hidden">
+      <div class="waiting-card">
+        <span class="pill">已入座 · 座位 <b id="wait-seat">-</b></span>
+        <h2>等人齐，满 4 人自动发牌</h2>
+        <div class="invite-line">
+          <span>房间码</span>
+          <code id="wait-code">------</code>
+          <button id="copy-code" class="ghost">复制</button>
+        </div>
+        <p class="muted">把房间码给牌友，或直接分享当前链接。断线后 90 秒内回到本页会自动续座。</p>
+        <div class="row">
+          <button id="wait-leave" class="ghost">离开</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="table" class="table-shell hidden">
+      <div class="table-head">
+        <div class="table-title">
+          <span class="pill" id="table-round">第 1 局</span>
+          <span class="pill" id="table-phase">等待</span>
+          <span class="pill" id="table-seat">座位 -</span>
+        </div>
+        <div class="table-actions">
+          <span id="conn-state" class="pill">连接中</span>
+          <button id="table-leave" class="ghost">退出牌桌</button>
+        </div>
+      </div>
+
+      <div class="board">
+        <div class="seat-box seat-top" data-seat="2"><span>座位 2</span><b class="turn-dot"></b></div>
+        <div class="seat-box seat-left" data-seat="3"><span>座位 3</span><b class="turn-dot"></b></div>
+        <div class="seat-box seat-right" data-seat="1"><span>座位 1</span><b class="turn-dot"></b></div>
+
+        <div class="center">
+          <div class="turn-line" id="turn-line">等待发牌…</div>
+          <div class="last-play">
+            <span class="fine">上一手</span>
+            <div id="last-play" class="mini-cards"><span class="fine">—</span></div>
+          </div>
+          <div class="level-line" id="level-line"></div>
+        </div>
+
+        <div class="seat-box seat-self" data-seat="0">
+          <span>我 · 座位 <b id="self-seat">-</b></span>
+          <b class="turn-dot"></b>
+        </div>
+      </div>
+
+      <div class="hand-wrap">
+        <div class="hand" id="hand"></div>
+        <div class="hand-actions">
+          <button id="btn-pass" class="ghost">不要</button>
+          <button id="btn-play" class="primary">出牌</button>
+          <button id="btn-rematch" class="primary hidden">再来一局</button>
+        </div>
+        <p class="fine" id="action-note">点牌选中，再按「出牌」；轮到别人时按钮不会提交。</p>
+      </div>
+
+      <div id="settle" class="settle hidden">
+        <div class="settle-card">
+          <h3>本局结束</h3>
+          <div id="settle-body" class="settle-body"></div>
+          <div class="row">
+            <button id="settle-rematch" class="primary">再来一局</button>
+            <button id="settle-stay" class="ghost">留在牌桌</button>
+          </div>
+          <p class="fine" id="rematch-note"></p>
+        </div>
+      </div>
+    </section>
+
+    <footer class="foot">
+      <span>联机为可选入口；本地 bot 单机仍是默认玩法。</span>
+      <span id="foot-hint" class="fine"></span>
+    </footer>
+  </div>
+
+  <script src="online.js"></script>
+</body>
+</html>

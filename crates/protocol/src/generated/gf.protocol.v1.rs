@@ -109,6 +109,31 @@ pub struct Heartbeat {
     #[prost(uint64, tag = "3")]
     pub client_seq: u64,
 }
+/// C→S 结算后续局确认（M2 补充，§5.9 增帧）。只允许当前绑定座位提交一次；
+/// 全员人类座位都确认后立即发下一局，未齐时由服务端超时兜底。
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RematchReady {
+    #[prost(string, tag = "1")]
+    pub match_id: ::prost::alloc::string::String,
+    /// 取值域 u8；服务端仍以连接绑定座位为准。
+    #[prost(uint32, tag = "2")]
+    pub seat: u32,
+}
+/// S→C 续局确认状态（M2 补充，§5.9 增帧）。结算到下一局之间广播；
+/// readySeats 只含人类座位，bot/匿名托管不参与确认。remainingMs 为距超时自动开局的剩余毫秒。
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RematchState {
+    #[prost(string, tag = "1")]
+    pub match_id: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub room_seq: u64,
+    #[prost(uint32, repeated, tag = "3")]
+    pub ready_seats: ::prost::alloc::vec::Vec<u32>,
+    #[prost(uint32, repeated, tag = "4")]
+    pub human_seats: ::prost::alloc::vec::Vec<u32>,
+    #[prost(uint64, tag = "5")]
+    pub remaining_ms: u64,
+}
 /// S→C 全量快照（§5.9 行 716）。
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RoomSnapshot {

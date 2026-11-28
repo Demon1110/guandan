@@ -81,8 +81,8 @@ cargo clippy -p gf-server --all-targets -- -D warnings
    人类在线且未超时 → `Waiting`，什么都不发。
 3. 人类 `SubmitAction`：幂等查 `requestId` → 校验 `seatSeq` → `Room::submit`
    → 广播 `RoomDelta`（同一 `roomSeq` 可带多条事件）→ 回 `ActionAck`。
-4. 终局 → `RoomDelta`（含最后一手 + `RoundSettledEvent`）+ `SettleResult` + `PhaseChange(settle)`；
-   `next_deal_ms` 后自动开下一局（触发方待裁，见下）。
+4. 终局 → `RoomDelta`（含最后一手 + `RoundSettledEvent`）+ `SettleResult` + `PhaseChange(settle)`
+   + `RematchState`；人类全员 `RematchReady` 立即开下一局，未齐时 `next_deal_ms` 超时兜底。
 
 ## 大厅接口（房间码 / 匹配队列）
 
@@ -207,7 +207,9 @@ cargo clippy -p gf-server --all-targets -- -D warnings
 - **动作序号两个口径**：`ActionRecord.seatSeq` 从 0 起算（`lastSeatSeq` / 快照水位取它）；
   `SubmitAction.seatSeq` 与 `STALE_SEQ` 比的是「下一条动作序号」，比记录值大 1。
   两者由 `Room::seat_watermark` / `Room::seat_seq` 分开暴露，不要混用。
-- **自动续局**：`M2-OPEN-01`，联机"再来一局"触发方未裁定（会动 `actions.kind` 闭集）。
+- **续局确认**：结算后各人类座位发 `RematchReady`，全员确认立即开下一局；未齐时
+  `next_deal_ms` 超时兜底，bot 视为 ready。判定只认 `phase=settle` 且当前绑定座位，
+  不依赖房主；`RematchState` 在结算、确认、重连、入房时补发。
 - **大厅是内存态**：房码表、票号表、匹配队列都在进程内，重启即清；Redis 里的
   `match:queue:{gameId}` 只是镜像，读回来仍以内存为准。
 - **撮合只在入队时触发**：没有后台撮合线程，同时入队的四人能立刻成房；错峰入队靠下一
@@ -238,13 +240,16 @@ cargo clippy -p gf-server --all-targets -- -D warnings
 | 客户端版本低于下限 | `CLIENT_TOO_OLD` |
 | `seat_seq` 低于该座位水位 | `STALE_SEQ` |
 | 非行动座位提交 / 不在出牌阶段 / 场次已终止 | `TOO_LATE` |
-| 引擎拒绝（误点非法牌型） | **`ILLEGAL_ACTION`（占位，表内无对应码）** |
+| 引擎/房间拒绝动作（非法牌型、无此牌、超长 requestId） | `ACTION_ILLEGAL`（`ActionAck.reason`，动作级） |
 | 发码过频/超日限 | `RATE_LIMITED`（429，附 `retryAfterMs`） |
-| 大厅入参不合规（未知房码/票号/游戏/模式/座位数） | `RS_SCHEMA_INVALID` + `detail`（见 `M2-GAP-05`） |
+| 房间码从未发放 | `INVITE_CODE_UNKNOWN`（404，顶层 `reason`） |
+| 房间码已过期 | `INVITE_CODE_EXPIRED`（404，顶层 `reason`） |
+| 匹配票号不存在 | `TICKET_UNKNOWN`（404，顶层 `reason`） |
+| 其它大厅入参不合规（游戏/模式/座位数） | `RS_SCHEMA_INVALID` + `detail` |
 
-最后两条是设计缺口：`M2-GAP-proto-04`（`ActionAck.reason` 要求取自 §5.7 全表，但"玩家误点
-被引擎拒绝"在表里没有码）；`M2-GAP-05`（§5.7 也没有"邀请码/票号不存在"的码，先用
-`RS_SCHEMA_INVALID` + `detail` 承载原因）。裁决后各改一处常量。
+`M2-GAP-proto-04` / `M2-GAP-05` 已裁定并落码：动作拒绝用正式码 `ACTION_ILLEGAL`，
+房间码/票号不再借用 `RS_SCHEMA_INVALID` 的 `detail`。`RS_SCHEMA_INVALID` 只保留给
+真正的字段格式错误（非法 `gameId`、`mode`、`seatsCount` 等）。
 
 ## 加测试的落点
 

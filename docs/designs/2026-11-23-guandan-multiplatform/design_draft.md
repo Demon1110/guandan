@@ -687,6 +687,10 @@ L3 与 L4 都在**发布时**跑，不在编辑时跑；编辑时只跑 L1、L2 
 | `RS_QUOTA_EXCEEDED` | L3 dry-run 期单次 `legal_actions` 实测候选枚举峰值超过 4096 条；**不在载入期 L2 设静态闸门，不用于运行期单步动作拒绝** | 判 dry-run 结果无效、拒绝发布，记 `action_quota_exceeded_total`；RuleSet 侧按缺陷处理 |
 | `RS_GOLDEN_REGRESSION_FAILED` | L4 回归种子库出现失败（与 `RS_L4_MISMATCH` 分工：本码只管回归种子库） | 拒绝发布，输出首个失败用例 id 与 `matchId`/`roomSeq` |
 | `RS_INTERNAL_PANIC` | 解释器在 native 侧 panic 且被 `catch_unwind` 捕获 | 该动作返回失败、房间继续（§8.6），并记 `room_panic_total` |
+| `ACTION_ILLEGAL` | 引擎/房间在 `SubmitAction` 时判定动作不成立：牌型不合法、压不过上一手、牌不在手牌、当前不是该座位回合，或 `requestId` 超长（M2 补充，2026-11-28 裁定） | **动作级**：只写入 `ActionAck.reason`，不断连、不推进 `seatSeq`；客户端提示后按随帧水位回到权威状态。与 L3 `RS_ILLEGAL_ACTION_RATE`（规则集发布闸门）不是同一码 |
+| `INVITE_CODE_UNKNOWN` | `POST /api/room/join` 的房间码从未发放（M2 补充，2026-11-28 裁定） | 404，顶层 `reason` 直接用本码；不再包 `RS_SCHEMA_INVALID` + `detail` |
+| `INVITE_CODE_EXPIRED` | 房间码曾发放但已超过 `room_code_ttl_ms`（M2 补充，2026-11-28 裁定） | 404，顶层 `reason` 直接用本码；与「未知」分开，便于客户端提示房主重发 |
+| `TICKET_UNKNOWN` | `GET/DELETE /api/match/queue/{ticketId}` 的票号不存在（M2 补充，2026-11-28 裁定） | 404，顶层 `reason` 直接用本码；不再包 `RS_SCHEMA_INVALID` + `detail` |
 | `RS_SEAT_TAKEN` | 进房时目标座位已被占；或房间已满、无空座可分配 | 不经 HTTP 409：经 `JoinAck.reason` 返回，并附 `availableSeats[]`；客户端按可用座位重选，或提示房间已满（§5.9） |
 | `AUTH_INVALID` | token 缺失、过期或签名不符；短信验证码错误或过期；或请求携带的 `seat` 与 token 绑定座位不一致 | 401，客户端跳登录；座位不一致另记指标（§5.9） |
 | `CLIENT_TOO_OLD` | `clientVersion` 低于服务端当前的 `minClientVersion` 下限 | 426，客户端提示升级并停止入座（`minClientVersion` 定义见 §5.16） |
@@ -696,7 +700,7 @@ L3 与 L4 都在**发布时**跑，不在编辑时跑；编辑时只跑 L1、L2 
 | `VERSION_CONFLICT` | `If-Match` 的 `rev` 与草稿当前 `rev` 不符 | 409，返回当前 `rev` 与字段级差异 |
 | `RS_NO_ACTIVE_VERSION` | 回滚候选集为空：同 `ruleset_id` 下无曾到 `full` 且未 `retired` 的版本 | 409，提示无可回滚版本，不切指针 |
 
-**载体映射（四分）**：牌桌走 WS 帧、不带 HTTP 状态码。①连接级错误（`AUTH_INVALID`、`CLIENT_TOO_OLD`）经 WS Close code 断开连接并附错误码；②请求级错误（`RS_SEAT_TAKEN`）经入座响应帧 `JoinAck.reason` 返回并附 `availableSeats[]`；③动作级错误只写入 `ActionAck.reason`，不断连；④HTTP 状态码（401/409/426/429 等）仅用于后台与玩家侧 REST 接口。
+**载体映射（四分）**：牌桌走 WS 帧、不带 HTTP 状态码。①连接级错误（`AUTH_INVALID`、`CLIENT_TOO_OLD`）经 WS Close code 断开连接并附错误码；②请求级错误（`RS_SEAT_TAKEN`）经入座响应帧 `JoinAck.reason` 返回并附 `availableSeats[]`；③动作级错误只写入 `ActionAck.reason`，不断连（含 `ACTION_ILLEGAL`、`STALE_SEQ`、`TOO_LATE`）；④HTTP 状态码（401/404/409/426/429 等）仅用于后台与玩家侧 REST 接口；房间码未知/过期与票号未知走 404，顶层 `reason` 即错误码本身。
 
 ### 5.8 存储结构
 
@@ -750,6 +754,8 @@ M0 要交付的就是这张表；服务端与 wasm 客户端共用同一份 prot
 | C→S | `Reconnect` | `matchId, seat, lastSeatSeq` | `lastSeatSeq` 之后的增量由服务端补齐；该座位 `lastSeatSeq` 对应的 `roomSeq` 早于缓冲起点（换算按动作记录双序号列，见 §6.5）时只发 `RoomSnapshot` 并以快照 `roomSeq` 为新起点（§6.2） |
 | C→S | `SubmitAction` | `matchId, seat, requestId, seatSeq, kind, payload` | `requestId` 为幂等键（§6.4）；`seatSeq` 为**每座位**单调递增；**服务端以 token 绑定的座位为准**，请求 `seat` 与绑定座位不一致返回 `AUTH_INVALID` 并记指标；`payload` 结构见下 |
 | C→S | `Heartbeat` | `matchId, seat, clientSeq` | 客户端每 15 秒一次；服务端 30 秒内未收到该座位任何消息即判掉线（**唯一判定点**，§6.2 同步） |
+| C→S | `RematchReady` | `matchId, seat` | 结算空窗期的「再来一局」确认（M2 补充，2026-11-28 裁定）。只接受绑定座位、只在该局 `phase=settle` 有效；人类座位各自确认一次，幂等；bot/匿名托管不参与确认 |
+| S→C | `RematchState` | `matchId, roomSeq, readySeats[], humanSeats[], remainingMs` | 结算后广播/重连补发；`readySeats` / `humanSeats` 只含人类座位，`remainingMs` 是距超时自动开局的剩余毫秒。全员 ready 时服务端把续局时刻提前到当前拍；未齐时到 `next_deal_ms` 自动开；场次结束（打过 A / 安全上限）不再提供 |
 | S→C | `RoomSnapshot` | `matchId, seat, roundNo, rulesetId, rulesetVersion, roomSeq, lastSeatSeq, viewHash, viewSchemaVersion, view, snapshotReset` | 全量视图（按 `view.fields` 裁剪）。`rulesetId`/`rulesetVersion` 为房间创建时锁定的 RuleSet 身份与版本，与 `viewSchemaVersion` 组成客户端白名单缓存键 `(rulesetId, viewSchemaVersion)`（§9.2）。`view` 的类型是 **`bytes`**，内容是 canonical JSON，编码规则见 §5.12；`viewSchemaVersion: u16` 是这份 `view` 用的白名单版本（取自 RuleSet `view.schemaVersion`，房间创建时锁定）；**不下发 `stateHash`**；`snapshotReset: bool`，缺省 false，true 表示客户端必须丢弃本地状态并接受本快照（§6.2）。**`roundNo: u16`（第三十二次变更，2026-11-24 用户裁定 A）**：本快照所属的**当前局号**，口径与 `State.roundNo` 完全一致（`deal` 时才 +1，见 §6.2）；它**不进 `stateHash`**、只是 `State` 的投影；`settle → deal` 空窗期收到的快照 `roundNo` 仍为**已结束的那一局**，客户端据此 + `phase` 判断“本局已结算、下一局未开始”，不必依赖 `RoundSettledEvent`/`DealEvent` 增量。`roundNo` 是**快照头字段**、不属于 `view` 白名单，故**不触发 `viewSchemaVersion` 升版**（白名单集合与顺序未变） |
 | S→C | `RoomDelta` | `matchId, roomSeq, events[]` | 增量事件；断线期间存最近 200 条（§6.2）。`roomSeq` 是房间广播序；本消息是房间广播，**不带 `seatSeq`**，座位水位只在 `Reconnect`/`ActionAck` 按座位传递 |
 | S→C | `ActionAck` | `requestId, seatSeq, roomSeq, accepted, reason?` | 回执；`reason` 为 **ASCII 字符串**，取值必须来自 §5.7 错误码**全表**（不在表内即服务端违约，P0 审计项）；`accepted=true` 时该字段不出现（第二十四次变更） |

@@ -135,6 +135,7 @@ async fn four_humans_play_a_round_then_settle() {
     assert_eq!(ack_kinds, actions);
 
     // 结算帧必须广播到所有在线座位。
+    let mut rematch = None;
     for (seat, rx) in &mut rxs {
         let got = frames(rx).await;
         assert!(
@@ -153,7 +154,36 @@ async fn four_humans_play_a_round_then_settle() {
         );
         assert!(json.contains("\"ranks\":["), "结算必须带名次：{json}");
         assert_eq!(settle.levels_after.len(), 2, "两队级牌");
+        let state = got
+            .iter()
+            .find(|(k, _)| *k == wire::kind::REMATCH_STATE)
+            .map(|(_, b)| pb::RematchState::decode(&b[..]).expect("续局状态解码失败"))
+            .unwrap_or_else(|| panic!("座位 {seat} 未收到结算后的续局状态"));
+        rematch.get_or_insert(state);
     }
+    let rematch = rematch.expect("有续局状态");
+    assert_eq!(rematch.human_seats, vec![0, 1, 2, 3]);
+    assert!(rematch.ready_seats.is_empty(), "结算初始不得有人 ready");
+    assert_eq!(rematch.remaining_ms, 5_000);
+
+    let mut all_ready = false;
+    for seat in 0..4u8 {
+        all_ready = room.mark_rematch_ready(seat).await;
+    }
+    assert!(all_ready, "四人都 ready 后应返回 true");
+    let mut phase = gf_engine::engine::PHASE_SETTLE;
+    for _ in 0..40 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        phase = room.state_snapshot().await.expect("有状态").phase;
+        if phase != gf_engine::engine::PHASE_SETTLE {
+            break;
+        }
+    }
+    assert_ne!(
+        phase,
+        gf_engine::engine::PHASE_SETTLE,
+        "全员 ready 后应立即续局"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

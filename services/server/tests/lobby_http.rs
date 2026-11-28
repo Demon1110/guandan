@@ -103,9 +103,8 @@ async fn room_code_assigns_spare_seats_and_rejects_overflow() {
 async fn unknown_or_expired_code_is_rejected() {
     let app = make_app(ServerConfig::default());
     let (status, body) = join(&app, "ZZZZZZ").await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["reason"], "RS_SCHEMA_INVALID");
-    assert_eq!(body["detail"], "INVITE_CODE_UNKNOWN");
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["reason"], "INVITE_CODE_UNKNOWN");
 
     // 码有效期为 0：出码后立即失效。
     let cfg = ServerConfig {
@@ -115,8 +114,8 @@ async fn unknown_or_expired_code_is_rejected() {
     let app = make_app(cfg);
     let (_, code) = create_room(&app, "casual").await;
     let (status, body) = join(&app, &code).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["detail"], "INVITE_CODE_UNKNOWN");
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["reason"], "INVITE_CODE_EXPIRED");
 }
 
 #[tokio::test]
